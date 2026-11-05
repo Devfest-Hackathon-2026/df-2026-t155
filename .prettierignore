@@ -4,5 +4,6 @@ out
 build
 dist
 coverage
+/.local/
 *.tsbuildinfo
 pnpm-lock.yaml

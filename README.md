@@ -23,4 +23,8 @@
     pnpm format:check
     pnpm lint
     pnpm typecheck
+    pnpm test
     pnpm build
+
+共通データモデル・入出力契約の利用方法と未決定事項は
+[`docs/DOMAIN_CONTRACTS.md`](docs/DOMAIN_CONTRACTS.md)を参照してください。

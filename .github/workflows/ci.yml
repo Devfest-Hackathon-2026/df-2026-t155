@@ -37,5 +37,7 @@ jobs:
         run: pnpm lint
       - name: 型チェック
         run: pnpm typecheck
+      - name: テスト
+        run: pnpm test
       - name: ビルド
         run: pnpm build
