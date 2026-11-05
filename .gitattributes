@@ -1,0 +1,7 @@
+# Gitがテキストと判定したファイルをLFでチェックアウトする
+# バイナリは自動判定し、改行変換しない
+* text=auto eol=lf
+
+# Windows用バッチファイルのみCRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
