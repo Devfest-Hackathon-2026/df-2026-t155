@@ -6,10 +6,15 @@ import type { Trip } from '@/domain'
 import { RouteFailure, RouteLoading } from '@/features/trip-map/route-states'
 
 import { failureGuidance } from './failure-messages'
+import { FixedStopsField, fixedStopFieldId } from './fixed-stops-field'
 import {
   buildGenerateTripRequest,
   firstInvalidField,
+  firstInvalidFixedStop,
   initialFormValues,
+  MAX_FIXED_STOPS,
+  type FixedStopErrorMap,
+  type FixedStopField,
   type TripFormErrors,
   type TripFormField,
   type TripFormValues,
@@ -34,6 +39,13 @@ const inputClassName =
 export function TripPlanner({ generate, renderTrip = defaultRenderTrip }: TripPlannerProps) {
   const [values, setValues] = useState<TripFormValues>(initialFormValues)
   const [errors, setErrors] = useState<TripFormErrors>({})
+  const [fixedStopErrors, setFixedStopErrors] = useState<FixedStopErrorMap>({})
+  const [fixedStopNotice, setFixedStopNotice] = useState('')
+  // 追加した行の画面上の識別子（入力欄の対応づけ用）。
+  const nextRowKey = useRef(1)
+  const addFixedStopRef = useRef<HTMLButtonElement>(null)
+  // 次の描画のあとにフォーカスを移す入力欄のid（行の追加直後など）。
+  const [focusId, setFocusId] = useState<string | null>(null)
   const { state, run } = useTripGeneration(generate)
   const isGenerating = state.phase === 'generating'
 
@@ -49,9 +61,60 @@ export function TripPlanner({ generate, renderTrip = defaultRenderTrip }: TripPl
     if (state.phase === 'succeeded') resultHeadingRef.current?.focus()
   }, [state.phase])
 
+  useEffect(() => {
+    if (focusId === null) return
+    document.getElementById(focusId)?.focus()
+    setFocusId(null)
+  }, [focusId])
+
   const update = (field: TripFormField, value: string) => {
     setValues((current) => ({ ...current, [field]: value }))
     setErrors((current) => ({ ...current, [field]: undefined }))
+  }
+
+  const addFixedStop = () => {
+    if (values.fixedStops.length >= MAX_FIXED_STOPS) {
+      setFixedStopNotice(`固定予定は、最大${MAX_FIXED_STOPS}件までです。`)
+      return
+    }
+    const key = `row-${nextRowKey.current}`
+    nextRowKey.current += 1
+    setValues((current) => ({
+      ...current,
+      fixedStops: [...current.fixedStops, { key, name: '', startTime: '', duration: '' }],
+    }))
+    setFixedStopNotice('固定予定の入力欄を追加しました。')
+    setFocusId(fixedStopFieldId(key, 'name'))
+  }
+
+  const removeFixedStop = (key: string) => {
+    setValues((current) => ({
+      ...current,
+      fixedStops: current.fixedStops.filter((row) => row.key !== key),
+    }))
+    setFixedStopErrors(({ [key]: _removed, ...rest }) => rest)
+    setFixedStopNotice('固定予定を削除しました。')
+    // 消えたボタンの代わりに、追加ボタンへフォーカスを移す。
+    addFixedStopRef.current?.focus()
+  }
+
+  const updateFixedStop = (key: string, field: FixedStopField, value: string) => {
+    setValues((current) => ({
+      ...current,
+      fixedStops: current.fixedStops.map((row) => {
+        if (row.key !== key) return row
+        return field === 'startTime'
+          ? { ...row, startTime: value }
+          : field === 'duration'
+            ? { ...row, duration: value }
+            : { ...row, name: value }
+      }),
+    }))
+    setFixedStopErrors((current) => ({
+      ...current,
+      [key]: { ...current[key], [field]: undefined },
+    }))
+    setFixedStopNotice('')
   }
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -62,11 +125,18 @@ export function TripPlanner({ generate, renderTrip = defaultRenderTrip }: TripPl
     if (!built.ok) {
       // ボタンは常に押せるようにし、押されたら不備の項目を示して最初の項目へ移動する。
       setErrors(built.errors)
+      setFixedStopErrors(built.fixedStopErrors ?? {})
       const first = firstInvalidField(built.errors)
-      if (first) fieldRefs.current[first]?.focus()
+      if (first) {
+        fieldRefs.current[first]?.focus()
+      } else if (built.fixedStopErrors) {
+        const target = firstInvalidFixedStop(values.fixedStops, built.fixedStopErrors)
+        if (target) document.getElementById(fixedStopFieldId(target.key, target.field))?.focus()
+      }
       return
     }
     setErrors({})
+    setFixedStopErrors({})
     void run(built.request)
   }
 
@@ -159,6 +229,16 @@ export function TripPlanner({ generate, renderTrip = defaultRenderTrip }: TripPl
               </p>
             )}
           </div>
+
+          <FixedStopsField
+            rows={values.fixedStops}
+            errors={fixedStopErrors}
+            notice={fixedStopNotice}
+            addButtonRef={addFixedStopRef}
+            onAdd={addFixedStop}
+            onRemove={removeFixedStop}
+            onChange={updateFixedStop}
+          />
 
           <button
             type="submit"

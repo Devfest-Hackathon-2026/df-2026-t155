@@ -10,7 +10,12 @@ import {
   parsePreferences,
 } from './form-model'
 
-const valid = { region: '京都市東山エリア', date: '2026-11-14', preferences: 'ゆっくり歩きたい' }
+const valid = {
+  region: '京都市東山エリア',
+  date: '2026-11-14',
+  preferences: 'ゆっくり歩きたい',
+  fixedStops: [],
+}
 
 describe('parsePreferences', () => {
   it('1行を1つの希望として扱い、空行・前後の空白・改行コードの違いを無視する', () => {
