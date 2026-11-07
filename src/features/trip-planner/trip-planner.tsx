@@ -31,8 +31,7 @@ interface TripPlannerProps {
 
 const defaultRenderTrip = (trip: Trip) => <TripProposalPreview trip={trip} />
 
-const inputClassName =
-  'w-full rounded border border-current/40 bg-transparent px-3 py-3 text-base aria-[invalid=true]:border-2 aria-[invalid=true]:border-current'
+const inputClassName = 'gt-field px-3 py-3'
 
 // 旅行条件の入力から旅程の生成・表示までの入口。生成された旅程は提案であり、
 // 自動で承認・確定・保存しない。入力値は生成の成否にかかわらず保持する。
@@ -242,7 +241,7 @@ export function TripPlanner({ generate, renderTrip = defaultRenderTrip }: TripPl
 
           <button
             type="submit"
-            className="min-h-12 w-full rounded bg-foreground px-4 py-3 text-base font-medium text-background"
+            className="min-h-12 w-full rounded-xl bg-gt-ink px-4 py-3 text-base font-semibold text-white"
           >
             {isGenerating ? '生成中…' : '旅程を作成する'}
           </button>

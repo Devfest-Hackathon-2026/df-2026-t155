@@ -31,7 +31,7 @@ export default function RootLayout({
   return (
     <html lang="ja">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <header className="border-b border-current/20 px-4 py-3">
+        <header className="border-b border-gt-rule px-4 py-3">
           <p className="mx-auto w-full max-w-xl font-semibold">GroundTrip</p>
         </header>
         <main className="mx-auto w-full max-w-xl px-4 py-6">{children}</main>

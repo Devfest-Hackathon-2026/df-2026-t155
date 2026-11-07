@@ -1,80 +1,69 @@
+import type { ReactNode } from 'react'
+
 import { evidenceStatusLabels, type Evidence, type EvidenceStatus } from '@/domain'
 
 import { evidenceSourceLabels, evidenceSubjectLabels } from './model'
 
 // 根拠の状態表示。色だけに頼らず、記号とラベルを必ず併用する。
-const styles: Record<EvidenceStatus, { box: string; icon: string }> = {
-  consistent: {
-    box: 'border-gt-ok bg-gt-ok-bg text-gt-ok',
-    icon: 'rounded-full bg-gt-ok text-white',
-  },
-  conflicting: {
-    box: 'border-gt-warn bg-gt-warn-bg text-gt-warn',
-    icon: 'rounded-[3px] bg-gt-warn text-white',
-  },
-  unverifiable: {
-    box: 'border-dashed border-gt-unk bg-gt-unk-bg text-gt-unk',
-    icon: 'rounded-full border-[1.5px] border-dashed border-gt-unk',
-  },
+type StatusTone = EvidenceStatus | 'unverified'
+
+const styles: Record<StatusTone, string> = {
+  consistent: 'bg-gt-ok-bg text-gt-ok',
+  conflicting: 'bg-gt-warn-bg text-gt-warn',
+  unverifiable: 'bg-gt-unk-bg text-gt-unk',
+  unverified: 'bg-gt-rule/40 text-gt-muted',
 }
 
-function Mark({ status }: { status: EvidenceStatus }) {
-  const common = 'inline-flex size-4 items-center justify-center'
-  if (status === 'consistent') {
-    return (
-      <span aria-hidden="true" className={`${common} ${styles[status].icon}`}>
-        <svg
-          width="10"
-          height="10"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="4"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M5 12.5l4.5 4.5L19 7.5" />
-        </svg>
-      </span>
-    )
-  }
+const marks: Record<StatusTone, string> = {
+  consistent: 'm7 12 3.5 3.5L17 9',
+  conflicting: 'm9 9 6 6m0-6-6 6',
+  unverifiable: 'M9 9a3 3 0 1 1 5 2.2c-1 .7-2 1.3-2 2.8m0 3h.01',
+  unverified: 'M8 12h8',
+}
+
+function Mark({ status }: { status: StatusTone }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="size-4 shrink-0"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="9.5" />
+      <path d={marks[status]} />
+    </svg>
+  )
+}
+
+export function StatusBadge({ tone, children }: { tone: StatusTone; children: ReactNode }) {
   return (
     <span
-      aria-hidden="true"
-      className={`${common} text-[10px] font-black leading-none ${styles[status].icon}`}
+      className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-semibold leading-snug ${styles[tone]}`}
     >
-      {status === 'conflicting' ? '!' : '?'}
+      <Mark status={tone} />
+      {children}
     </span>
   )
 }
 
 export function EvidenceBadge({ evidence }: { evidence: Pick<Evidence, 'subject' | 'status'> }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1 rounded-md border-[1.5px] py-0.5 pl-1 pr-2 text-[11.5px] font-bold leading-tight ${styles[evidence.status].box}`}
-    >
-      <Mark status={evidence.status} />
+    <StatusBadge tone={evidence.status}>
       {evidenceSubjectLabels[evidence.subject]}：{evidenceStatusLabels[evidence.status]}
-    </span>
+    </StatusBadge>
   )
 }
 
 // まだ照合していない（evidenceが空）。「確認できない」とは別の状態として示す。
 export function UnverifiedBadge() {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-md border-[1.5px] border-dotted border-gt-muted py-0.5 pl-1 pr-2 text-[11.5px] font-bold leading-tight text-gt-muted">
-      <span
-        aria-hidden="true"
-        className="inline-flex size-4 items-center justify-center rounded-full border-[1.5px] border-dotted border-gt-muted text-[10px] leading-none"
-      >
-        −
-      </span>
-      未照合
-    </span>
-  )
+  return <StatusBadge tone="unverified">未照合</StatusBadge>
 }
 
-const checkedAtFormat = new Intl.DateTimeFormat('ja-JP', {
+export const checkedAtFormat = new Intl.DateTimeFormat('ja-JP', {
   timeZone: 'Asia/Tokyo',
   dateStyle: 'medium',
   timeStyle: 'short',
@@ -90,12 +79,12 @@ export function EvidenceDetail({ evidence }: { evidence: Evidence }) {
         : '情報源との矛盾があります。内容を確認してから判断してください。'
   return (
     <details className="group">
-      <summary className="flex min-h-9 cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
+      <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 [&::-webkit-details-marker]:hidden">
         <EvidenceBadge evidence={evidence} />
-        <span className="text-xs text-gt-muted underline">根拠を見る</span>
+        <span className="text-sm text-gt-muted underline">根拠を見る</span>
       </summary>
-      <div className="my-1.5 border-l-[3px] border-gt-rule py-1 pl-3 text-xs">
-        <dl className="grid grid-cols-[5.5em_1fr] gap-x-2 gap-y-0.5">
+      <div className="my-1.5 border-l-[3px] border-gt-rule py-1 pl-3 text-sm wrap-anywhere">
+        <dl className="grid grid-cols-[5em_minmax(0,1fr)] gap-x-2 gap-y-1">
           <dt className="text-gt-muted">確認項目</dt>
           <dd>{evidenceSubjectLabels[evidence.subject]}</dd>
           <dt className="text-gt-muted">内容</dt>

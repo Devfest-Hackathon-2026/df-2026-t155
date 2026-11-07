@@ -6,7 +6,10 @@ import { defineConfig } from 'vitest/config'
 // DOMが必要なテストは、ファイル先頭に `// @vitest-environment jsdom` を書いて切り替える。
 export default defineConfig({
   // .tsxのテストも対象にする。拡張子が.tsの設定だけが読まれるため、設定は1本にまとめる。
-  test: { include: ['src/**/*.test.{ts,tsx}'] },
+  test: {
+    include: ['src/**/*.test.{ts,tsx}'],
+    setupFiles: ['tests/helpers/dialog-environment.ts'],
+  },
   // tsconfigは`jsx: preserve`（Next.jsが変換する）のため、テストでは別に変換方式を指定する。
   oxc: { jsx: { runtime: 'automatic' } },
   resolve: {

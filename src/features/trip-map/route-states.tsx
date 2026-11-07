@@ -36,7 +36,7 @@ export function RouteFailure({
   note?: string
 }) {
   return (
-    <div role="alert" className="rounded-2xl border-2 border-gt-warn bg-gt-warn-bg p-4 text-gt-ink">
+    <div role="alert" className="gt-notice" data-tone="error">
       <p className="flex items-center gap-2 font-black text-gt-warn">
         <span
           aria-hidden="true"

@@ -3,8 +3,8 @@ import type { Evidence, EvidenceStatus, Stop, Trip } from '@/domain'
 // 旅程の路線図UIが使う、画面表示用のモデルと純粋ロジック。
 // 共通契約（Trip・Stop・Evidence）の型は重複して定義せず、契約に無い情報だけをここで補う。
 
-// 駅の種別。契約のStopには種別が無いため、データ取得側が任意で付与する（無ければ観光扱いの駅）。
-export type StopKind = 'sight' | 'meal' | 'reserved' | 'station'
+// 路線図の表示用の種別。Stopの種別が未取得のときは既存の表示用メタデータも使う。
+export type StopKind = 'sight' | 'meal' | 'reserved' | 'station' | 'other'
 
 export const stopKindLabels: Record<StopKind, string> = {
   sight: '観光',
@@ -12,12 +12,11 @@ export const stopKindLabels: Record<StopKind, string> = {
   // 予約が必要な予定という「種別」であり、予約済みという「状態」ではない（予約状況は照合していない）。
   reserved: '要予約',
   station: '駅',
+  other: '予定',
 }
 
-// 前の地点からの移動区間。契約にはまだ移動区間のモデルが無い。
-// Routes連携（#7）で取得できるまで、または取得できないとき（公共交通など）は「未確認」にする。
-// 存在しない移動時間をAIに補完させない。
-export type TravelSegment =
+// 路線図の表示メタデータ。API応答の区間は共通のTravelSegmentSchemaで検証する。
+export type RouteSegmentLabel =
   | { status: 'known'; minutes: number; mode: 'walk' | 'drive' }
   | { status: 'unknown'; reason?: string }
 
@@ -25,11 +24,23 @@ export interface RouteStopMeta {
   kind?: StopKind
   // 価格の目安（表示用）。取得できていなければ指定しない。
   price?: string
-  segmentFromPrevious?: TravelSegment
+  segmentFromPrevious?: RouteSegmentLabel
 }
 
 // Stop IDごとの付加情報。
 export type RouteMeta = Record<string, RouteStopMeta>
+
+export function routeStopKind(stop: Stop, meta?: RouteStopMeta): StopKind | undefined {
+  if (meta?.kind) return meta.kind
+  switch (stop.kind) {
+    case 'sight':
+    case 'meal':
+    case 'other':
+      return stop.kind
+    case 'transport':
+      return 'station'
+  }
+}
 
 export const evidenceSubjectLabels: Record<Evidence['subject'], string> = {
   place_identity: '施設の存在',
@@ -46,7 +57,7 @@ export const evidenceSourceLabels: Record<Evidence['source']['kind'], string> = 
   simulation: '模擬データ',
 }
 
-const toMinutes = (time: string): number => {
+export const toMinutes = (time: string): number => {
   const [hours, minutes] = time.split(':').map(Number)
   return hours * 60 + minutes
 }

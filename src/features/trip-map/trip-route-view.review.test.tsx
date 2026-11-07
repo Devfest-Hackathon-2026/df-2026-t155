@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -63,6 +63,8 @@ describe('Tripの同期（指摘1）', () => {
     render(<TripRouteView trip={sampleTrip} onTripChange={onTripChange} />)
     await user.click(stopButton(/昼食店A/))
     await user.click(within(sheet()).getByRole('button', { name: 'この予定を固定する' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     await user.click(stopButton(/朝の庭園/))
     await user.click(within(sheet()).getByRole('button', { name: '固定を解除する' }))
 
@@ -159,7 +161,7 @@ describe('詳細シートを閉じたあとのフォーカス（指摘3）', () 
     await user.click(stopButton(/昼食店A/))
     await user.keyboard('{Escape}')
 
-    expect(document.activeElement).toBe(stopButton(/昼食店A/))
+    await waitFor(() => expect(document.activeElement).toBe(stopButton(/昼食店A/)))
   })
 
   it('閉じるボタンで閉じても、選択していた予定のボタンへ戻る', async () => {
@@ -168,17 +170,19 @@ describe('詳細シートを閉じたあとのフォーカス（指摘3）', () 
     await user.click(stopButton(/14時の予約展示/))
     await user.click(within(sheet()).getByRole('button', { name: '閉じる' }))
 
-    expect(document.activeElement).toBe(stopButton(/14時の予約展示/))
+    await waitFor(() => expect(document.activeElement).toBe(stopButton(/14時の予約展示/)))
   })
 
   it('別の予定へ切り替えてから閉じた場合は、最後に選択した予定へ戻る', async () => {
     const user = userEvent.setup()
     render(<TripRouteView trip={sampleTrip} />)
     await user.click(stopButton(/朝の庭園/))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     await user.click(stopButton(/昼食店A/))
     await user.keyboard('{Escape}')
 
-    expect(document.activeElement).toBe(stopButton(/昼食店A/))
+    await waitFor(() => expect(document.activeElement).toBe(stopButton(/昼食店A/)))
     expect(document.activeElement).not.toBe(stopButton(/朝の庭園/))
   })
 
@@ -220,7 +224,7 @@ describe('未照合の表示のコントラスト（指摘5）', () => {
     await user.click(stopButton(/昼食店A/))
 
     const button = within(sheet()).getByRole('button', { name: 'この予定だけ変更' })
-    expect(button.className).toContain('bg-gt-line-strong')
+    expect(button.className).toContain('bg-gt-ink')
     expect(button.className).not.toContain('bg-gt-line ')
   })
 })
@@ -355,6 +359,8 @@ describe('固定と予定の種類の分離（#23・Cludewn案：固定は、ロ
 
     await user.click(stopButton(/朝の庭園/))
     await user.click(within(sheet()).getByRole('button', { name: 'この予定を固定する' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     await user.click(stopButton(/昼食店A/))
     await user.click(within(sheet()).getByRole('button', { name: 'この予定を固定する' }))
 

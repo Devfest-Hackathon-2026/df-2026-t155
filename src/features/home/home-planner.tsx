@@ -1,6 +1,6 @@
 'use client'
 
-import { TripRouteView } from '@/features/trip-map/trip-route-view'
+import { RevisionRouteView } from '@/features/revision-review/revision-route-view'
 import { TripPlanner } from '@/features/trip-planner/trip-planner'
 import type { GenerateTrip } from '@/features/trip-planner/use-trip-generation'
 
@@ -11,7 +11,7 @@ export function HomePlanner({ generate }: { generate?: GenerateTrip }) {
   return (
     <TripPlanner
       generate={generate}
-      renderTrip={(trip) => <TripRouteView key={trip.id} trip={trip} />}
+      renderTrip={(trip) => <RevisionRouteView key={trip.id} trip={trip} />}
     />
   )
 }
