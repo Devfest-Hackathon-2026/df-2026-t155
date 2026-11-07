@@ -33,10 +33,22 @@ export const EvidenceSchema = z.strictObject({
   explanation: TextSchema,
 })
 
+// 予定の種類。固定・予約・購入の状態（isFixed等）とは別の軸で、種類を表すだけ。
+// 任意：未指定は「予定」として扱い、観光だと推測しない。`transport`は、移動そのものではなく、
+// 旅程上の独立した予定（乗車・乗換など）だけに使う。Stop間の移動は`TravelSegment`が表す。
+export const StopKindSchema = z.enum(['sight', 'meal', 'transport', 'other'])
+export const stopKindLabels = {
+  sight: '観光',
+  meal: '食事',
+  transport: '乗車・乗換',
+  other: 'その他',
+} satisfies Record<z.infer<typeof StopKindSchema>, string>
+
 export const StopSchema = z
   .strictObject({
     id: IdSchema,
     name: TextSchema,
+    kind: StopKindSchema.optional(),
     // 未同定を許容し、架空のPlace IDで補完しない。
     placeId: IdSchema.nullable(),
     plannedStartTime: LocalTimeSchema,

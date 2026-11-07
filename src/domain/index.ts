@@ -1,4 +1,5 @@
 export * from './models'
 export * from './revision'
+export * from './travel'
 export * from './contracts'
 export { ApprovalSchema, type Approval } from './primitives'

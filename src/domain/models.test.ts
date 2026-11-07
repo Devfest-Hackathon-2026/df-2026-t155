@@ -101,3 +101,43 @@ describe('Learning', () => {
     ).toBe(false)
   })
 })
+
+describe('Stop.kind（予定の種別・任意）', () => {
+  it('種別なしの既存のStopは、そのまま有効（観光だと推測しない）', () => {
+    const stop = StopSchema.parse(JSON.parse(JSON.stringify(sampleTrip.stops[0])))
+    expect(stop.kind).toBeUndefined()
+  })
+
+  it.each(['sight', 'meal', 'transport', 'other'] as const)('種別 %s を受け付ける', (kind) => {
+    expect(StopSchema.parse({ ...sampleTrip.stops[0], kind }).kind).toBe(kind)
+  })
+
+  it('予約・購入などの状態は種別にできない（固定・予約は別の軸）', () => {
+    for (const kind of ['reserved', 'fixed', 'ticket', '', null]) {
+      expect(StopSchema.safeParse({ ...sampleTrip.stops[0], kind }).success).toBe(false)
+    }
+  })
+
+  it('種別は固定（isFixed）と独立している', () => {
+    expect(StopSchema.parse({ ...sampleTrip.stops[0], kind: 'meal', isFixed: true })).toMatchObject(
+      {
+        kind: 'meal',
+        isFixed: true,
+      },
+    )
+    expect(
+      StopSchema.parse({ ...sampleTrip.stops[0], kind: 'sight', isFixed: false }),
+    ).toMatchObject({ kind: 'sight', isFixed: false })
+  })
+
+  it('種別つきのTripも、契約で検証できる', () => {
+    const trip = {
+      ...sampleTrip,
+      stops: sampleTrip.stops.map((stop, index) => ({
+        ...stop,
+        kind: index === 1 ? 'meal' : 'sight',
+      })),
+    }
+    expect(TripSchema.safeParse(trip).success).toBe(true)
+  })
+})
