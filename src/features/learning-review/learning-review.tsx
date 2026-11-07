@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -29,6 +30,8 @@ import {
   type ReviewAction,
   type ReviewItem,
 } from './review-model'
+import type { LearningStore } from './store'
+import { useApprovedSave, type SaveStatus } from './use-approved-save'
 
 const MAX_FEEDBACK_LENGTH = 1000
 const NO_REVISIONS: Revision[] = []
@@ -47,6 +50,9 @@ interface LearningReviewProps {
   now?: () => Date
   // 承認済みの学びが変わるたびに呼ぶ（保存は呼び出し側の責務。承認済みだけが渡る）。
   onApprovedChange?: (approved: ApprovedLearning[]) => void
+  // 承認済みの学びの保存先。省略時は保存せず、承認した内容がこの画面の中だけにあることを示す。
+  // 保存の状態（未保存・保存中・保存済み・失敗）は、承認とは別に示し、承認しただけでは保存済みと表示しない。
+  store?: LearningStore
 }
 
 const CATEGORY_LABEL: Record<Learning['category'], string> = {
@@ -107,6 +113,7 @@ export function LearningReview({
   requestCandidates = requestLearningCandidates,
   now = () => new Date(),
   onApprovedChange,
+  store,
 }: LearningReviewProps) {
   const [feedback, setFeedback] = useState('')
   const [feedbackError, setFeedbackError] = useState('')
@@ -116,6 +123,20 @@ export function LearningReview({
   // 学びの候補は、旅程と地域の組に結びつく（承認結果に残る適用範囲が、画面の地域と食い違わないように）。
   const [lastScope, setLastScope] = useState({ id: trip.id, region: trip.region })
   const [resetNotice, setResetNotice] = useState('')
+  // 常設のライブリージョンへの通知。同じ文言が続いても読み上げ直されるよう、更新のたびに通し番号を進める。
+  const [announcement, setAnnouncement] = useState({ text: '', count: 0 })
+  // 同時に複数の通知が出たときは、1つにまとめる（後の通知で、先の通知を上書きして、読み上げを失わない）。
+  const pendingAnnouncementsRef = useRef<string[]>([])
+  const announce = useCallback((text: string) => {
+    const pending = pendingAnnouncementsRef.current
+    pending.push(text)
+    if (pending.length > 1) return
+    queueMicrotask(() => {
+      const joined = pendingAnnouncementsRef.current.join(' ')
+      pendingAnnouncementsRef.current = []
+      setAnnouncement((current) => ({ text: joined, count: current.count + 1 }))
+    })
+  }, [])
 
   const feedbackRef = useRef<HTMLTextAreaElement>(null)
   const resultHeadingRef = useRef<HTMLHeadingElement>(null)
@@ -144,6 +165,7 @@ export function LearningReview({
     setFeedbackError('')
     setPhase({ kind: 'idle' })
     setFocusApproveId(null)
+    setAnnouncement({ text: '', count: 0 })
     setResetNotice(
       trip.id === lastScope.id
         ? '旅程の地域が変わったため、確認中の候補と承認結果をリセットしました。'
@@ -184,6 +206,41 @@ export function LearningReview({
   useEffect(() => {
     notifyRef.current?.(approvedRef.current)
   }, [approvedKey])
+
+  const save = useApprovedSave({
+    store,
+    approved,
+    approvedKey,
+    scopeKey: JSON.stringify([trip.id, trip.region]),
+    announce,
+  })
+
+  // 承認操作の記録。入力不備の案内が同じ文言のまま続いても、再度、読み上げるために使う。
+  const lastApproveRef = useRef({ id: '', count: 0 })
+  const handledApproveRef = useRef(0)
+  const announcedMessagesRef = useRef(review.messages)
+  const reviewDispatch = useCallback((action: ReviewAction) => {
+    if (action.type === 'approve') {
+      lastApproveRef.current = { id: action.id, count: lastApproveRef.current.count + 1 }
+    }
+    dispatch(action)
+  }, [])
+  // 候補ごとの案内（入力不備・再承認の案内など）は、カードの近くに表示しつつ、
+  // 読み上げは常設のライブリージョンに任せる（挿入と同時の読み上げは、支援技術に伝わりにくい）。
+  useEffect(() => {
+    const previous = announcedMessagesRef.current
+    announcedMessagesRef.current = review.messages
+    const approve = lastApproveRef.current
+    const retried = approve.count !== handledApproveRef.current
+    handledApproveRef.current = approve.count
+    review.items.forEach((item, index) => {
+      const id = item.learning.id
+      const message = review.messages.get(id)
+      if (message && (message !== previous.get(id) || (retried && id === approve.id))) {
+        announce(`学びの候補${index + 1}：${message}`)
+      }
+    })
+  }, [review.items, review.messages, announce])
 
   const generating = phase.kind === 'generating'
 
@@ -267,10 +324,20 @@ export function LearningReview({
         </h2>
         <p className="mt-1 text-sm">
           感想と変更の履歴から、次の旅に活かせる「学び」の候補を作ります。
-          <b>
-            いまの画面で承認しても、承認した内容は保存されず、次回の旅程づくりにも反映されません
-          </b>
-          （保存と次回への反映は、今後の機能です）。AIが学習し直すわけではありません。
+          {store ? (
+            <>
+              <b>承認しただけでは、保存されません。</b>
+              承認した学びは、下の「承認した学びを保存する」を押すと保存されます。
+              AIが学習し直すわけではありません。
+            </>
+          ) : (
+            <>
+              <b>
+                いまの画面で承認しても、承認した内容は保存されず、次回の旅程づくりにも反映されません
+              </b>
+              （保存と次回への反映は、今後の機能です）。AIが学習し直すわけではありません。
+            </>
+          )}
         </p>
       </div>
 
@@ -330,9 +397,14 @@ export function LearningReview({
         </button>
       </form>
 
+      {/* 常設のライブリージョン（画面に1つ）。中身のテキストを更新して、読み上げる。 */}
       <div role="status" aria-live="polite">
         {generating && <p className="text-sm">AIが候補を考えています。しばらくお待ちください。</p>}
         {resetNotice && <p className="text-sm font-medium">{resetNotice}</p>}
+        <p className="sr-only">
+          {announcement.text}
+          {announcement.count % 2 === 1 ? ' ' : ''}
+        </p>
       </div>
       {phase.kind === 'failed' && (
         <p role="alert" className="rounded border-2 border-current p-3 text-sm">
@@ -364,7 +436,7 @@ export function LearningReview({
                 region={trip.region}
                 message={review.messages.get(item.learning.id)}
                 decidedAt={() => now().toISOString()}
-                dispatch={dispatch}
+                dispatch={reviewDispatch}
                 onReopened={setFocusApproveId}
               />
             ))}
@@ -388,9 +460,13 @@ export function LearningReview({
             ))}
           </ul>
         )}
-        <p className="text-xs">
-          承認した内容は、いまはこの画面の中だけにあり、まだ保存されません（保存は、ログインの機能が入ってから使えるようになります）。
-        </p>
+        {store ? (
+          <SavePanel status={save.status} notice={save.notice} onSave={save.save} />
+        ) : (
+          <p className="text-xs">
+            承認した内容は、いまはこの画面の中だけにあり、まだ保存されません（保存は、ログインの機能が入ってから使えるようになります）。
+          </p>
+        )}
       </section>
     </section>
   )
@@ -468,7 +544,7 @@ function CandidateCard({
         </select>
       </div>
       {message && (
-        <p id={`${contentId}-message`} role="status" className="text-sm font-medium">
+        <p id={`${contentId}-message`} className="text-sm font-medium">
           {message}
         </p>
       )}
@@ -504,5 +580,66 @@ function CandidateCard({
         )}
       </div>
     </li>
+  )
+}
+
+function saveStatusText(status: SaveStatus): string {
+  switch (status.kind) {
+    case 'saving':
+      return '保存中です…'
+    case 'saved':
+      return `保存済み（承認済みの学び${status.count}件）`
+    case 'unsaved':
+      return status.count === 0
+        ? '未保存の変更あり（承認済みの学びが0件になりました。以前に保存した内容は、まだ変わっていません）'
+        : `未保存の変更あり（承認済みの学び${status.count}件に、まだ保存していない変更があります）`
+    case 'empty':
+      return '保存できる承認済みの学びはまだありません'
+    case 'failed':
+      return `保存に失敗しました（承認済みの学び${status.count}件は未保存です）`
+  }
+}
+
+interface SavePanelProps {
+  status: SaveStatus
+  notice: string
+  onSave: () => void
+}
+
+// 承認済みの学びの保存。承認とは別の操作・別の状態として示す（ボタンは常に押せる）。
+function SavePanel({ status, notice, onSave }: SavePanelProps) {
+  const saving = status.kind === 'saving'
+  return (
+    <div className="space-y-2">
+      <p className="text-sm">
+        <span className="rounded border-2 border-current px-2 py-0.5 font-medium">保存の状態</span>{' '}
+        {saveStatusText(status)}
+      </p>
+      {status.kind === 'failed' && (
+        <p role="alert" className={`rounded border-2 border-current p-3 text-sm ${wrapClass}`}>
+          保存できませんでした。{status.message}
+          承認済みの学びと入力中の内容は、そのまま残っています。もう一度、保存できます。
+        </p>
+      )}
+      <button
+        type="button"
+        id="learning-save"
+        className={buttonClass}
+        aria-disabled={saving || undefined}
+        aria-describedby={notice ? 'learning-save-notice' : undefined}
+        onClick={onSave}
+      >
+        {saving
+          ? '保存しています…'
+          : status.kind === 'failed'
+            ? 'もう一度、保存する'
+            : '承認した学びを保存する'}
+      </button>
+      {notice && (
+        <p id="learning-save-notice" className="text-sm font-medium">
+          {notice}
+        </p>
+      )}
+    </div>
   )
 }

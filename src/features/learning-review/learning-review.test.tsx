@@ -262,7 +262,8 @@ describe('LearningReview: 承認・却下・編集', () => {
     expect(onApprovedChange).toHaveBeenLastCalledWith([])
     expect(screen.getByText('未承認')).toBeTruthy()
     expect(screen.queryByText('承認済み')).toBeNull()
-    expect(screen.getByText(/承認が取り消されました/)).toBeTruthy()
+    // 案内は、カードの近くに表示され、読み上げは常設のライブリージョンにも入る（2か所に同じ文言がある）。
+    expect(screen.getAllByText(/承認が取り消されました/).length).toBeGreaterThan(0)
   })
 
   it('適用範囲を変え始めた時点でも、承認が取り消される', async () => {
