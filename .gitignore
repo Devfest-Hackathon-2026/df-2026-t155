@@ -36,3 +36,6 @@ Thumbs.db
 # Next.js / TypeScriptの生成ファイル
 next-env.d.ts
 *.tsbuildinfo
+
+# Firebase Emulatorのローカル生成物
+.firebase/

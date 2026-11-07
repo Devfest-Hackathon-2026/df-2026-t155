@@ -1,0 +1,9 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 本人のデータもAPI経由で扱う。Admin SDKの認可はサーバー側で別途実装する。
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
