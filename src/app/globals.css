@@ -5,7 +5,39 @@
   --foreground: #171717;
 }
 
+/* 旅程の路線図UIの色（仮案。デザイン確定後はここだけ差し替える）。
+   路線図は明るい地色に固定し、ダークモードでは変えない。 */
+:root {
+  --gt-bg: #f3f3ee;
+  --gt-paper: #ffffff;
+  --gt-ink: #16181a;
+  --gt-muted: #5c615f;
+  --gt-rule: #d8d8d0;
+  --gt-line: #e4572e;
+  /* 白い文字を載せる操作ボタン用。--gt-lineは白文字だとコントラストが不足する */
+  --gt-line-strong: #b93a1f;
+  --gt-ok: #17694a;
+  --gt-ok-bg: #dcefe5;
+  --gt-warn: #a8231b;
+  --gt-warn-bg: #fadbd7;
+  --gt-unk: #6f5200;
+  --gt-unk-bg: #f6ecc8;
+}
+
 @theme inline {
+  --color-gt-bg: var(--gt-bg);
+  --color-gt-paper: var(--gt-paper);
+  --color-gt-ink: var(--gt-ink);
+  --color-gt-muted: var(--gt-muted);
+  --color-gt-rule: var(--gt-rule);
+  --color-gt-line: var(--gt-line);
+  --color-gt-line-strong: var(--gt-line-strong);
+  --color-gt-ok: var(--gt-ok);
+  --color-gt-ok-bg: var(--gt-ok-bg);
+  --color-gt-warn: var(--gt-warn);
+  --color-gt-warn-bg: var(--gt-warn-bg);
+  --color-gt-unk: var(--gt-unk);
+  --color-gt-unk-bg: var(--gt-unk-bg);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
