@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { ApprovedLearningSchema, StopSchema, TripSchema } from './models'
 import { DateSchema, IdSchema, TextSchema, TimeZoneSchema } from './primitives'
 import { RevisionContextSchema, RevisionSchema } from './revision'
+import { TravelSegmentSchema } from './travel'
 
 // HTTPステータスやURLとは独立した共有ペイロード。外部サービスの生データは含めない。
 export const ProposalFailureSchema = z.strictObject({
@@ -50,6 +51,13 @@ export const ReviseTripRequestSchema = z
     targetStopId: IdSchema,
     reason: TextSchema,
     context: RevisionContextSchema,
+    // 移動が間に合うかを確認する、利用者が使える移動手段。省略時は徒歩だけ（車を使えるとは限らないため）。
+    // 車は、利用者が使えると明示したときだけ、確認の対象にする。公共交通は、現段階では未対応。
+    travelModes: z
+      .array(z.enum(['walk', 'drive']))
+      .min(1)
+      .max(2)
+      .optional(),
   })
   .superRefine((request, ctx) => {
     const target = request.trip.stops.find((stop) => stop.id === request.targetStopId)
@@ -62,10 +70,77 @@ export const ReviseTripRequestSchema = z
     }
   })
 
+// 変更前後の移動区間の比較（候補ごとの、一時的な比較データ。保存しない）。
+// 「区間が存在しない」（最初・最後の予定）と、「区間はあるが、経路を確認できなかった」（TravelSegmentのunknown）を区別する。
+// 値は構造化された結果（TravelSegment）で、説明文から取り出さない。承認の根拠として、クライアントから戻された値を信用しない。
+export const TravelSegmentSlotSchema = z.discriminatedUnion('presence', [
+  z.strictObject({ presence: z.literal('none'), reason: z.enum(['first_stop', 'last_stop']) }),
+  z.strictObject({ presence: z.literal('segment'), segment: TravelSegmentSchema }),
+])
+
+export const TravelComparisonSideSchema = z.strictObject({
+  // 前の予定 → 対象の予定
+  fromPrevious: TravelSegmentSlotSchema,
+  // 対象の予定 → 次の予定
+  toNext: TravelSegmentSlotSchema,
+})
+
+export const TravelComparisonSchema = z.strictObject({
+  // 対応するRevisionのid（tripId・baseTripVersion・targetStopIdは、そのRevisionが持つ）。
+  revisionId: IdSchema,
+  before: TravelComparisonSideSchema,
+  after: TravelComparisonSideSchema,
+})
+
 export const ReviseTripResponseSchema = z.union([
   z
-    .strictObject({ status: z.literal('proposed'), revisions: z.array(RevisionSchema).min(1) })
+    .strictObject({
+      status: z.literal('proposed'),
+      revisions: z.array(RevisionSchema).min(1),
+      // 任意。移動区間の比較は、Revisionごとに高々1件。
+      comparisons: z.array(TravelComparisonSchema).optional(),
+    })
     .superRefine((response, ctx) => {
+      const byRevision = new Map(response.revisions.map((revision) => [revision.id, revision]))
+      const seen = new Set<string>()
+      response.comparisons?.forEach((comparison, index) => {
+        const revision = byRevision.get(comparison.revisionId)
+        const path = ['comparisons', index]
+        if (!revision || seen.has(comparison.revisionId)) {
+          ctx.addIssue({
+            code: 'custom',
+            path,
+            message: '比較は、存在するRevisionに対して、1件ずつにしてください',
+          })
+          return
+        }
+        seen.add(comparison.revisionId)
+        for (const slot of ['fromPrevious', 'toNext'] as const) {
+          const before = comparison.before[slot]
+          const after = comparison.after[slot]
+          // 区間が存在するかは、旅程内の位置で決まるため、変更前後で一致する。
+          if (before.presence !== after.presence) {
+            ctx.addIssue({ code: 'custom', path, message: '変更前後で、区間の有無が一致しません' })
+            continue
+          }
+          if (before.presence !== 'segment' || after.presence !== 'segment') continue
+          const b = before.segment
+          const a = after.segment
+          const targetOk =
+            slot === 'fromPrevious'
+              ? b.toStopId === revision.targetStopId && a.toStopId === revision.targetStopId
+              : b.fromStopId === revision.targetStopId && a.fromStopId === revision.targetStopId
+          const neighborOk =
+            slot === 'fromPrevious' ? b.fromStopId === a.fromStopId : b.toStopId === a.toStopId
+          if (!targetOk || !neighborOk) {
+            ctx.addIssue({
+              code: 'custom',
+              path,
+              message: '区間の端点が、Revisionの対象Stopと前後のStopに一致しません',
+            })
+          }
+        }
+      })
       const first = response.revisions[0]
       const ids = new Set<string>()
       response.revisions.forEach((revision, index) => {
@@ -93,3 +168,5 @@ export type GenerateTripRequest = z.infer<typeof GenerateTripRequestSchema>
 export type GenerateTripResponse = z.infer<typeof GenerateTripResponseSchema>
 export type ReviseTripRequest = z.infer<typeof ReviseTripRequestSchema>
 export type ReviseTripResponse = z.infer<typeof ReviseTripResponseSchema>
+export type TravelSegmentSlot = z.infer<typeof TravelSegmentSlotSchema>
+export type TravelComparison = z.infer<typeof TravelComparisonSchema>

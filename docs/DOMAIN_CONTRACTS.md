@@ -78,6 +78,10 @@ Geminiの説明自体を検証済み根拠にしない。`user_report`も客観�
 - `checkedAt`は、照合した時刻を示すだけで、値の真正性や、現在も有効であることを保証しない。
   出典`simulation`は模擬情報であり、実測・検証済みを意味しない。実際の値と取り違えない。
 - 検証の入口は`TravelSegmentSchema`に統一する。判明済み・未確認の個別スキーマは公開しない（個別の型は公開する）。
+- **変更前後の比較（部分修正の応答）**：`ReviseTripResponse`の`proposed`に、任意の`comparisons`を持つ（Revisionごとに高々1件）。
+  変更前後それぞれの「前の予定→対象」「対象→次の予定」を、区間が存在しない（`none`：最初・最後の予定）か、
+  存在する（`segment`：`TravelSegment`の`known`／`unknown`）かで返す。詳細は`docs/PARTIAL_REVISION.md`。
+- **移動手段**：`ReviseTripRequest.travelModes?`（`walk`／`drive`）は、利用者が使える手段。省略時は徒歩だけ（車を使えるとは限らない）。
 - **価格は、まだ決めていない**（#24の次の段階）。
 
 ### 部分修正と元旅程の保護

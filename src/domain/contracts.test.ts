@@ -165,3 +165,146 @@ describe('失敗契約', () => {
     },
   )
 })
+
+describe('ReviseTripResponse.comparisons（変更前後の移動区間の比較）', () => {
+  const AT = '2026-11-08T11:30:00+09:00'
+  const known = (fromStopId: string, toStopId: string, minutes = 10) => ({
+    presence: 'segment' as const,
+    segment: {
+      fromStopId,
+      toStopId,
+      status: 'known' as const,
+      mode: 'walk' as const,
+      durationMinutes: minutes,
+      source: { kind: 'routes' as const, label: 'Google Maps Platform（Routes API）' },
+      checkedAt: AT,
+      explanation: `徒歩で約${minutes}分`,
+    },
+  })
+  const unknownSlot = (fromStopId: string, toStopId: string) => ({
+    presence: 'segment' as const,
+    segment: {
+      fromStopId,
+      toStopId,
+      status: 'unknown' as const,
+      mode: 'walk' as const,
+      reason: 'not_queried' as const,
+      explanation: '前後の施設を特定できていないため、確認できません。',
+    },
+  })
+  const side = () => ({
+    fromPrevious: known('stop-morning', 'stop-lunch'),
+    toNext: known('stop-lunch', 'stop-exhibition'),
+  })
+  const comparison = (overrides: Record<string, unknown> = {}) => ({
+    revisionId: sampleRevision.id,
+    before: side(),
+    after: side(),
+    ...overrides,
+  })
+  const parse = (comparisons?: unknown) =>
+    ReviseTripResponseSchema.safeParse({
+      status: 'proposed',
+      revisions: [sampleRevision],
+      ...(comparisons === undefined ? {} : { comparisons }),
+    })
+
+  it('比較は任意（無くても有効）。あれば、Revisionごとに1件で有効', () => {
+    expect(parse().success).toBe(true)
+    expect(parse([comparison()]).success).toBe(true)
+  })
+
+  it('区間が存在しない（最初・最後の予定）ことと、確認できなかった区間（unknown）を区別できる', () => {
+    const none = (reason: 'first_stop' | 'last_stop') => ({ presence: 'none' as const, reason })
+    expect(
+      parse([
+        comparison({
+          before: {
+            fromPrevious: none('first_stop'),
+            toNext: known('stop-lunch', 'stop-exhibition'),
+          },
+          after: {
+            fromPrevious: none('first_stop'),
+            toNext: known('stop-lunch', 'stop-exhibition'),
+          },
+        }),
+      ]).success,
+    ).toBe(true)
+    expect(
+      parse([
+        comparison({
+          before: {
+            fromPrevious: unknownSlot('stop-morning', 'stop-lunch'),
+            toNext: side().toNext,
+          },
+        }),
+      ]).success,
+    ).toBe(true)
+  })
+
+  it('存在しないRevisionへの比較・同じRevisionへの重複は拒否する', () => {
+    expect(parse([comparison({ revisionId: 'revision-none' })]).success).toBe(false)
+    expect(parse([comparison(), comparison()]).success).toBe(false)
+  })
+
+  it('変更前後で区間の有無が食い違う比較は拒否する', () => {
+    expect(
+      parse([
+        comparison({
+          after: { ...side(), fromPrevious: { presence: 'none', reason: 'first_stop' } },
+        }),
+      ]).success,
+    ).toBe(false)
+  })
+
+  it('区間の端点が、Revisionの対象Stopと前後のStopに一致しない比較は拒否する', () => {
+    // 対象Stopにつながらない区間
+    expect(
+      parse([
+        comparison({
+          before: { ...side(), fromPrevious: known('stop-morning', 'stop-exhibition') },
+        }),
+      ]).success,
+    ).toBe(false)
+    // 変更前後で、前の予定が違う区間
+    expect(
+      parse([
+        comparison({ after: { ...side(), fromPrevious: known('stop-exhibition', 'stop-lunch') } }),
+      ]).success,
+    ).toBe(false)
+    // 次の区間が、対象Stopから始まらない
+    expect(
+      parse([
+        comparison({ after: { ...side(), toNext: known('stop-morning', 'stop-exhibition') } }),
+      ]).success,
+    ).toBe(false)
+  })
+
+  it('契約に反する移動区間（出典のない判明済みなど）を含む比較は拒否する', () => {
+    const broken = {
+      ...side().fromPrevious,
+      segment: { ...side().fromPrevious.segment, source: undefined },
+    }
+    expect(parse([comparison({ before: { ...side(), fromPrevious: broken } })]).success).toBe(false)
+  })
+})
+
+describe('ReviseTripRequest.travelModes（利用者が使える移動手段）', () => {
+  const parse = (travelModes?: unknown) =>
+    ReviseTripRequestSchema.safeParse({
+      ...sampleReviseTripRequest,
+      ...(travelModes === undefined ? {} : { travelModes }),
+    })
+
+  it('省略できる（省略時は徒歩だけとして扱う）', () => {
+    expect(parse().success).toBe(true)
+  })
+
+  it('徒歩・車を指定できる。公共交通・空・未知の手段・3件以上は拒否する', () => {
+    expect(parse(['walk']).success).toBe(true)
+    expect(parse(['walk', 'drive']).success).toBe(true)
+    expect(parse([]).success).toBe(false)
+    expect(parse(['transit']).success).toBe(false)
+    expect(parse(['walk', 'drive', 'walk']).success).toBe(false)
+  })
+})
