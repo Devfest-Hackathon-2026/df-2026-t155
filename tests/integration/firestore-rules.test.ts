@@ -12,6 +12,8 @@ const paths = [
   'users/user-a/trips/trip-a',
   'users/user-a/trips/trip-a/revisions/revision-a',
   'users/user-a/learnings/learning-a',
+  'users/user-a/persistenceLimits/trips',
+  'users/user-a/trips/trip-a/persistenceLimits/revisions',
 ]
 
 beforeAll(async () => {

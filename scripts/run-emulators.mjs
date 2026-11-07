@@ -9,6 +9,8 @@ const env = {
   ...process.env,
   GCLOUD_PROJECT: 'demo-groundtrip',
   GOOGLE_CLOUD_PROJECT: 'demo-groundtrip',
+  // Firestore SDKの初期化で、ローカル実行時にGCPメタデータを探さない。
+  METADATA_SERVER_DETECTION: 'none',
   FIREBASE_PROJECT_ID: 'demo-groundtrip',
   NEXT_PUBLIC_FIREBASE_PROJECT_ID: 'demo-groundtrip',
   NEXT_PUBLIC_FIREBASE_API_KEY: 'demo-api-key',
@@ -35,6 +37,7 @@ const args = [
   'auth,firestore',
 ]
 if (mode === 'test') {
+  env.PERSISTENCE_ENABLED = 'true'
   args.push('pnpm exec vitest run --config vitest.integration.config.ts')
 }
 const child = spawn(process.execPath, args, { env, stdio: 'inherit' })

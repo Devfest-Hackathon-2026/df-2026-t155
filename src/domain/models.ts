@@ -47,6 +47,7 @@ export const stopKindLabels = {
 export const StopSchema = z
   .strictObject({
     id: IdSchema,
+    // 本人入力またはAI提案に由来する予定名。照合先のPlaces表示名に置き換えない。
     name: TextSchema,
     kind: StopKindSchema.optional(),
     // 未同定を許容し、架空のPlace IDで補完しない。

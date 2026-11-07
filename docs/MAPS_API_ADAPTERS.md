@@ -35,7 +35,8 @@ const route = await maps.computeRoute({ originPlaceId, destinationPlaceId, mode:
 `available`（曜日0=日曜・時・分の期間）を区別する。データの欠落を「営業」とも「休み」とも解釈しない。
 **`periods`が空配列のときは、欠落（`unavailable`）にせず、`available`の空の配列として保持する**（空配列と欠落は
 意味が異なる。空配列の解釈は照合側の責務で、アダプターは解釈しない）。
-名称が取得できない施設は`name: ''`で返す（名称一致の対象にならない）。
+Placesの `displayName` はサーバー内の照合用データ `PlaceCandidate.name` として返す。
+名称が取得できない施設は `name: ''` となる。照合は `Stop.name` と候補の名前を比較し、元の予定名を維持する。
 
 ## 費用・規約
 

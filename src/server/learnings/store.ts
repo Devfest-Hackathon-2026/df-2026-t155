@@ -3,19 +3,18 @@ import { selectApplicableLearnings } from '../../lib/learnings/lifecycle'
 
 // 承認済みの学びの保存先。保存できるのは承認済みだけで、利用者ごとに分離する。
 // ownerUidは、認証済みの利用者のUID（サーバーが検証した値）だけを渡す。リクエスト本文の値は渡さない。
-// Firestore実装は、認証基盤（#10）が入ってから、このインターフェースに合わせて追加する。
 export interface LearningStore {
-  // 承認済みの学びだけを保存する（同じIDは上書き）。未承認・却下済みは拒否する。
-  saveApproved(ownerUid: string, learning: ApprovedLearning): Promise<void>
+  // 本人の承認操作から作った学びを保存する。新規は期待版0、再承認には現在の版を渡す。
+  saveApproved(ownerUid: string, learning: ApprovedLearning, expectedVersion: number): Promise<void>
   // 内容と適用範囲を含めて、利用者の承認済みの学びを取得する。
   listApproved(ownerUid: string): Promise<ApprovedLearning[]>
   // 本人が学びを削除する（撤回）。存在しなければfalse。
-  remove(ownerUid: string, learningId: string): Promise<boolean>
+  remove(ownerUid: string, learningId: string, expectedVersion: number): Promise<boolean>
 }
 
 export class LearningStoreError extends Error {
   constructor(
-    readonly code: 'not_approved' | 'invalid_owner',
+    readonly code: 'not_approved' | 'invalid_owner' | 'version_conflict',
     message: string,
   ) {
     super(message)
@@ -29,36 +28,57 @@ const requireOwner = (ownerUid: string) => {
   }
 }
 
+type LearningRecords = Map<string, { learning: ApprovedLearning; version: number } | null>
+
 // 開発・テスト・デモ用のメモリ実装。プロセスが終われば消える。永続化ではない。
 export class InMemoryLearningStore implements LearningStore {
-  private readonly byOwner = new Map<string, Map<string, ApprovedLearning>>()
+  private readonly byOwner = new Map<string, LearningRecords>()
 
-  async saveApproved(ownerUid: string, learning: ApprovedLearning): Promise<void> {
+  async saveApproved(
+    ownerUid: string,
+    learning: ApprovedLearning,
+    expectedVersion?: number,
+  ): Promise<void> {
     requireOwner(ownerUid)
     // 型だけでなく実行時にも、承認済みであることを契約で確かめる。
     const approved = ApprovedLearningSchema.safeParse(learning)
     if (!approved.success) {
       throw new LearningStoreError('not_approved', '承認済みの学びだけを保存できます')
     }
-    const owned = this.byOwner.get(ownerUid) ?? new Map<string, ApprovedLearning>()
-    owned.set(approved.data.id, structuredClone(approved.data))
+    const owned: LearningRecords = this.byOwner.get(ownerUid) ?? new Map()
+    const current = owned.get(approved.data.id)
+    const version = current?.version ?? 0
+    // デモの直接呼び出しは従来どおり。LearningStore経由では期待版が必須。
+    if (expectedVersion !== undefined && (current === null || version !== expectedVersion)) {
+      throw new LearningStoreError('version_conflict', '保存内容の版が変わりました')
+    }
+    owned.set(approved.data.id, { learning: structuredClone(approved.data), version: version + 1 })
     this.byOwner.set(ownerUid, owned)
   }
 
   async listApproved(ownerUid: string): Promise<ApprovedLearning[]> {
     requireOwner(ownerUid)
-    return [...(this.byOwner.get(ownerUid)?.values() ?? [])].map((item) => structuredClone(item))
+    return [...(this.byOwner.get(ownerUid)?.values() ?? [])].flatMap((item) =>
+      item ? [structuredClone(item.learning)] : [],
+    )
   }
 
-  async remove(ownerUid: string, learningId: string): Promise<boolean> {
+  async remove(ownerUid: string, learningId: string, expectedVersion?: number): Promise<boolean> {
     requireOwner(ownerUid)
-    return this.byOwner.get(ownerUid)?.delete(learningId) ?? false
+    const owned = this.byOwner.get(ownerUid)
+    const current = owned?.get(learningId)
+    if (!owned || !current) return false
+    if (expectedVersion !== undefined && expectedVersion !== current.version) {
+      throw new LearningStoreError('version_conflict', '保存内容の版が変わりました')
+    }
+    owned.set(learningId, null)
+    return true
   }
 }
 
 // 次回の旅程生成に渡す学び。サーバーが自分でストアから取り出し、クライアントの自己申告を信用しない。
 export async function getApplicableLearnings(
-  store: LearningStore,
+  store: Pick<LearningStore, 'listApproved'>,
   ownerUid: string,
   region: string,
 ): Promise<ApprovedLearning[]> {

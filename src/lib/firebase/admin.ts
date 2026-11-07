@@ -2,10 +2,11 @@ import 'server-only'
 
 import { applicationDefault, getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
+import { getFirestore } from 'firebase-admin/firestore'
 
 import { FirebaseConfigurationError, parseServerConfig } from './config'
 
-export function getAdminAuth() {
+function getAdminApp() {
   // キャッシュ済みでも毎回チェックし、本番のEmulator設定を見逃さない。
   const config = parseServerConfig({
     projectId: process.env.FIREBASE_PROJECT_ID,
@@ -19,7 +20,7 @@ export function getAdminAuth() {
   if (existing && existing.options.projectId !== config.projectId) {
     throw new FirebaseConfigurationError()
   }
-  const app =
+  return (
     existing ??
     initializeApp(
       config.emulator
@@ -27,5 +28,13 @@ export function getAdminAuth() {
         : { projectId: config.projectId, credential: applicationDefault() },
       'groundtrip-admin',
     )
-  return getAuth(app)
+  )
+}
+
+export function getAdminAuth() {
+  return getAuth(getAdminApp())
+}
+
+export function getAdminFirestore() {
+  return getFirestore(getAdminApp())
 }
