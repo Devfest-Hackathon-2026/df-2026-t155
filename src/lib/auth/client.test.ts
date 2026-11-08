@@ -89,20 +89,26 @@ describe('セッション切替と遅延Promiseの競合（SDKモック・完了
           code: result === 'resolve' ? 'session_ended' : 'unavailable',
         })
         expect(watch.listener).toHaveBeenCalledTimes(count)
-        expect(watch.listener).toHaveBeenLastCalledWith({
-          status: 'authenticated',
-          user: { uid: b.uid, isAnonymous: true },
-        })
+        expect(watch.listener).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            status: 'authenticated',
+            user: { uid: b.uid, isAnonymous: true },
+            sessionGeneration: expect.any(Number),
+          }),
+        )
         const reloads = mocks.reload.mock.calls.length
         watch.emit(b)
         expect(mocks.reload).toHaveBeenCalledTimes(reloads)
         // 古いエラーの抑止後も、現在のBの正当なエラーは通知する。
         b.getIdToken.mockRejectedValueOnce({ code: 'auth/network-request-failed' })
         await expect(client.getIdToken(true)).rejects.toMatchObject({ code: 'unavailable' })
-        expect(watch.listener).toHaveBeenLastCalledWith({
-          status: 'error',
-          error: expect.objectContaining({ code: 'unavailable' }),
-        })
+        expect(watch.listener).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            status: 'error',
+            error: expect.objectContaining({ code: 'unavailable' }),
+            sessionGeneration: expect.any(Number),
+          }),
+        )
       } finally {
         watch.stop()
       }
@@ -167,10 +173,13 @@ describe('セッション切替と遅延Promiseの競合（SDKモック・完了
               code: result === 'resolve' ? 'session_ended' : 'unavailable',
             })
             expect(watch.listener).toHaveBeenCalledTimes(count)
-            expect(watch.listener).toHaveBeenLastCalledWith({
-              status: 'authenticated',
-              user: { uid: b.uid, isAnonymous: true },
-            })
+            expect(watch.listener).toHaveBeenLastCalledWith(
+              expect.objectContaining({
+                status: 'authenticated',
+                user: { uid: b.uid, isAnonymous: true },
+                sessionGeneration: expect.any(Number),
+              }),
+            )
           } finally {
             watch.stop()
           }
@@ -432,22 +441,28 @@ describe('クライアント認証（SDKモック）', () => {
     const listener = vi.fn()
     const { observeAuthState } = await import('./client')
     const stop = observeAuthState(listener)
-    expect(listener).toHaveBeenCalledWith({ status: 'restoring' })
+    expect(listener).toHaveBeenCalledWith({ status: 'restoring', sessionGeneration: 0 })
     expect(mocks.observe.mock.calls[0]).toHaveLength(2)
     const [, onUser] = mocks.observe.mock.calls[0]
     onUser(mocks.user)
     await vi.waitFor(() => {
-      expect(listener).toHaveBeenLastCalledWith({
-        status: 'authenticated',
-        user: { uid: 'restored-user', isAnonymous: true },
-      })
+      expect(listener).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: 'authenticated',
+          user: { uid: 'restored-user', isAnonymous: true },
+          sessionGeneration: expect.any(Number),
+        }),
+      )
     })
     mocks.auth.currentUser = null
     onUser(null)
-    expect(listener).toHaveBeenLastCalledWith({
-      status: 'session_ended',
-      error: expect.objectContaining({ code: 'session_ended' }),
-    })
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'session_ended',
+        error: expect.objectContaining({ code: 'session_ended' }),
+        sessionGeneration: expect.any(Number),
+      }),
+    )
     expect(mocks.signIn).not.toHaveBeenCalled()
     stop()
     expect(unsubscribe).toHaveBeenCalledOnce()
@@ -461,10 +476,13 @@ describe('クライアント認証（SDKモック）', () => {
     const [, onUser] = mocks.observe.mock.calls[0]
     onUser(mocks.user)
     await vi.waitFor(() => {
-      expect(listener).toHaveBeenLastCalledWith({
-        status: 'error',
-        error: expect.objectContaining({ code: 'unavailable' }),
-      })
+      expect(listener).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          status: 'error',
+          error: expect.objectContaining({ code: 'unavailable' }),
+          sessionGeneration: expect.any(Number),
+        }),
+      )
     })
     expect(listener.mock.calls.some(([state]) => state.status === 'authenticated')).toBe(false)
     stop()
@@ -499,10 +517,13 @@ describe('クライアント認証（SDKモック）', () => {
     await expect(getIdToken()).rejects.toMatchObject({ code: 'unavailable' })
     pending.resolve()
     await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(listener).toHaveBeenLastCalledWith({
-      status: 'error',
-      error: expect.objectContaining({ code: 'unavailable' }),
-    })
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'error',
+        error: expect.objectContaining({ code: 'unavailable' }),
+        sessionGeneration: expect.any(Number),
+      }),
+    )
     expect(listener.mock.calls.some(([state]) => state.status === 'authenticated')).toBe(false)
     stop()
   })
@@ -546,9 +567,12 @@ describe('クライアント認証（SDKモック）', () => {
     const { observeAuthState } = await import('./client')
     const unsubscribe = observeAuthState(listener)
     expect(() => unsubscribe()).not.toThrow()
-    expect(listener).toHaveBeenLastCalledWith({
-      status: 'error',
-      error: expect.objectContaining({ code: 'sign_in_failed' }),
-    })
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'error',
+        error: expect.objectContaining({ code: 'sign_in_failed' }),
+        sessionGeneration: expect.any(Number),
+      }),
+    )
   })
 })

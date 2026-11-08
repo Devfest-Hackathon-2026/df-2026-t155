@@ -242,7 +242,11 @@ describe.each(['getIdToken', 'initializeAnonymousSession', 'startNewAnonymousSes
             code: result === 'resolve' ? 'session_ended' : 'unavailable',
           })
           expect(states).toHaveLength(count)
-          expect(states.at(-1)).toEqual({ status: 'authenticated', user: b })
+          expect(states.at(-1)).toMatchObject({
+            status: 'authenticated',
+            user: b,
+            sessionGeneration: expect.any(Number),
+          })
           expect(auth.currentUser?.uid).toBe(b.uid)
           const response = await GET(
             new Request('http://localhost/api/auth/session', {

@@ -157,7 +157,8 @@ SDK復元待ち・トークン取得・reloadの前後で同一性を確認し�
 この世代情報はメモリ上だけの状態管理であり、永続マーカーやサーバー認可の根拠ではない。
 
 復元中・通信失敗・session_endedでは保存ボタンを利用可能にしない。UID変更時には前ユーザーの画面データを消去し、
-進行中リクエストの結果が別ユーザーの画面に反映されないよう#16側で管理する。
+進行中リクエストの結果が別ユーザーの画面に反映されないよう#16側で管理する
+（共有部品と利用の約束は後述の「セッションスコープ」を参照）。
 共用端末・別ドメイン・プライベートモードでの保持・消失は実ブラウザ確認が必要。
 
 `getIdToken()`はSDKの更新機能を利用し、`getIdToken(true)`は明示的な更新。
@@ -187,6 +188,109 @@ session_revoked等を匿名再作成で回避しない。取得した認証ヘ�
   その場合にSDKが同期したユーザー変更も#16で表示へ反映し、以前のUIDに固定された結果を表示しない。
 - `reload()`成功はFirebase Authのユーザー検証であり、失効確認・業務データの認可の代替ではない。
   APIは引き続き毎回Admin SDKで検証する。App Check・利用制限も別途必要。
+
+### セッションスコープ：取得・編集・保存・生成を同じ認証セッションに結び付ける
+
+Trip・Revision・Learningを読み込んだ認証セッションと、承認・保存・生成を実行するセッションが
+食い違うと、前のUIDの画面データを新しいUIDのトークンで保存・生成へ使ってしまう。
+これを防ぐための共有部品。独自の認証モデルやUID再作成は持たず、上記の`client.ts`だけを使う。
+
+| 部品（`src/lib/auth/`）                                  | 役割                                                                                                           |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `getAuthSnapshot()`（client.ts）                         | UID・IDトークン・認証世代を**同じUserから同じ取得処理で**組にして返す。失敗・エラー変換は`getIdToken`と同じ    |
+| `SessionScope`                                           | 公開値は不変の`{ uid }`。内部で取得時の認証世代に束縛し、トークンやUserは持たない                              |
+| `ScopedValue<T>`                                         | 取得したデータ`value`と、取得時の`scope`の組                                                                   |
+| `captureSessionScope()`                                  | 現在のセッションのスコープを取る。セッションがなければ`ClientAuthError`で失敗し、匿名アカウントは作らない      |
+| `getAuthHeadersForScope(scope)`                          | UIDと認証世代が`scope`と同じときだけ`Authorization`を返す。違えば`SessionChangedError`（トークンは渡さない）   |
+| `beginSessionScopeOperation(scope, signal?)`             | I/Oを認証世代に登録し、境界通知時に同期中断。外部の中断signalも伝える（送信済み書き込みは取り消せない）        |
+| `assertCurrentSessionScopeSync(scope, outcome?)`         | 同期区間でUIDと認証世代を確認。送信直前・状態更新の採用直前に使う                                              |
+| `assertCurrentSessionScope(scope, outcome?)`             | 非同期処理後にも現在のUIDと認証世代を確認。POST後の変更は`unknown`として示せる                                 |
+| `isSameScope(a, b)` / `assertSameScope(scoped, current)` | UIDと束縛された認証世代を比較。後者は違えば`SessionChangedError`を投げる                                       |
+| `useSessionScope()`（use-session-scope.ts）              | 認証状態を購読し、`restoring` / `authenticated`（`scope`あり） / `session_ended` / `error`と`scopeEpoch`を返す |
+
+利用側の約束。
+
+1. ヘッダー取得後から応答採用までのHTTP通信を`beginSessionScopeOperation(scope)`へ登録する。
+   認証通知時に進行中の通信が同期中断され、応答を無視できる。送信前の同期ガードと、応答後の非同期・同期ガードを通す。
+2. 編集・保存・生成も同じ操作部品に登録する。まず`getAuthHeadersForScope(scope)`でヘッダーを取得し、その後
+   `fetch`を呼ぶ直前に`operation.assertCurrent()`を同期で呼んで同じヘッダーを送る。現在のUIDで`getAuthHeaders()`を作り直さない。
+3. 送信応答を採用する直前にも`assertCurrentSessionScope(scope)`と`operation.assertCurrent()`を通す。
+   POST後に世代が変わった場合は`SessionChangedError`の`outcome: 'unknown'`として扱う（サーバー側で保存済みの可能性がある）。
+   自動再送せず、利用者操作で保存一覧を再取得・照合する。
+4. `setState`の関数更新内でも`assertCurrentSessionScopeSync(scope)`を確認し、表示データには取得時の`scope`を付ける。
+   描画時に現在の`scope`と一致しないデータは隠す。これで、すでにキューにある更新も認証境界の後に表示されない。
+5. スコープが変わった（`scopeEpoch`または`scope.uid`が変わった、`SessionChangedError`を受けた）ときは、
+   表示・編集・選択・進行中の読み込みを破棄し、操作は失敗として扱う。`ClientAuthError`（`session_ended`等）も同様に扱う。
+   自動の再取得・再送・匿名アカウントの作成はしない。
+6. `restoring` / `session_ended` / `error`では`scope`がなく、保存・生成を始めない。
+   新規開始は引き続き利用者の明示操作による`startNewAnonymousSession()`だけ。
+
+```ts
+const auth = useSessionScope()
+if (auth.status !== 'authenticated') return // scopeがない状態では取得・保存・生成を始めない
+
+const scope = auth.scope
+const headers = await getAuthHeadersForScope(scope)
+const operation = beginSessionScopeOperation(scope)
+try {
+  operation.assertCurrent() // この同期ガードの直後に、同じヘッダーでfetchを呼ぶ。
+  const response = await fetchTrip(id, { headers, signal: operation.signal })
+  const value = await response.json()
+  await assertCurrentSessionScope(scope)
+  operation.assertCurrent()
+
+  const loaded: ScopedValue<Trip> = { scope, value }
+  setTrip((current) => {
+    try {
+      assertCurrentSessionScopeSync(scope)
+      return loaded
+    } catch {
+      return current
+    }
+  })
+} finally {
+  operation.dispose()
+}
+
+// 描画時にも現在のscopeと照合し、認証境界の前にキューされた状態更新を隠す。
+const visibleTrip =
+  auth.status === 'authenticated' && trip && isSameScope(trip.scope, auth.scope)
+    ? trip.value
+    : undefined
+
+// 保存も同じ操作で保護する。POST後の境界は「結果不明」とし、再送せず一覧を照合する。
+const headers = await getAuthHeadersForScope(loaded.scope)
+const saveOperation = beginSessionScopeOperation(loaded.scope)
+try {
+  saveOperation.assertCurrent()
+  const response = await fetch('/api/...', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(edited),
+    signal: saveOperation.signal,
+  })
+  await assertCurrentSessionScope(loaded.scope, 'unknown')
+  saveOperation.assertCurrent('unknown')
+} finally {
+  saveOperation.dispose()
+}
+```
+
+`scopeEpoch`は、Firebase Userの認証世代が変わるたびに増える整数で、フックの利用単位ごとに単調に増える。
+UID変更、セッション終了・復帰、同じUIDでもUserオブジェクトが置き換わったときに増える。
+同じUserの通常のトークン更新では増えず、`scope`も同じ参照を返す。最初の認証でも増えない。
+`key={scopeEpoch}`や`useEffect`の依存で、画面の状態を捨てる合図に使える。
+
+保証の範囲と限界。
+
+- スコープの公開値はUIDだけだが、作成時のUser世代を内部で束縛している。A→B→A、A→終了→A、同じUIDの別Userを
+  同一スコープとして扱わない。同じUserの通常のトークン更新では世代が維持される。
+- ヘッダーに入るトークンは照合したUIDのもの。送信直前の同期ガードで認証境界を検出した場合はリクエストを開始しない。
+  送信を始めた後は境界通知でAbortしますが、サーバーへ到達済みの書き込みは取り消せません。その場合、トークンは旧UIDに
+  束縛されており、サーバーはそのUIDで認可します（別UIDの保存先には書き込みません）。POST応答後に境界が判明したら
+  結果不明として一覧を照合します。
+- ID・versionが同じでもUIDが違えば別のデータ。キャッシュや選択状態のキーには`scope.uid`を含めるか、`ScopedValue`ごと破棄する。
+- 画面側の保護であり、サーバー側の所有者検証・認可の代替ではない。
 
 ## #6等：APIでの利用
 
