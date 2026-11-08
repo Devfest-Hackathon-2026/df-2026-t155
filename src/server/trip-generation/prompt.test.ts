@@ -81,4 +81,12 @@ describe('buildTripPrompt', () => {
     expect(systemInstruction).toContain('断定して出力に含めない')
     expect(systemInstruction).toContain('3〜4地点')
   })
+
+  it('システム指示に、地点の名前を1つの施設・地名の正式名称にし、複数をまとめない規則が含まれる', () => {
+    const { systemInstruction } = buildTripPrompt(sampleGenerateTripRequest)
+
+    // 「A・B」のようにまとめた名前は、あとの照合で完全一致できないため。
+    expect(systemInstruction).toContain('1つの施設・地名の正式名称')
+    expect(systemInstruction).toContain('「A・B」')
+  })
 })

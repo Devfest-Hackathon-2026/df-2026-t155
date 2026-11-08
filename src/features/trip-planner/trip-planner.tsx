@@ -168,7 +168,7 @@ export function TripPlanner({ generate, renderTrip = defaultRenderTrip }: TripPl
               className={inputClassName}
             />
             <p id="region-hint" className="text-sm">
-              例：京都市東山エリア
+              例：京都市東山区、奈良市。市区町村の名前で入れると、あとで施設の場所を地図の情報と照らして確認しやすくなります。
             </p>
             {errors.region && (
               <p id="region-error" className="text-sm font-medium">
