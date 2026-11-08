@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
+import { SiteFooter } from '@/features/legal/site-footer'
 import './globals.css'
 
 const geistSans = Geist({
@@ -35,6 +36,7 @@ export default function RootLayout({
           <p className="mx-auto w-full max-w-xl font-semibold">GroundTrip</p>
         </header>
         <main className="mx-auto w-full max-w-xl px-4 py-6">{children}</main>
+        <SiteFooter />
       </body>
     </html>
   )

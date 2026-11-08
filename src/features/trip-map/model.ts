@@ -57,6 +57,10 @@ export const evidenceSourceLabels: Record<Evidence['source']['kind'], string> = 
   simulation: '模擬データ',
 }
 
+// Google Maps Platform（Places・Routes）由来の根拠か。帰属表示と枠で囲む対象を決める。
+export const isGoogleSource = (kind: Evidence['source']['kind']): boolean =>
+  kind === 'places' || kind === 'routes'
+
 export const toMinutes = (time: string): number => {
   const [hours, minutes] = time.split(':').map(Number)
   return hours * 60 + minutes

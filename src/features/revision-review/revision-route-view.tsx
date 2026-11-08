@@ -16,6 +16,9 @@ interface RevisionRouteViewProps {
   mock?: boolean
   generate?: GenerateRevisions
   apply?: ApplyRevision
+  // 固定の切り替え・候補の適用で旅程が変わったとき、画面に採用する旅程を決める（変えなければ受け取った旅程を返す）。
+  // 照合結果の取り下げなど、旅程の変更に連動して根拠を戻す用途。予定の名称・時刻・固定は変えないこと。
+  adoptTripChange?: (changed: Trip) => Trip
 }
 
 export function RevisionRouteView({
@@ -24,6 +27,7 @@ export function RevisionRouteView({
   mock,
   generate,
   apply,
+  adoptTripChange,
 }: RevisionRouteViewProps) {
   const [local, setLocal] = useState<{
     source: Trip
@@ -79,7 +83,8 @@ export function RevisionRouteView({
     setSession(null)
   }
 
-  const onApplied = (trip: Trip) => {
+  const onApplied = (applied: Trip) => {
+    const trip = adoptTripChange?.(applied) ?? applied
     let nextMeta = current.meta
     if (nextMeta && target) {
       const nextStop = trip.stops[trip.stops.findIndex((stop) => stop.id === target.id) + 1]
@@ -157,7 +162,11 @@ export function RevisionRouteView({
             meta={current.meta}
             mock={mock}
             appliedStopId={current.appliedStopId}
-            onTripChange={(trip) => setLocal({ ...current, source: sourceTrip, trip })}
+            onTripChange={(changed) => {
+              const trip = adoptTripChange?.(changed) ?? changed
+              setLocal({ ...current, source: sourceTrip, trip })
+              return trip
+            }}
             onStartRevision={
               generate
                 ? (stopId) => {

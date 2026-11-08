@@ -681,3 +681,65 @@ describe('本人承認とサーバー適用', () => {
     expect(approvalDisabled()).toBe(true)
   })
 })
+
+describe('旅程の変更を親が採用する（adoptTripChange）', () => {
+  it('固定の切り替えで呼ばれ、親が返した旅程を画面に採用する。通知は残る', async () => {
+    const user = userEvent.setup()
+    const adopt = vi.fn((changed: typeof trip) => ({
+      ...changed,
+      stops: changed.stops.map((stop) =>
+        stop.id === target.id ? { ...stop, evidence: [] } : stop,
+      ),
+    }))
+    render(<RevisionRouteView trip={trip} meta={meta} adoptTripChange={adopt} />)
+
+    await user.click(route().getByRole('button', { name: /昼食店A/ }))
+    const dialog = screen.getByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'この予定を固定する' }))
+
+    expect(adopt).toHaveBeenCalledOnce()
+    expect(adopt.mock.calls[0][0].stops.find((stop) => stop.id === target.id)?.isFixed).toBe(true)
+    // 採用された旅程（根拠なし）が表示され、固定の通知は消えない。
+    expect(within(dialog).getByText('施設情報や移動時間と照合していません。')).toBeTruthy()
+    expect(within(dialog).getByRole('status').textContent).toContain('固定しました')
+    expect(within(dialog).getByRole('button', { name: '固定を解除する' })).toBeTruthy()
+  })
+
+  it('候補の適用成功でも呼ばれ、採用された旅程が路線図に出る', async () => {
+    const user = userEvent.setup()
+    const saved = { ...trip, version: 1, stops: trip.stops.with(1, after) }
+    const adopt = vi.fn((changed: typeof trip) => ({
+      ...changed,
+      stops: changed.stops.map((stop) =>
+        stop.id === after.id ? { ...stop, name: '採用後の店' } : stop,
+      ),
+    }))
+    const apply = vi.fn<ApplyRevision>().mockResolvedValue({ status: 'applied', trip: saved })
+    render(
+      <RevisionRouteView
+        trip={trip}
+        meta={meta}
+        generate={async () => proposal}
+        apply={apply}
+        adoptTripChange={adopt}
+      />,
+    )
+    await open(user)
+    await request(user)
+    await screen.findByRole('table')
+    await user.click(approve())
+
+    await screen.findByText(/旅程に反映されました/)
+    expect(adopt).toHaveBeenCalledOnce()
+    expect(adopt.mock.calls[0][0]).toEqual(saved)
+    expect(route().getByRole('button', { name: /採用後の店/ })).toBeTruthy()
+  })
+
+  it('指定しなければ、従来どおり変更後の旅程をそのまま使う', async () => {
+    const user = userEvent.setup()
+    render(<RevisionRouteView trip={trip} meta={meta} />)
+    await user.click(route().getByRole('button', { name: /昼食店A/ }))
+    await user.click(screen.getByRole('button', { name: 'この予定を固定する' }))
+    expect(screen.getByRole('button', { name: '固定を解除する' })).toBeTruthy()
+  })
+})

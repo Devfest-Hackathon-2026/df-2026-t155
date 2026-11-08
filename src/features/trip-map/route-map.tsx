@@ -1,6 +1,7 @@
 import type { Stop, Trip } from '@/domain'
 
 import { EvidenceBadge, UnverifiedBadge } from './evidence-badge'
+import { segmentEvidence, type SegmentEvidenceItem } from './evidence-scope'
 import { LockIcon } from './icons'
 import { evidenceStatusLabels } from '@/domain'
 
@@ -85,10 +86,29 @@ function Evidence({ stop }: { stop: Stop }) {
   )
 }
 
-function SegmentLabel({ segment }: { segment?: RouteSegmentLabel }) {
+// 移動区間のラベル。構造化された区間（分数）があればそれを出し、なければ区間についての根拠の「状態」だけを出す。
+// 区間についての根拠は、segmentEvidence（前の予定 → 次の予定の方向が合うRoutes由来の根拠だけ）が決める。
+// 詳細シートの「前の地点から」も、同じ判定に従う。区間を特定できない根拠は、使わない（未確認として扱う）。
+// 所要時間・距離などRoutesが返す値は、取得していないので推測も表示もしない（詳細シートの表記と同じ）。
+// 「整合」は、確認できた情報と一致したという意味で、移動が実際に間に合う保証ではない。
+// 現在の照合APIは徒歩だけを確認する（docs/TRIP_VERIFICATION.md）。車などを照合するようになったら、手段を根拠から取り直す。
+function SegmentLabel({
+  segment,
+  evidence,
+}: {
+  segment?: RouteSegmentLabel
+  evidence: readonly SegmentEvidenceItem[]
+}) {
+  const travelEvidence = worstEvidence(evidence.map((item) => item.evidence))
   let text = '次の地点まで：移動時間は未確認'
   if (segment?.status === 'known') {
     text = `次の地点まで：${segment.mode === 'walk' ? '徒歩' : '車'}${segment.minutes}分`
+  } else if (travelEvidence?.status === 'consistent') {
+    text = '次の地点まで：徒歩移動は情報源と整合（所要時間の数値は取得していません）'
+  } else if (travelEvidence?.status === 'conflicting') {
+    text = '次の地点まで：徒歩移動の条件に矛盾あり'
+  } else if (travelEvidence?.status === 'unverifiable') {
+    text = '次の地点まで：徒歩移動を確認できません'
   }
   return (
     <p className="mt-2 flex items-center gap-1.5 text-xs text-gt-muted">
@@ -290,7 +310,12 @@ export function RouteMap({
                 selected={selectedStopId === stop.id}
                 onSelect={onSelectStop ? () => onSelectStop(stop.id) : undefined}
               />
-              {showSegment && <SegmentLabel segment={nextMeta?.segmentFromPrevious} />}
+              {showSegment && (
+                <SegmentLabel
+                  segment={nextMeta?.segmentFromPrevious}
+                  evidence={segmentEvidence(trip.stops, index + 1)}
+                />
+              )}
               {branch && (
                 <div
                   key={branch.revisionId}

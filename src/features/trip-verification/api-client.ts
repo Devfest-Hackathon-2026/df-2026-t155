@@ -13,6 +13,12 @@ export type VerificationFailureKind =
   | 'invalid_request'
   | 'payload_too_large'
   | 'service_unavailable'
+  // 認証が必要、または認証の有効期限が切れている（HTTP 401・403）。結果は採用しない。
+  | 'unauthorized'
+  // 利用制限に達した（HTTP 429）。結果は採用しない。
+  | 'rate_limited'
+  // 認証が必要な設定で、認証情報を用意できず、送信しなかった（通信はしていない）。
+  | 'auth_required'
   | 'interrupted'
   | 'unexpected'
 
@@ -46,6 +52,22 @@ const failure = (kind: VerificationFailureKind, message: string): VerificationRe
 
 const UNEXPECTED_MESSAGE = 'サーバーから想定外の応答が返されました。'
 const INTERRUPTED_MESSAGE = '通信が中断されました。接続を確認して、もう一度お試しください。'
+const UNAUTHORIZED_MESSAGE = '認証が必要です。または、認証の有効期限が切れています。'
+const RATE_LIMITED_MESSAGE = '利用の回数が上限に達しています。'
+const AUTH_UNAVAILABLE_MESSAGE = '認証情報を取得できなかったため、照合の依頼を送信しませんでした。'
+
+// 認証が必要な送信で、認証情報を用意できなかった（送信していない）。fetchの代わりに投げる。
+export class AuthRequiredError extends Error {
+  constructor(message: string = AUTH_UNAVAILABLE_MESSAGE) {
+    super(message)
+    this.name = 'AuthRequiredError'
+  }
+}
+
+// 認証の失敗か。認証基盤のエラー（ClientAuthError）は、型を直接参照せず、名前で見分ける
+// （照合の入口に、認証SDKの読み込みを持ち込まないため）。文言は、そのエラー自身のものを使う。
+export const isAuthError = (error: unknown): error is Error =>
+  error instanceof Error && (error.name === 'AuthRequiredError' || error.name === 'ClientAuthError')
 
 // キーの並び順に依存しない、安定した文字列にする（キーをソートして再帰的にJSON化）。
 const sortKeys = (value: unknown): unknown => {
@@ -86,9 +108,18 @@ export async function requestTripVerification(
       signal,
     })
     text = await response.text()
-  } catch {
+  } catch (error) {
+    // 認証情報を用意できず送信しなかった場合は、通信の中断と区別する。
+    if (isAuthError(error)) return failure('auth_required', error.message)
     return failure('interrupted', INTERRUPTED_MESSAGE)
   }
+
+  // 認証・利用制限は、本文の形に関わらず、ステータスで判定する（本文は信用せず、固定の文言を出す）。
+  // どちらも、結果は採用しない。
+  if (response.status === 401 || response.status === 403) {
+    return failure('unauthorized', UNAUTHORIZED_MESSAGE)
+  }
+  if (response.status === 429) return failure('rate_limited', RATE_LIMITED_MESSAGE)
 
   let body: unknown
   try {

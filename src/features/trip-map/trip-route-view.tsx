@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useState } from 'react'
 
 import type { Trip } from '@/domain'
 
+import { segmentEvidence } from './evidence-scope'
 import { ROUTE_LIST_ID, RouteMap, stopButtonId } from './route-map'
 import { routeStopKind, setStopFixed, type RouteMeta } from './model'
 import { StopSheet } from './stop-sheet'
@@ -16,7 +17,8 @@ interface TripRouteViewProps {
   appliedStopId?: string
   // 固定の切り替えなどで旅程が変わったとき、最新のTripを親へ渡す（保存は親の責務）。
   // 親は、受け取ったTripを以後のprops.tripとして渡し続けること。
-  onTripChange?: (trip: Trip) => void
+  // 親が別のTripを採用する場合（根拠の取り下げなど）は、そのTripを返す。以後、画面にはそのTripを出す。
+  onTripChange?: (trip: Trip) => Trip | void
   // 部分修正を始める（候補の比較・承認は部分修正の機能の責務）。未指定なら修正の操作は出さない。
   onStartRevision?: (stopId: string) => void
 }
@@ -100,8 +102,7 @@ export function TripRouteView({
   const toggleFixed = (stopId: string, fixed: boolean) => {
     const next = setStopFixed(trip, stopId, fixed)
     if (!next) return
-    setTrip(next)
-    onTripChange?.(next)
+    setTrip(onTripChange?.(next) ?? next)
     const name = next.stops.find((stop) => stop.id === stopId)?.name ?? ''
     setNotice({
       stopId,
@@ -152,6 +153,7 @@ export function TripRouteView({
           onExited={() => setClosingId(null)}
           index={selectedIndex}
           meta={meta?.[selected.id] ?? {}}
+          segment={segmentEvidence(trip.stops, selectedIndex)}
           kind={routeStopKind(selected, meta?.[selected.id])}
           onStartRevision={onStartRevision}
           onToggleFixed={toggleFixed}

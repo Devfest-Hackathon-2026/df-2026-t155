@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { sampleTrip } from '@/domain/samples'
 
-import { VERIFY_TRIP_ENDPOINT, requestTripVerification } from './api-client'
+import { AuthRequiredError, VERIFY_TRIP_ENDPOINT, requestTripVerification } from './api-client'
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -175,5 +175,100 @@ describe('requestTripVerification', () => {
       ok: false,
       failure: { kind: 'interrupted' },
     })
+  })
+})
+
+describe('requestTripVerification: 認証・利用制限', () => {
+  const authBodies = [
+    [
+      '本文がJSON（サーバーの標準のエラー形式）',
+      JSON.stringify({ status: 'unauthorized', message: 'x' }),
+    ],
+    ['本文がHTML', '<html>Unauthorized</html>'],
+    ['本文が空', ''],
+  ] as const
+
+  it.each([401, 403])(
+    'HTTP %i は「認証が必要・失効」として扱い、結果を採用しない',
+    async (status) => {
+      for (const [, body] of authBodies) {
+        const fetchFn = vi.fn().mockResolvedValue(new Response(body, { status }))
+        const result = await requestTripVerification(sampleTrip, { fetchFn })
+        expect(result).toEqual({
+          ok: false,
+          failure: {
+            kind: 'unauthorized',
+            message: '認証が必要です。または、認証の有効期限が切れています。',
+          },
+        })
+      }
+    },
+  )
+
+  it('HTTP 429 は「利用制限」として扱い、結果を採用しない（本文の形に依存しない）', async () => {
+    for (const [, body] of authBodies) {
+      const fetchFn = vi.fn().mockResolvedValue(new Response(body, { status: 429 }))
+      const result = await requestTripVerification(sampleTrip, { fetchFn })
+      expect(result).toEqual({
+        ok: false,
+        failure: { kind: 'rate_limited', message: '利用の回数が上限に達しています。' },
+      })
+    }
+  })
+
+  it('401・403・429 は、本文が「verified」の形でも採用しない', async () => {
+    for (const status of [401, 403, 429]) {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(json({ status: 'verified', trip: withEvidence() }, status))
+      const result = await requestTripVerification(sampleTrip, { fetchFn })
+      expect(result.ok).toBe(false)
+    }
+  })
+
+  it('認証と利用制限は、サーバーの本文の文言を表示に使わない（固定の文言を使う）', async () => {
+    const fetchFn = vi
+      .fn()
+      .mockResolvedValue(json({ status: 'rate_limited', message: '内部の事情を含む文言' }, 429))
+    const result = await requestTripVerification(sampleTrip, { fetchFn })
+    expect(JSON.stringify(result)).not.toContain('内部の事情')
+  })
+
+  it('認証情報を用意できず送信しなかったとき（AuthRequiredError）は、通信の中断と区別する', async () => {
+    const fetchFn = vi.fn().mockRejectedValue(new AuthRequiredError())
+    const result = await requestTripVerification(sampleTrip, { fetchFn })
+    expect(result).toEqual({
+      ok: false,
+      failure: {
+        kind: 'auth_required',
+        message: '認証情報を取得できなかったため、照合の依頼を送信しませんでした。',
+      },
+    })
+  })
+
+  it('認証基盤のエラー（ClientAuthError）は、その文言のまま、通信の中断と区別して伝える', async () => {
+    const error = Object.assign(
+      new Error('認証サービスに接続できません。時間をおいて再試行してください'),
+      {
+        name: 'ClientAuthError',
+        code: 'unavailable',
+      },
+    )
+    const fetchFn = vi.fn().mockRejectedValue(error)
+    const result = await requestTripVerification(sampleTrip, { fetchFn })
+    expect(result).toEqual({
+      ok: false,
+      failure: { kind: 'auth_required', message: error.message },
+    })
+  })
+
+  it('認証と無関係な例外（ネットワーク断・中止）は、これまでどおり「中断」', async () => {
+    for (const error of [new TypeError('network'), new DOMException('aborted', 'AbortError')]) {
+      const fetchFn = vi.fn().mockRejectedValue(error)
+      expect(await requestTripVerification(sampleTrip, { fetchFn })).toMatchObject({
+        ok: false,
+        failure: { kind: 'interrupted' },
+      })
+    }
   })
 })

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { TripSchema } from '@/domain'
+import { TripSchema, type Evidence } from '@/domain'
 import { sampleTrip } from '@/domain/samples'
 
 import { RouteFailure, RouteLoading } from './route-states'
@@ -393,5 +393,182 @@ describe('旅程一覧の状態表示', () => {
     render(<RouteFailure title="失敗" message="詳細" note="入力内容は保持されています。" />)
 
     expect(screen.getByRole('alert').textContent).toContain('入力内容は保持されています。')
+  })
+})
+
+describe('旅程の路線図: 移動区間の根拠の状態', () => {
+  // 根拠のidは、サーバーの命名規約に合わせる（前の予定→この予定：-travel、この予定→次の予定：-travel-next）。
+  const travelEvidence = (
+    stopId: string,
+    status: Evidence['status'],
+    // Routesが返した値が混ざっていても、表示しないことを確かめるための説明文。
+    explanation = '所要時間は徒歩17分、余裕3分',
+    suffix: 'travel' | 'travel-next' = 'travel',
+    kind: Evidence['source']['kind'] = 'routes',
+  ): Evidence => ({
+    id: `evidence-${stopId}-${suffix}`,
+    subject: 'travel_time',
+    claim:
+      suffix === 'travel'
+        ? '前の予定の終了後、この予定の開始時刻までに移動できる'
+        : 'この予定の終了後、次の予定の開始時刻までに移動できる',
+    applicability: '徒歩のみ。公共交通は確認していない',
+    source: { kind, label: kind === 'routes' ? 'Google Routes' : '模擬データ' },
+    checkedAt: '2026-11-08T10:01:00+09:00',
+    status,
+    explanation,
+  })
+
+  // 予定の根拠を差し替えた旅程。
+  const withEvidence = (byStopId: Record<string, Evidence[]>) =>
+    TripSchema.parse({
+      ...sampleTrip,
+      stops: sampleTrip.stops.map((stop) => ({ ...stop, evidence: byStopId[stop.id] ?? [] })),
+    })
+
+  // 2番目と3番目の予定に、前の予定からの移動の根拠を付けた旅程（1番目の予定は移動元なので付けない）。
+  const withTravel = (second: Evidence['status'] | null, third: Evidence['status'] | null) =>
+    withEvidence({
+      'stop-lunch': second ? [travelEvidence('stop-lunch', second)] : [],
+      'stop-exhibition': third ? [travelEvidence('stop-exhibition', third)] : [],
+    })
+
+  const segmentLabels = () => screen.getAllByText(/^次の地点まで/).map((node) => node.textContent)
+
+  it('移動の根拠の状態を、区間ごとに文で示す（整合・矛盾・確認できない）', () => {
+    render(<TripRouteView trip={withTravel('consistent', 'conflicting')} />)
+
+    expect(segmentLabels()).toEqual([
+      '次の地点まで：徒歩移動は情報源と整合（所要時間の数値は取得していません）',
+      '次の地点まで：徒歩移動の条件に矛盾あり',
+    ])
+  })
+
+  it('確認できなかった移動は「確認できません」とする。根拠が無ければ従来どおり「未確認」', () => {
+    render(<TripRouteView trip={withTravel('unverifiable', null)} />)
+
+    expect(segmentLabels()).toEqual([
+      '次の地点まで：徒歩移動を確認できません',
+      '次の地点まで：移動時間は未確認',
+    ])
+  })
+
+  it('構造化された区間（分数）があればそれを優先し、根拠からは所要時間を推測しない', () => {
+    render(<TripRouteView trip={withTravel('consistent', 'consistent')} meta={sampleRouteMeta} />)
+
+    const labels = segmentLabels()
+    // 2番目の予定への区間は、メタの「徒歩10分」を出す。3番目は分数が無いので、根拠の状態だけ。
+    expect(labels[0]).toBe('次の地点まで：徒歩10分')
+    expect(labels[1]).toBe(
+      '次の地点まで：徒歩移動は情報源と整合（所要時間の数値は取得していません）',
+    )
+  })
+
+  it('Routesの値（所要時間・余裕）や「正しい」という保証は、路線図に出さない', () => {
+    render(<TripRouteView trip={withTravel('consistent', 'conflicting')} />)
+
+    const text = routeText()
+    expect(text).not.toContain('17分')
+    expect(text).not.toContain('余裕')
+    expect(text).not.toContain('正しい')
+    expect(text).not.toContain('保証')
+  })
+
+  it('詳細シートの「前の地点から」と矛盾しない（数値は取得していないと伝える）', async () => {
+    render(<TripRouteView trip={withTravel('consistent', null)} />)
+
+    await userEvent.setup().click(stopButton(/昼食店A/))
+
+    expect(sheet().textContent).toContain('所要時間の数値は取得していません（下の根拠を参照）')
+  })
+
+  describe('区間の方向（A→B と B→C を混同しない）', () => {
+    // 昼食店A（2番目）に付いているのは、「この予定→次の予定」の根拠だけ。
+    const nextOnly = () =>
+      withEvidence({
+        'stop-lunch': [travelEvidence('stop-lunch', 'consistent', undefined, 'travel-next')],
+      })
+
+    it('「この予定→次の予定」の根拠を、「前の予定→この予定」の区間の根拠として表示しない', () => {
+      render(<TripRouteView trip={nextOnly()} />)
+
+      // 1番目→2番目の区間：2番目に付いた「次へ」の根拠は、この区間のものではない。
+      // 2番目→3番目の区間：「次へ」の根拠が、この区間のもの。
+      expect(segmentLabels()).toEqual([
+        '次の地点まで：移動時間は未確認',
+        '次の地点まで：徒歩移動は情報源と整合（所要時間の数値は取得していません）',
+      ])
+    })
+
+    it('詳細シートの「前の地点から」も同じ判定：逆向きの根拠だけの予定は「未確認」、起点側の根拠は前の予定の詳細を案内する', async () => {
+      const user = userEvent.setup()
+      render(<TripRouteView trip={nextOnly()} />)
+
+      // 昼食店A（2番目）：前の地点から＝逆向きの根拠しか無いので、未確認。
+      await user.click(stopButton(/昼食店A/))
+      expect(sheet().textContent).toContain('移動時間は未確認')
+      expect(sheet().textContent).not.toContain('所要時間の数値は取得していません')
+      await user.click(within(sheet()).getByRole('button', { name: '閉じる' }))
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+      // 3番目：前の地点（昼食店A）に付いた「次へ」の根拠が、この区間のもの。根拠は前の予定の詳細にある。
+      await user.click(stopButton(/14時の予約展示/))
+      expect(sheet().textContent).toContain(
+        '所要時間の数値は取得していません（前の予定の詳細の根拠を参照）',
+      )
+    })
+
+    it('区間を特定できない移動の根拠（idが規約に合わない）は、「情報源と整合」と表示せず、未確認にする', async () => {
+      const unknown = {
+        ...travelEvidence('stop-lunch', 'consistent'),
+        id: 'evidence-somewhere-else',
+      }
+      render(
+        <TripRouteView
+          trip={withEvidence({ 'stop-lunch': [unknown], 'stop-exhibition': [unknown] })}
+        />,
+      )
+
+      expect(segmentLabels()).toEqual([
+        '次の地点まで：移動時間は未確認',
+        '次の地点まで：移動時間は未確認',
+      ])
+      await userEvent.setup().click(stopButton(/昼食店A/))
+      expect(sheet().textContent).toContain('移動時間は未確認')
+    })
+
+    it('Routes以外（模擬データ・本人の報告）の移動の根拠は、区間の「情報源と整合」にしない', () => {
+      render(
+        <TripRouteView
+          trip={withEvidence({
+            'stop-lunch': [
+              travelEvidence('stop-lunch', 'consistent', undefined, 'travel', 'simulation'),
+            ],
+            'stop-exhibition': [
+              travelEvidence('stop-exhibition', 'consistent', undefined, 'travel', 'user_report'),
+            ],
+          })}
+        />,
+      )
+
+      expect(segmentLabels()).toEqual([
+        '次の地点まで：移動時間は未確認',
+        '次の地点まで：移動時間は未確認',
+      ])
+    })
+
+    it('両方向の根拠があるときは、その区間の根拠のうち最も重い状態を示す', () => {
+      render(
+        <TripRouteView
+          trip={withEvidence({
+            'stop-lunch': [travelEvidence('stop-lunch', 'consistent', undefined, 'travel-next')],
+            'stop-exhibition': [travelEvidence('stop-exhibition', 'conflicting')],
+          })}
+        />,
+      )
+
+      // 昼食店A→14時の予約展示：起点側「次へ」は整合、終点側「前から」は矛盾 → 矛盾ありを隠さない。
+      expect(segmentLabels()[1]).toBe('次の地点まで：徒歩移動の条件に矛盾あり')
+    })
   })
 })
