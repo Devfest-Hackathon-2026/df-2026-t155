@@ -1,14 +1,20 @@
 import { z } from 'zod'
 
 import { TripSchema, type Trip } from '../../domain'
+import { COSTS } from '../cost-control/costs'
+import {
+  isCostlyApiEnabled,
+  requireCostlyApiActor,
+  runCostlyOperation,
+  type CostlyOperation,
+} from '../costly-api'
 import { errorResponse, noStoreHeaders, readBodyWithLimit } from '../http'
 import { hasTimeConflict } from './travel'
 import type { VerifyTripResult } from './verify-trip'
 
 // POST /api/trips/verify のHTTP処理。生成された旅程に、Places/Routesの照合結果（根拠）を付ける。
 // 旅程の内容（予定・時刻・固定）と版は変えない。承認・保存はこのAPIでは行わない。
-// 課金を伴うMaps呼び出しの入口なので、認証・利用制限が入るまでは機能フラグ（既定は無効）で停止する。
-// 無効の間はMapsを呼ばず、リクエスト本文も読まない。
+// 停止中は認証・本文の読み取り・外部API呼び出しを行わない。
 //
 // 移動の確認は、徒歩だけ（車を使えるとは限らないため）。このAPIは、移動手段の指定を受け付けない
 // （`travelModes`などの未知の項目は、400で拒否する）。
@@ -19,7 +25,7 @@ import type { VerifyTripResult } from './verify-trip'
 export const MAX_VERIFY_REQUEST_BYTES = 64 * 1024
 
 export const isTripVerificationEnabled = (env: Record<string, string | undefined>): boolean =>
-  env.TRIP_VERIFICATION_ENABLED?.trim() === 'true'
+  isCostlyApiEnabled(env.TRIP_VERIFICATION_ENABLED)
 
 // 未知の項目（移動手段の指定など）は、無視せず、拒否する（指定が反映されたと誤解させない）。
 export const VerifyTripRequestSchema = z.strictObject({ trip: TripSchema })
@@ -35,7 +41,7 @@ const VerifyTripResponseSchema = z.discriminatedUnion('status', [
 
 export interface VerifyTripHandlerDeps {
   isEnabled: () => boolean
-  verify: (trip: Trip) => Promise<VerifyTripResult>
+  verify: (trip: Trip, operation: CostlyOperation) => Promise<VerifyTripResult>
 }
 
 export async function handleVerifyTripRequest(
@@ -48,6 +54,9 @@ export async function handleVerifyTripRequest(
       message: '旅程の照合は現在利用できません。',
     })
   }
+  const actor = await requireCostlyApiActor(request)
+  if (actor instanceof Response) return actor
+
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
     return errorResponse(415, {
       status: 'unsupported_media_type',
@@ -103,9 +112,13 @@ export async function handleVerifyTripRequest(
 
   let result: VerifyTripResult
   try {
-    result = await deps.verify(parsed.data.trip)
-  } catch (error) {
-    console.error('[trip-verification] 想定外のエラー', error instanceof Error ? error.name : error)
+    const outcome = await runCostlyOperation(actor, COSTS.verify, (operation) =>
+      deps.verify(parsed.data.trip, operation),
+    )
+    if (outcome instanceof Response) return outcome
+    result = outcome
+  } catch {
+    console.error('[trip-verification] 想定外のエラー')
     return errorResponse(500, {
       status: 'internal_error',
       message: '旅程の照合中に予期しないエラーが発生しました。',

@@ -5,8 +5,8 @@ Geminiで日帰り旅行（1日・1地域・3〜4地点）の旅程を**提案**
 
 ## 入出力
 
-- **機能フラグ**: 認証・利用制限が入るまで、既定で無効。`TRIP_GENERATION_ENABLED=true`のときだけ受け付ける。
-  無効の間はGeminiを呼ばず、リクエスト本文も読まずに503を返す。
+- **機能フラグ**。既定は無効。本番の招待制デモは `TRIP_GENERATION_ENABLED` と共通デモフラグが必要。停止中は認証・本文読み取り・Gemini呼び出し前に503を返す。
+- **認証**。有効時はFirebase IDトークン、招待UID、Web App Check、共有利用枠が必要。[認証エラーとクライアント契約](API_ABUSE_PROTECTION.md#クライアント契約)を参照。
 - リクエスト: `GenerateTripRequest`（`Content-Type: application/json`、本文32KB以下）。本文はストリームで読み、
   上限を超えた時点で読み取りを中止する。
 - 成功: HTTP 200、`{ status: 'proposed', trip }`。
@@ -18,7 +18,7 @@ Geminiで日帰り旅行（1日・1地域・3〜4地点）の旅程を**提案**
 | 422  | `no_candidates` / `insufficient_information` | 条件を満たす旅程を作れない／入力が足りない（AIの申告または検証不合格） |
 | 502  | `external_service_error`                     | Geminiの呼び出し失敗（接続・権限・拒否・途中終了・空応答・未設定）     |
 | 400  | `invalid_request`                            | 入力が契約に違反、または本文を読み取れない（`issues`に項目ごとの理由） |
-| 503  | `service_unavailable`                        | 機能フラグが無効（既定）。Geminiは呼ばない                             |
+| 503  | `service_unavailable`                        | 機能停止中。Geminiは呼ばない                                           |
 | 413  | `payload_too_large`                          | 本文が32KBを超える                                                     |
 | 415  | `unsupported_media_type`                     | `Content-Type`がJSONではない                                           |
 | 500  | `internal_error`                             | 想定外の失敗、または応答が共通契約に違反                               |
@@ -45,17 +45,16 @@ Geminiで日帰り旅行（1日・1地域・3〜4地点）の旅程を**提案**
 
 サーバー側の環境変数（`.env.example`参照）。認証はADCで、APIキーやトークンはクライアントへ渡さない。
 
-| 変数                      | 既定               | 内容                             |
-| ------------------------- | ------------------ | -------------------------------- |
-| `GOOGLE_CLOUD_PROJECT`    | なし（必須）       | Vertex AIを利用するプロジェクト  |
-| `GOOGLE_CLOUD_LOCATION`   | `global`           | Vertex AIのロケーション          |
-| `GEMINI_MODEL`            | `gemini-3.5-flash` | モデル名（切り替え可能）         |
-| `TRIP_GENERATION_ENABLED` | なし（無効）       | `true`のときだけ生成を受け付ける |
+| 変数                      | 既定               | 内容                            |
+| ------------------------- | ------------------ | ------------------------------- |
+| `GOOGLE_CLOUD_PROJECT`    | なし（必須）       | Vertex AIを利用するプロジェクト |
+| `GOOGLE_CLOUD_LOCATION`   | `global`           | Vertex AIのロケーション         |
+| `GEMINI_MODEL`            | `gemini-3.5-flash` | モデル名（切り替え可能）        |
+| `TRIP_GENERATION_ENABLED` | なし（無効）       | 生成を受け付ける個別フラグ      |
 
 ## 未実装・要判断
 
-- 認証・レート制限は未実装（認証は#10）。それまでは機能フラグで停止しておき、有効にする環境
-  （ローカル・限定公開など）を意図して選ぶ。
+- 共有利用制限とApp Checkの実環境確認・画面接続が必要。[公開条件](API_ABUSE_PROTECTION.md#初回公開の判定)を満たすまで一般公開を保留する。
 - 学びの承認状態はHTTP入力の自己申告のまま。#10・#13で、サーバー側が本人の承認済みデータを
   取得・検証する形に置き換える。
 - Places・Routesによる照合は未実装（Issue #7）。

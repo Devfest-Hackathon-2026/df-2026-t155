@@ -1,3 +1,5 @@
+import '../helpers/mock-cost-control'
+
 import { deleteApp, getApps, initializeApp, type FirebaseApp } from 'firebase/app'
 import { connectAuthEmulator, getAuth, signInAnonymously, signOut } from 'firebase/auth'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'

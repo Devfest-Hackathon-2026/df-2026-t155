@@ -2,6 +2,8 @@ import { deleteApp, initializeApp, type FirebaseApp } from 'firebase/app'
 import { connectAuthEmulator, getAuth, signInAnonymously } from 'firebase/auth'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import '../helpers/mock-cost-control'
+
 import { POST as approveLearning } from '@/app/api/learnings/[learningId]/approve/route'
 import {
   DELETE as revokeLearning,

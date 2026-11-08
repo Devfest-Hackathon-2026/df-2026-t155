@@ -49,6 +49,7 @@ export type RouteResult =
 export async function computeRoute(
   deps: MapsTransportDeps,
   options: RouteOptions,
+  signal?: AbortSignal,
 ): Promise<RouteResult> {
   const { originPlaceId, destinationPlaceId, mode } = options
   if (!(SUPPORTED_TRAVEL_MODES as readonly string[]).includes(mode)) {
@@ -59,6 +60,7 @@ export async function computeRoute(
   }
 
   const json = await postJson(deps, {
+    signal,
     url: ROUTES_COMPUTE_URL,
     fieldMask: FIELD_MASK,
     body: {

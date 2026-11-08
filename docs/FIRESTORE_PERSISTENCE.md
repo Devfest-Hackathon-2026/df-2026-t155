@@ -49,8 +49,9 @@ JSONエスケープで渡された孤立サロゲートは、ネストした文�
 
 ## API
 
-保存APIは既定で無効。`PERSISTENCE_ENABLED=true` のときに有効になり、無効時は認証・本文の読み取り・DBアクセス前に
-`503 persistence_disabled` を返す。有効時は全操作に `Authorization: Bearer <Firebase ID token>` が必要。JSON本文のある操作には
+保存APIは既定で無効。本番の招待制デモは `PERSISTENCE_ENABLED` と `COSTLY_API_DEMO_ENABLED` の両方が必要。
+停止中は認証・本文・DBに進まず503 `persistence_disabled` を返す。有効時はBearer、招待UID、App Check、共有利用枠を検証する。
+[設定とエラーの契約](API_ABUSE_PROTECTION.md)を参照。書き込みには
 `Content-Type: application/json` を指定する。本文上限は64 KiB。レスポンスは `Cache-Control: private, no-store`。
 DTOの所有者・撤回マーカーはレスポンスに含めない。
 
@@ -101,7 +102,15 @@ Stopごとの根拠16件、変更理由・現地報告各1000文字、Learning�
 
 ローカル検証はEmulatorに限定する。一般公開は、対象DB・ADC/IAM・全拒否Rulesを確認し、匿名UIDを増やしても回避できない
 全体の回数・同時実行制限、App Checkまたは代替策、GCPのクォータ・予算通知・停止手順を用意してから判断する。
-保存枠はUID内の蓄積量を抑える。繰り返し取得・更新や匿名UIDの量産による全体の利用量には #29 の公開前保護を適用する。
+保存枠はUID内の蓄積量を抑える。繰り返し取得・更新や匿名UIDの量産による全体の利用量には、[Issue #29の公開前保護](API_ABUSE_PROTECTION.md)を適用する。
+
+## 書き込みの結果が不明な場合
+
+書き込みのコミットと同じ取引で、共有制御文書の版を照合する。期限後に再開した処理は、
+書き込み権の失効・回収や期間切替が先に永続化されていれば、古い版のまま確定できない。
+コミットの応答を失った場合は503 `write_result_unknown`。HTTPタイムアウトも結果確認のきっかけとし、
+再送前に現在の版・ID・承認状態を取得する。旧版や同一IDでの再送は重複書き込みを防ぐ既存の制約を通る。
+[期限とコミットの境界、デモ期間の切替](API_ABUSE_PROTECTION.md#業務書き込みのfencing)
 
 ## 版管理と承認
 

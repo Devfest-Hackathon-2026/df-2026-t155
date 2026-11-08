@@ -1,5 +1,6 @@
 import 'server-only'
 
+import { getAppCheck } from 'firebase-admin/app-check'
 import { applicationDefault, getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { getFirestore } from 'firebase-admin/firestore'
@@ -37,4 +38,8 @@ export function getAdminAuth() {
 
 export function getAdminFirestore() {
   return getFirestore(getAdminApp())
+}
+
+export function getAdminAppCheck() {
+  return getAppCheck(getAdminApp())
 }

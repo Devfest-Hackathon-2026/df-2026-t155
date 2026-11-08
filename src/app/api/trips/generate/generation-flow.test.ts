@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import '../../../../../tests/helpers/mock-cost-control'
+
 import type { GenerateTripRequest } from '@/domain'
 import { requestTripGeneration } from '@/features/trip-planner/api-client'
 import { GeminiCallError } from '@/server/gemini/client'
@@ -11,6 +13,12 @@ const gemini = vi.hoisted(() => ({ generateJson: vi.fn() }))
 vi.mock('@/server/gemini/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/server/gemini/client')>()),
   createLazyVertexGeminiClient: () => gemini,
+}))
+
+// This flow test exercises authenticated requests; dedicated tests verify the guard itself.
+vi.mock('@/lib/firebase/admin', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/firebase/admin')>()),
+  getAdminAuth: () => ({ verifyIdToken: async () => ({ uid: 'test-actor' }) }),
 }))
 
 const request: GenerateTripRequest = {
@@ -67,7 +75,11 @@ async function runFlow() {
   const fetchFn: typeof fetch = async (input, init) => {
     url = String(input)
     method = init?.method
-    const response = await POST(new Request(new URL(String(input), 'http://localhost'), init))
+    const headers = new Headers(init?.headers)
+    headers.set('Authorization', 'Bearer test.id.token')
+    const response = await POST(
+      new Request(new URL(String(input), 'http://localhost'), { ...init, headers }),
+    )
     status = response.status
     body = await response.clone().json()
     return response

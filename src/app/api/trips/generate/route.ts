@@ -1,3 +1,4 @@
+import { meteredGemini } from '../../../../server/cost-control/providers'
 import { createLazyVertexGeminiClient } from '../../../../server/gemini/client'
 import {
   generateTrip,
@@ -15,12 +16,16 @@ export const runtime = 'nodejs'
 const client = createLazyVertexGeminiClient(process.env)
 
 const logFailure = (event: GenerationFailureEvent) => {
-  console.error('[trip-generation] 生成に失敗', event)
+  console.error(
+    '[trip-generation] 生成に失敗',
+    event.kind === 'gemini_call' ? event : { kind: event.kind },
+  )
 }
 
 export async function POST(request: Request): Promise<Response> {
   return handleGenerateTripRequest(request, {
     isEnabled: () => isTripGenerationEnabled(process.env),
-    generate: (tripRequest) => generateTrip(tripRequest, { client, report: logFailure }),
+    generate: (tripRequest, operation) =>
+      generateTrip(tripRequest, { client: meteredGemini(operation, client), report: logFailure }),
   })
 }

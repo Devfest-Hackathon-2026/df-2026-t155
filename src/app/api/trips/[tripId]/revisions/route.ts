@@ -1,3 +1,4 @@
+import { COSTS } from '@/server/cost-control/costs'
 import {
   SaveRevisionBodySchema,
   RevisionListResponseSchema,
@@ -11,21 +12,29 @@ export const runtime = 'nodejs'
 type Context = { params: Promise<{ tripId: string }> }
 
 export function GET(request: Request, context: Context): Promise<Response> {
-  return withDataActor(request, async (actor) => {
+  return withDataActor(request, COSTS.listRevisions, async (actor, operation) => {
     const { tripId } = await context.params
+    operation.assertActive()
     const { items: revisions, listInfo } = await new FirestoreTripStore().listRevisions(
       actor,
       tripId,
+      operation.assertActive,
     )
     return dataResponse(RevisionListResponseSchema, { revisions, listInfo })
   })
 }
 
 export function POST(request: Request, context: Context): Promise<Response> {
-  return withDataActor(request, async (actor) => {
+  return withDataActor(request, COSTS.saveRevision, async (actor, operation) => {
     const { tripId } = await context.params
     const input = await readDataBody(request, SaveRevisionBodySchema)
-    const revision = await new FirestoreTripStore().saveRevision(actor, tripId, input)
+    operation.assertActive()
+    const revision = await new FirestoreTripStore().saveRevision(
+      actor,
+      tripId,
+      input,
+      operation.write,
+    )
     return dataResponse(RevisionResponseSchema, { revision }, 201)
   })
 }

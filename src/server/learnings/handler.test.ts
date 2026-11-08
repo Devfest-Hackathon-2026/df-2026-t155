@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import '../../../tests/helpers/mock-cost-control'
+
 import { sampleLearning, sampleRevision, sampleTrip } from '../../domain/samples'
 import {
   MAX_LEARNING_REQUEST_BYTES,
@@ -7,6 +9,12 @@ import {
   isLearningCandidatesEnabled,
 } from './handler'
 import type { LearningCandidatesResponse } from './generate-candidates'
+
+// トークンの検証は実際のRouteテストで確認し、ここでは認証済みのHTTP処理を検証する。
+vi.mock('../costly-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../costly-api')>()),
+  requireCostlyApiActor: async () => ({ uid: 'test-actor' }),
+}))
 
 afterEach(() => {
   vi.restoreAllMocks()

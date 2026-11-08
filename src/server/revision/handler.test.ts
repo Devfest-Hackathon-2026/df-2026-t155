@@ -1,8 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import '../../../tests/helpers/mock-cost-control'
+
 import type { ReviseTripResponse } from '../../domain'
 import { sampleReviseTripRequest, sampleRevision } from '../../domain/samples'
 import { MAX_REVISE_REQUEST_BYTES, handleReviseTripRequest, isTripRevisionEnabled } from './handler'
+
+// トークンの検証は実際のRouteテストで確認し、ここでは認証済みのHTTP処理を検証する。
+vi.mock('../costly-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../costly-api')>()),
+  requireCostlyApiActor: async () => ({ uid: 'test-actor' }),
+}))
 
 afterEach(() => {
   vi.restoreAllMocks()

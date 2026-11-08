@@ -1,10 +1,40 @@
 import { deleteApp, initializeApp, type FirebaseApp } from 'firebase/app'
 import { connectAuthEmulator, getAuth, signInAnonymously } from 'firebase/auth'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+
+import '../helpers/mock-cost-control'
 
 import { GET } from '../../src/app/api/auth/session/route'
+import { POST as candidates } from '../../src/app/api/learnings/candidates/route'
+import { POST as generate } from '../../src/app/api/trips/generate/route'
+import { POST as revise } from '../../src/app/api/trips/revise/route'
+import { POST as verify } from '../../src/app/api/trips/verify/route'
+import {
+  sampleGenerateTripRequest,
+  sampleReviseTripRequest,
+  sampleTrip,
+} from '../../src/domain/samples'
 import { requireActor, requireOwner } from '../../src/lib/auth/server'
 import { getAdminAuth } from '../../src/lib/firebase/admin'
+
+const paidAdapters = vi.hoisted(() => ({
+  generateJson: vi.fn(),
+  searchPlaces: vi.fn(),
+  computeRoute: vi.fn(),
+}))
+
+// AuthだけをEmulatorに接続する。課金対象のアダプターは全経路で差し替える。
+vi.mock('@/server/gemini/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/server/gemini/client')>()),
+  createLazyVertexGeminiClient: () => ({ generateJson: paidAdapters.generateJson }),
+}))
+vi.mock('@/server/maps', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/server/maps')>()),
+  createLazyMapsClient: () => ({
+    searchPlaces: paidAdapters.searchPlaces,
+    computeRoute: paidAdapters.computeRoute,
+  }),
+}))
 
 const apps: FirebaseApp[] = []
 
@@ -33,6 +63,12 @@ function withEmulatorClaims(request: Request, changes: Record<string, string | n
     headers: { Authorization: `Bearer ${header}.${changed}.` },
   })
 }
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  vi.restoreAllMocks()
+  for (const mock of Object.values(paidAdapters)) mock.mockReset()
+})
 
 afterAll(async () => {
   await Promise.all(apps.map((app) => deleteApp(app)))
@@ -98,5 +134,85 @@ describe('Firebase Auth Emulator＋実Admin SDK＋Route Handler', () => {
     const response = await GET(withEmulatorClaims(session.request, { auth_time: 1 }))
     expect(response.status).toBe(401)
     expect((await response.json()).error.code).toBe('session_revoked')
+  })
+})
+
+const paidRoutes = [
+  [
+    '/api/trips/generate',
+    'TRIP_GENERATION_ENABLED',
+    generate,
+    sampleGenerateTripRequest,
+    paidAdapters.generateJson,
+  ],
+  [
+    '/api/trips/verify',
+    'TRIP_VERIFICATION_ENABLED',
+    verify,
+    { trip: sampleTrip },
+    paidAdapters.searchPlaces,
+  ],
+  [
+    '/api/trips/revise',
+    'TRIP_REVISION_ENABLED',
+    revise,
+    sampleReviseTripRequest,
+    paidAdapters.generateJson,
+  ],
+  [
+    '/api/learnings/candidates',
+    'LEARNING_CANDIDATES_ENABLED',
+    candidates,
+    { trip: sampleTrip, revisions: [], feedback: '昼食後は休みたかった' },
+    paidAdapters.generateJson,
+  ],
+] as const
+
+describe.each(paidRoutes)('POST %s のAuth Emulator統合', (path, flag, post, input, paidCall) => {
+  function request(authorization?: string | null) {
+    return new Request(`http://localhost${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authorization && { Authorization: authorization }),
+      },
+      body: JSON.stringify(input),
+    })
+  }
+
+  it('実Admin SDKで検証できた要求だけが課金アダプターへ進む', async () => {
+    vi.stubEnv(flag, 'true')
+    const session = await createSession(`costly-${flag}`)
+    const authorization = session.request.headers.get('authorization')
+    const expired = withEmulatorClaims(session.request, { exp: 1 }).headers.get('authorization')
+
+    async function expectRejected(incoming: Request, code: string) {
+      const response = await post(incoming)
+      expect(response.status).toBe(401)
+      expect(await response.json()).toEqual({ error: { code, message: expect.any(String) } })
+      expect(incoming.bodyUsed).toBe(false)
+      for (const mock of Object.values(paidAdapters)) expect(mock).not.toHaveBeenCalled()
+    }
+
+    await expectRejected(request(), 'unauthenticated')
+    await expectRejected(request('Bearer invalid.invalid.invalid'), 'invalid_token')
+    await expectRejected(request(expired), 'token_expired')
+
+    // 認証後の動作を確かめるため、最初の有料処理をモックで失敗させる。
+    paidCall.mockRejectedValue(new Error('mocked provider failure'))
+    const logs = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const response = await post(request(authorization))
+    expect(response.status).toBe(502)
+    expect(paidCall).toHaveBeenCalled()
+
+    await getAdminAuth().revokeRefreshTokens(session.user.uid)
+    // Emulatorの時刻粒度に依存せず、失効前に認証されたトークンとして検証する。
+    const revoked = withEmulatorClaims(session.request, { auth_time: 1 }).headers.get(
+      'authorization',
+    )
+    paidCall.mockClear()
+    logs.mockClear()
+    await expectRejected(request(revoked), 'session_revoked')
+    expect(logs).not.toHaveBeenCalled()
   })
 })

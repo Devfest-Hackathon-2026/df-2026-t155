@@ -1,3 +1,4 @@
+import { meteredGemini } from '../../../../server/cost-control/providers'
 import { createLazyVertexGeminiClient } from '../../../../server/gemini/client'
 import {
   generateLearningCandidates,
@@ -15,12 +16,19 @@ export const runtime = 'nodejs'
 const client = createLazyVertexGeminiClient(process.env)
 
 const logFailure = (event: CandidatesFailureEvent) => {
-  console.error('[learning-candidates] 生成に失敗', event)
+  console.error(
+    '[learning-candidates] 生成に失敗',
+    event.kind === 'gemini_call' ? event : { kind: event.kind },
+  )
 }
 
 export async function POST(request: Request): Promise<Response> {
   return handleLearningCandidatesRequest(request, {
     isEnabled: () => isLearningCandidatesEnabled(process.env),
-    generate: (input) => generateLearningCandidates(input, { client, report: logFailure }),
+    generate: (input, operation) =>
+      generateLearningCandidates(input, {
+        client: meteredGemini(operation, client),
+        report: logFailure,
+      }),
   })
 }

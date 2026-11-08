@@ -1,3 +1,4 @@
+import { meteredGemini, meteredMaps } from '../../../../server/cost-control/providers'
 import { createLazyVertexGeminiClient } from '../../../../server/gemini/client'
 import { createLazyMapsClient } from '../../../../server/maps'
 import { handleReviseTripRequest, isTripRevisionEnabled } from '../../../../server/revision/handler'
@@ -11,12 +12,20 @@ const client = createLazyVertexGeminiClient(process.env)
 const maps = createLazyMapsClient(process.env)
 
 const logFailure = (event: RevisionFailureEvent) => {
-  console.error('[trip-revision] 候補の作成に失敗', event)
+  console.error(
+    '[trip-revision] 候補の作成に失敗',
+    event.kind === 'gemini_call' ? event : { kind: event.kind },
+  )
 }
 
 export async function POST(request: Request): Promise<Response> {
   return handleReviseTripRequest(request, {
     isEnabled: () => isTripRevisionEnabled(process.env),
-    revise: (tripRequest) => reviseTrip(tripRequest, { client, maps, report: logFailure }),
+    revise: (tripRequest, operation) =>
+      reviseTrip(tripRequest, {
+        client: meteredGemini(operation, client),
+        maps: meteredMaps(operation, maps),
+        report: logFailure,
+      }),
   })
 }

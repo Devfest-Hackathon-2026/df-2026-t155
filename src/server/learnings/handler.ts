@@ -1,3 +1,10 @@
+import { COSTS } from '../cost-control/costs'
+import {
+  isCostlyApiEnabled,
+  requireCostlyApiActor,
+  runCostlyOperation,
+  type CostlyOperation,
+} from '../costly-api'
 import { errorResponse, noStoreHeaders, readBodyWithLimit } from '../http'
 import { LearningReviewInputSchema, type LearningReviewInput } from './candidates-input'
 import {
@@ -6,19 +13,21 @@ import {
 } from './generate-candidates'
 
 // POST /api/learnings/candidates のHTTP処理。振り返りの材料から、学びの「候補」（未承認）を作る。
-// 承認・保存は本人の操作で、このAPIでは行わない（認証が入ってから別のAPIで扱う）。
-// 課金を伴うGemini呼び出しの入口なので、認証・利用制限が入るまでは機能フラグ（既定は無効）で停止する。
-// 無効の間はGeminiを呼ばず、リクエスト本文も読まない。
+// 承認・保存は本人の操作で、このAPIでは行わない（別のAPIで扱う）。
+// 停止中は認証・本文の読み取り・外部API呼び出しを行わない。
 
 // 旅程・変更履歴・感想を含む入力の上限。巨大な入力でプロンプトの費用が膨らむのを防ぐ。
 export const MAX_LEARNING_REQUEST_BYTES = 64 * 1024
 
 export const isLearningCandidatesEnabled = (env: Record<string, string | undefined>): boolean =>
-  env.LEARNING_CANDIDATES_ENABLED?.trim() === 'true'
+  isCostlyApiEnabled(env.LEARNING_CANDIDATES_ENABLED)
 
 export interface LearningCandidatesHandlerDeps {
   isEnabled: () => boolean
-  generate: (input: LearningReviewInput) => Promise<LearningCandidatesResponse>
+  generate: (
+    input: LearningReviewInput,
+    operation: CostlyOperation,
+  ) => Promise<LearningCandidatesResponse>
 }
 
 const HTTP_STATUS_BY_FAILURE = {
@@ -37,6 +46,9 @@ export async function handleLearningCandidatesRequest(
       message: '学びの候補の作成は現在利用できません。',
     })
   }
+  const actor = await requireCostlyApiActor(request)
+  if (actor instanceof Response) return actor
+
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
     return errorResponse(415, {
       status: 'unsupported_media_type',
@@ -84,12 +96,13 @@ export async function handleLearningCandidatesRequest(
 
   let result: LearningCandidatesResponse
   try {
-    result = await deps.generate(parsed.data)
-  } catch (error) {
-    console.error(
-      '[learning-candidates] 想定外のエラー',
-      error instanceof Error ? error.name : error,
+    const outcome = await runCostlyOperation(actor, COSTS.learningCandidates, (operation) =>
+      deps.generate(parsed.data, operation),
     )
+    if (outcome instanceof Response) return outcome
+    result = outcome
+  } catch {
+    console.error('[learning-candidates] 想定外のエラー')
     return errorResponse(500, {
       status: 'internal_error',
       message: '学びの候補の作成中に予期しないエラーが発生しました。',

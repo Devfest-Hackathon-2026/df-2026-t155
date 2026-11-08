@@ -1,22 +1,28 @@
 import { ReviseTripRequestSchema, ReviseTripResponseSchema } from '../../domain'
 import type { ReviseTripRequest, ReviseTripResponse } from '../../domain'
+import { COSTS } from '../cost-control/costs'
+import {
+  isCostlyApiEnabled,
+  requireCostlyApiActor,
+  runCostlyOperation,
+  type CostlyOperation,
+} from '../costly-api'
 import { errorResponse, noStoreHeaders, readBodyWithLimit } from '../http'
 import { hasTimeConflict } from '../verification/travel'
 
 // POST /api/trips/revise のHTTP処理。1地点の部分修正の候補（未承認のRevision）を返す。
 // 元の旅程は更新しない。承認・適用はこのAPIでは行わない。
-// GeminiとMapsを呼ぶ（課金を伴う）ため、認証・利用制限が入るまでは機能フラグ（既定は無効）で停止する。
-// 無効の間は、Gemini・Mapsを呼ばず、リクエスト本文も読まない。
+// 停止中は認証・本文の読み取り・Gemini・Maps呼び出しを行わない。
 
 // 旅程1件・修正の理由・現地の報告を含む入力の上限。
 export const MAX_REVISE_REQUEST_BYTES = 64 * 1024
 
 export const isTripRevisionEnabled = (env: Record<string, string | undefined>): boolean =>
-  env.TRIP_REVISION_ENABLED?.trim() === 'true'
+  isCostlyApiEnabled(env.TRIP_REVISION_ENABLED)
 
 export interface ReviseTripHandlerDeps {
   isEnabled: () => boolean
-  revise: (request: ReviseTripRequest) => Promise<ReviseTripResponse>
+  revise: (request: ReviseTripRequest, operation: CostlyOperation) => Promise<ReviseTripResponse>
 }
 
 const HTTP_STATUS_BY_FAILURE = {
@@ -35,6 +41,9 @@ export async function handleReviseTripRequest(
       message: '部分修正は現在利用できません。',
     })
   }
+  const actor = await requireCostlyApiActor(request)
+  if (actor instanceof Response) return actor
+
   // メディアタイプを正確に比べる（パラメータは許す。application/jsonp などは受理しない）。
   const mediaType = request.headers.get('content-type')?.split(';')[0].trim().toLowerCase()
   if (mediaType !== 'application/json') {
@@ -92,9 +101,13 @@ export async function handleReviseTripRequest(
 
   let result: ReviseTripResponse
   try {
-    result = await deps.revise(parsed.data)
-  } catch (error) {
-    console.error('[trip-revision] 想定外のエラー', error instanceof Error ? error.name : error)
+    const outcome = await runCostlyOperation(actor, COSTS.revise, (operation) =>
+      deps.revise(parsed.data, operation),
+    )
+    if (outcome instanceof Response) return outcome
+    result = outcome
+  } catch {
+    console.error('[trip-revision] 想定外のエラー')
     return errorResponse(500, {
       status: 'internal_error',
       message: '部分修正の候補の作成中に予期しないエラーが発生しました。元の旅程は、そのままです。',

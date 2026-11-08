@@ -6,12 +6,12 @@ AIの提案、外部情報による照合、決定論的な制約チェック、
 
 ## API
 
-`POST /api/trips/verify`（`TRIP_VERIFICATION_ENABLED=true` のときだけ有効。既定は無効で、503）
+`POST /api/trips/verify`（既定は無効。本番の招待制デモは `TRIP_VERIFICATION_ENABLED` と共通デモフラグが必要）
 
 - リクエスト：`{ trip }`（旅程1件）。それ以外の項目（移動手段の指定`travelModes`など）は、無視せず、`400 invalid_request`で拒否する。
 - 応答：`200 { status: 'verified', trip }`（根拠とPlace IDを付けた旅程）、`502 external_service_error`（Placesを実際に呼んだ全予定で、Mapsの呼び出しが失敗。呼んだ予定が0件なら、失敗とせず`verified`）。
 - `400 invalid_request`：形式の不正、または、予定の時刻が重なっている・時刻順でない旅程（Mapsは呼ばない）。この時刻の検証は、ハンドラーの事前チェックに加え、内部の`verifyTrip`でも行う（`invalid_trip`として返し、ハンドラーが400に対応づける。防御の二重化）。
-- 課金を伴うため、認証・利用制限が入るまでは、機能フラグで停止する。
+- 有効時はFirebase IDトークン、招待UID、Web App Check、共有利用枠が必要。[認証エラーと公開条件](API_ABUSE_PROTECTION.md)を参照。
 
 ### 移動手段
 

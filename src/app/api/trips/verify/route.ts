@@ -1,3 +1,4 @@
+import { meteredMaps } from '../../../../server/cost-control/providers'
 import { createLazyMapsClient } from '../../../../server/maps'
 import {
   handleVerifyTripRequest,
@@ -14,6 +15,6 @@ const maps = createLazyMapsClient(process.env)
 export async function POST(request: Request): Promise<Response> {
   return handleVerifyTripRequest(request, {
     isEnabled: () => isTripVerificationEnabled(process.env),
-    verify: (trip) => verifyTrip(trip, { maps }),
+    verify: (trip, operation) => verifyTrip(trip, { maps: meteredMaps(operation, maps) }),
   })
 }

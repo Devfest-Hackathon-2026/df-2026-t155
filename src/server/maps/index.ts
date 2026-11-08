@@ -13,8 +13,8 @@ export type {
 export type { RouteOptions, RouteResult, TravelMode } from './routes'
 
 export interface MapsClient {
-  searchPlaces(options: SearchTextOptions): Promise<PlaceSearchResult>
-  computeRoute(options: RouteOptions): Promise<RouteResult>
+  searchPlaces(options: SearchTextOptions, signal?: AbortSignal): Promise<PlaceSearchResult>
+  computeRoute(options: RouteOptions, signal?: AbortSignal): Promise<RouteResult>
 }
 
 export interface MapsClientDeps {
@@ -25,8 +25,8 @@ export interface MapsClientDeps {
 
 export function createMapsClient(deps: MapsClientDeps): MapsClient {
   return {
-    searchPlaces: (options) => searchPlaces(deps, options),
-    computeRoute: (options) => computeRoute(deps, options),
+    searchPlaces: (options, signal) => searchPlaces(deps, options, signal),
+    computeRoute: (options, signal) => computeRoute(deps, options, signal),
   }
 }
 
@@ -37,11 +37,11 @@ export function createLazyMapsClient(env: Record<string, string | undefined>): M
   const get = () =>
     (client ??= createMapsClient({ auth: createAdcMapsAuth(loadMapsConfig(env).project) }))
   return {
-    async searchPlaces(options) {
-      return get().searchPlaces(options)
+    async searchPlaces(options, signal) {
+      return get().searchPlaces(options, signal)
     },
-    async computeRoute(options) {
-      return get().computeRoute(options)
+    async computeRoute(options, signal) {
+      return get().computeRoute(options, signal)
     },
   }
 }

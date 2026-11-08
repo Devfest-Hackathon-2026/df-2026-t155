@@ -1,8 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import '../../../tests/helpers/mock-cost-control'
+
+import { GET as listLearnings } from '@/app/api/learnings/route'
+import {
+  GET as getLearning,
+  DELETE as removeLearning,
+} from '@/app/api/learnings/[learningId]/route'
 import { POST as approve } from '@/app/api/learnings/[learningId]/approve/route'
-import { POST as saveRevision } from '@/app/api/trips/[tripId]/revisions/route'
-import { PATCH as updateTrip } from '@/app/api/trips/[tripId]/route'
+import {
+  GET as listRevisions,
+  POST as saveRevision,
+} from '@/app/api/trips/[tripId]/revisions/route'
+import { GET as getRevision } from '@/app/api/trips/[tripId]/revisions/[revisionId]/route'
+import { GET as getTrip, PATCH as updateTrip } from '@/app/api/trips/[tripId]/route'
 import { GET as listTrips, POST as createTrip } from '@/app/api/trips/route'
 import { sampleLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 import { getAdminFirestore } from '@/lib/firebase/admin'
@@ -25,6 +36,50 @@ function request(body?: unknown, authorization = 'Bearer a.b.c') {
     ...(body === undefined ? {} : { method: 'POST', body: JSON.stringify(body) }),
   })
 }
+
+const protectedTripContext = { params: Promise.resolve({ tripId: trip.id }) }
+const protectedRevisionContext = {
+  params: Promise.resolve({ tripId: trip.id, revisionId: sampleRevision.id }),
+}
+const protectedLearningContext = { params: Promise.resolve({ learningId: 'learning' }) }
+
+const dataRoutes = [
+  ['GET', '/api/trips', listTrips],
+  ['POST', '/api/trips', createTrip],
+  ['GET', '/api/trips/trip', (incoming: Request) => getTrip(incoming, protectedTripContext)],
+  ['PATCH', '/api/trips/trip', (incoming: Request) => updateTrip(incoming, protectedTripContext)],
+  [
+    'GET',
+    '/api/trips/trip/revisions',
+    (incoming: Request) => listRevisions(incoming, protectedTripContext),
+  ],
+  [
+    'POST',
+    '/api/trips/trip/revisions',
+    (incoming: Request) => saveRevision(incoming, protectedTripContext),
+  ],
+  [
+    'GET',
+    '/api/trips/trip/revisions/revision',
+    (incoming: Request) => getRevision(incoming, protectedRevisionContext),
+  ],
+  ['GET', '/api/learnings', listLearnings],
+  [
+    'GET',
+    '/api/learnings/learning',
+    (incoming: Request) => getLearning(incoming, protectedLearningContext),
+  ],
+  [
+    'POST',
+    '/api/learnings/learning/approve',
+    (incoming: Request) => approve(incoming, protectedLearningContext),
+  ],
+  [
+    'DELETE',
+    '/api/learnings/learning?expectedVersion=1',
+    (incoming: Request) => removeLearning(incoming, protectedLearningContext),
+  ],
+] as const
 
 beforeEach(() => {
   vi.resetAllMocks()
@@ -58,18 +113,52 @@ describe('Firestore APIのHTTP境界', () => {
     },
   )
 
-  it.each([
-    ['auth/argument-error', 'invalid_token'],
-    ['auth/id-token-revoked', 'session_revoked'],
-    ['auth/id-token-expired', 'token_expired'],
-  ])('認証失敗 %s は保存先への接続前に拒否する', async (code, expected) => {
-    verifyIdToken.mockRejectedValue({ code })
-    const response = await createTrip(request(trip))
-    expect(response.status).toBe(401)
-    expect(await response.json()).toMatchObject({ error: { code: expected } })
-    expect(verifyIdToken).toHaveBeenCalledWith('a.b.c', true)
-    expect(getAdminFirestore).not.toHaveBeenCalled()
-    expect(console.error).not.toHaveBeenCalled()
+  describe.each(dataRoutes)('%s %s のDBアクセス前の停止', (method, path, route) => {
+    function incoming(authorization?: string) {
+      return new Request(`http://localhost${path}`, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authorization && { Authorization: authorization }),
+        },
+        ...((method === 'POST' || method === 'PATCH') && { body: '{broken' }),
+      })
+    }
+
+    it('本番ではフラグが有効でも認証・本文・DBの前に停止する', async () => {
+      vi.stubEnv('NODE_ENV', 'production')
+      const request = incoming('Bearer a.b.c')
+      const response = await route(request)
+
+      expect(response.status).toBe(503)
+      expect(await response.json()).toMatchObject({ error: { code: 'persistence_disabled' } })
+      expect(request.bodyUsed).toBe(false)
+      expect(verifyIdToken).not.toHaveBeenCalled()
+      expect(getAdminFirestore).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      [undefined, undefined, 'unauthenticated'],
+      ['Bearer invalid', undefined, 'invalid_token'],
+      ['Bearer a.b.c', 'auth/argument-error', 'invalid_token'],
+      ['Bearer a.b.c', 'auth/id-token-revoked', 'session_revoked'],
+      ['Bearer a.b.c', 'auth/id-token-expired', 'token_expired'],
+    ])('認証失敗を本文・DBアクセスの前に拒否する (%s, %s)', async (header, sdkCode, code) => {
+      if (sdkCode) verifyIdToken.mockRejectedValue({ code: sdkCode })
+      const request = incoming(header)
+      const response = await route(request)
+
+      expect(response.status).toBe(401)
+      expect(await response.json()).toMatchObject({ error: { code } })
+      expect(request.bodyUsed).toBe(false)
+      if (sdkCode) {
+        expect(verifyIdToken).toHaveBeenCalledExactlyOnceWith('a.b.c', true)
+      } else {
+        expect(verifyIdToken).not.toHaveBeenCalled()
+      }
+      expect(getAdminFirestore).not.toHaveBeenCalled()
+      expect(console.error).not.toHaveBeenCalled()
+    })
   })
 
   it('不正な入力・所有者・新しい版・承認の自己申告は入力エラーにする', async () => {

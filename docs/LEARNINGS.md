@@ -30,7 +30,8 @@
 - リクエスト：`{ trip, revisions, feedback }`（`revisions`は同じ旅程の変更履歴、`feedback`は1000文字以内、本文は64KB以下）。
 - 成功：HTTP 200、`{ status: 'proposed', learnings }`（1〜3件、すべてpending）。
 - 失敗：`no_candidates`／`insufficient_information`は422、`external_service_error`は502。API層のエラーは400／413／415／500／503（旅程生成APIと同じ）。
-- **機能フラグ`LEARNING_CANDIDATES_ENABLED=true`のときだけ受け付ける（既定は無効、503）。** 課金を伴うため、認証・利用制限が入るまで停止しておく。
+- 既定は無効。本番の招待制デモは `LEARNING_CANDIDATES_ENABLED` と共通デモフラグが必要。
+- 有効時はFirebase IDトークン、招待UID、Web App Check、共有利用枠が必要。[認証エラーと公開条件](API_ABUSE_PROTECTION.md)を参照。
 - Geminiの呼び出しは1リクエスト1回。再試行しない。
 
 ## 承認済みデータとの接続

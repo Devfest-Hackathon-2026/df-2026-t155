@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import '../../../../../tests/helpers/mock-cost-control'
+
 import { sampleGenerateTripRequest } from '../../../../domain/samples'
 import { POST } from './route'
+
+vi.mock('@/lib/firebase/admin', () => ({
+  getAdminAuth: () => ({ verifyIdToken: async () => ({ uid: 'test-actor' }) }),
+}))
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -12,7 +18,7 @@ afterEach(() => {
 const post = () =>
   new Request('http://localhost/api/trips/generate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test.id.token' },
     body: JSON.stringify(sampleGenerateTripRequest),
   })
 

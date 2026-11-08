@@ -49,7 +49,7 @@ export interface GeminiJsonRequest {
 
 export interface GeminiJsonClient {
   // スキーマに沿ったJSON文字列を返す。内容の検証は呼び出し側が行う。
-  generateJson(request: GeminiJsonRequest): Promise<string>
+  generateJson(request: GeminiJsonRequest, signal?: AbortSignal): Promise<string>
 }
 
 export interface GeminiConfig {
@@ -80,13 +80,15 @@ export function createGeminiJsonClient(
   generateContent: GenerateContentFn,
 ): GeminiJsonClient {
   return {
-    async generateJson({ systemInstruction, prompt, responseJsonSchema }) {
+    async generateJson({ systemInstruction, prompt, responseJsonSchema }, signal) {
       let response: GenerateContentResponse
       try {
+        signal?.throwIfAborted()
         response = await generateContent({
           model: config.model,
           contents: prompt,
           config: {
+            ...(signal && { abortSignal: signal }),
             systemInstruction,
             responseMimeType: 'application/json',
             responseJsonSchema,
@@ -149,9 +151,9 @@ export function createLazyVertexGeminiClient(
 ): GeminiJsonClient {
   let client: GeminiJsonClient | undefined
   return {
-    async generateJson(request) {
+    async generateJson(request, signal) {
       client ??= createVertexGeminiClient(loadGeminiConfig(env))
-      return client.generateJson(request)
+      return client.generateJson(request, signal)
     },
   }
 }

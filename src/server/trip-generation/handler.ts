@@ -4,27 +4,35 @@ import {
   type GenerateTripRequest,
   type GenerateTripResponse,
 } from '../../domain'
+import { COSTS } from '../cost-control/costs'
+import {
+  isCostlyApiEnabled,
+  requireCostlyApiActor,
+  runCostlyOperation,
+  type CostlyOperation,
+} from '../costly-api'
 import { errorResponse, noStoreHeaders, readBodyWithLimit } from '../http'
 
 export type { ApiErrorBody, ApiErrorStatus } from '../http'
 
 // POST /api/trips/generate のHTTP処理。Route Handlerは薄く保ち、検証とステータスの対応は
-// ここでテストできるようにする。認証・レート制限は未実装（認証は#10の範囲）。
-// 課金を伴う外部呼び出しの入口なので、認証・利用制限が入るまでは機能フラグ（既定は無効）で
-// 停止しておく。無効の間はGeminiを呼ばず、リクエスト本文も読まない。
+// ここでテストできるようにする。停止中は認証・本文の読み取り・Gemini呼び出しを行わない。
 
 // 旅行条件として十分大きい上限。巨大な入力でプロンプトの費用が膨らむのを防ぐ。
 export const MAX_REQUEST_BYTES = 32 * 1024
 
-// 認証・利用制限が入るまでは既定で無効。TRIP_GENERATION_ENABLED=true のときだけ受け付ける。
+// 既定で無効。TRIP_GENERATION_ENABLED=true のときだけ受け付ける。
 // 'true'以外の値・未設定はすべて無効として扱う。
 export const isTripGenerationEnabled = (env: Record<string, string | undefined>): boolean =>
-  env.TRIP_GENERATION_ENABLED?.trim() === 'true'
+  isCostlyApiEnabled(env.TRIP_GENERATION_ENABLED)
 
 export interface GenerateTripHandlerDeps {
   // 旅程生成を受け付けるか（機能フラグ）。リクエストごとに評価する。
   isEnabled: () => boolean
-  generate: (request: GenerateTripRequest) => Promise<GenerateTripResponse>
+  generate: (
+    request: GenerateTripRequest,
+    operation: CostlyOperation,
+  ) => Promise<GenerateTripResponse>
 }
 
 const HTTP_STATUS_BY_FAILURE = {
@@ -43,6 +51,8 @@ export async function handleGenerateTripRequest(
       message: '旅程の生成は現在利用できません。',
     })
   }
+  const actor = await requireCostlyApiActor(request)
+  if (actor instanceof Response) return actor
 
   // 単純なフォーム送信など、JSON以外の形式で外部呼び出しを起こされないようにする。
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) {
@@ -97,9 +107,13 @@ export async function handleGenerateTripRequest(
 
   let result: GenerateTripResponse
   try {
-    result = await deps.generate(parsedRequest.data)
-  } catch (error) {
-    console.error('[trip-generation] 想定外のエラー', error instanceof Error ? error.name : error)
+    const outcome = await runCostlyOperation(actor, COSTS.generate, (operation) =>
+      deps.generate(parsedRequest.data, operation),
+    )
+    if (outcome instanceof Response) return outcome
+    result = outcome
+  } catch {
+    console.error('[trip-generation] 想定外のエラー')
     return errorResponse(500, {
       status: 'internal_error',
       message: '旅程の生成中に予期しないエラーが発生しました。',

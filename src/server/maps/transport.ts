@@ -13,7 +13,7 @@ export interface MapsTransportDeps {
 // 応答の中身は検証せず、JSONとして解釈した値（unknown）を返す。検証は各アダプターが行う。
 export async function postJson(
   deps: MapsTransportDeps,
-  request: { url: string; body: unknown; fieldMask: string },
+  request: { url: string; body: unknown; fieldMask: string; signal?: AbortSignal },
 ): Promise<unknown> {
   const { auth, fetchFn = fetch, timeoutMs = MAPS_TIMEOUT_MS } = deps
   // 認証（ADCのトークン取得）と、Mapsへの送受信の合計に、1つの期限（timeoutMs）を設ける。
@@ -25,6 +25,8 @@ export async function postJson(
   const timedOut = () =>
     new MapsCallError('timeout', 'Google Maps Platformの応答がタイムアウトしました')
 
+  if (request.signal?.aborted) throw timedOut()
+
   let authHeaders: Record<string, string>
   try {
     authHeaders = await withDeadline(auth.getHeaders(), timeoutMs)
@@ -35,11 +37,13 @@ export async function postJson(
     // 安全なauth_failedへ変換する。メッセージや原因に、機密情報が含まれ得るため。
     throw new MapsCallError('auth_failed', 'Google Maps Platformの認証に失敗しました')
   }
-  if (remaining() <= 0) throw timedOut()
+  if (remaining() <= 0 || request.signal?.aborted) throw timedOut()
 
   // 送信の内容は、期限の確認の前に、すべて組み立てる（組み立てに時間がかかった場合も、確認に含める）。
+  const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.floor(remaining())))
   const init: RequestInit = {
     method: 'POST',
+    redirect: 'error',
     headers: {
       ...authHeaders,
       // 日本語のクエリをUTF-8で送ることを明示する。
@@ -49,10 +53,10 @@ export async function postJson(
     },
     body: JSON.stringify(request.body),
     // 認証と準備に使った時間を除いた、残りの時間。
-    signal: AbortSignal.timeout(Math.max(1, Math.floor(remaining()))),
+    signal: request.signal ? AbortSignal.any([request.signal, timeoutSignal]) : timeoutSignal,
   }
   // 実際にMapsを呼び出す直前にも、期限を確認する。期限を過ぎていれば、送らない（課金を発生させない）。
-  if (remaining() <= 0) throw timedOut()
+  if (remaining() <= 0 || request.signal?.aborted) throw timedOut()
 
   let response: Response
   let text: string
@@ -70,7 +74,7 @@ export async function postJson(
 
   // 本文の受信が完了した時点でも、期限を確認する（イベントループの遅れで、期限のタイマーが実行されず、
   // 期限を過ぎてから正常に終了した場合を、成功として扱わない）。
-  if (remaining() <= 0) throw timedOut()
+  if (remaining() <= 0 || request.signal?.aborted) throw timedOut()
 
   if (!response.ok) {
     throw new MapsCallError('api_error', 'Google Maps Platformがエラーを返しました', {

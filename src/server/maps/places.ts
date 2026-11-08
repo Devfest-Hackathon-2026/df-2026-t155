@@ -119,6 +119,7 @@ const OptionsSchema = z.object({
 export async function searchPlaces(
   deps: MapsTransportDeps,
   options: SearchTextOptions,
+  signal?: AbortSignal,
 ): Promise<PlaceSearchResult> {
   const parsedOptions = OptionsSchema.safeParse(options)
   if (!parsedOptions.success) {
@@ -129,6 +130,7 @@ export async function searchPlaces(
     parsedOptions.data
 
   const json = await postJson(deps, {
+    signal,
     url: PLACES_SEARCH_TEXT_URL,
     fieldMask: (includeOpeningHours
       ? [...BASE_FIELD_MASK, OPENING_HOURS_FIELD]

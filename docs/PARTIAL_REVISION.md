@@ -24,7 +24,8 @@ Issue #9（1地点の部分修正）のうち、**代替候補の生成・照合
 - 成功：HTTP 200、`{ status: 'proposed', revisions, comparisons? }`。`revisions`は1〜3件で、**すべて`pending`**。同じ旅程・版・対象。
 - 失敗（元の旅程は維持される）：`no_candidates`／`insufficient_information`は422、`external_service_error`は502。
   API層のエラーは、旅程生成APIと同じ（400／413／415／500／503）。
-- **機能フラグ`TRIP_REVISION_ENABLED=true`のときだけ受け付ける**（既定は無効・503）。GeminiとMapsを呼ぶため。
+- 既定は無効。本番の招待制デモは `TRIP_REVISION_ENABLED` と共通デモフラグが必要。
+- 有効時はFirebase IDトークン、招待UID、Web App Check、共有利用枠が必要。[認証エラーと公開条件](API_ABUSE_PROTECTION.md)を参照。
 
 ## 変更前後の移動区間の比較（`comparisons`）
 

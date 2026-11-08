@@ -6,6 +6,8 @@ import type { Trip } from '@/domain'
 import type { Actor } from '@/lib/auth/server'
 import { getAdminFirestore } from '@/lib/firebase/admin'
 
+import type { WriteTransaction } from '../cost-control/write-transaction'
+
 import {
   CreateTripBodySchema,
   RecordIdSchema,
@@ -35,13 +37,13 @@ export class FirestoreTripStore {
     return this.trips(actor).doc(recordKey(id))
   }
 
-  async createTrip(actor: Actor, input: Trip): Promise<Trip> {
+  async createTrip(actor: Actor, input: Trip, write: WriteTransaction): Promise<Trip> {
     const document = toTripDocument(actor, parseInput(CreateTripBodySchema, input))
     const collection = this.trips(actor)
     const ref = collection.doc(recordKey(document.trip.id))
     const trip = fromTripDocument(document, ref.id)
 
-    await this.db.runTransaction(async (transaction) => {
+    await write(async (transaction) => {
       if (readOwned(actor, await transaction.get(ref), fromTripDocument)) {
         throw new PersistenceError('already_exists')
       }
@@ -64,11 +66,12 @@ export class FirestoreTripStore {
     id: string,
     expectedVersion: number,
     preferences: string[],
+    write: WriteTransaction,
   ): Promise<Trip> {
     const ref = this.trip(actor, id)
     const update = parseInput(UpdateTripBodySchema, { expectedVersion, preferences })
 
-    return this.db.runTransaction(async (transaction) => {
+    return write(async (transaction) => {
       const current = found(readOwned(actor, await transaction.get(ref), fromTripDocument))
       if (current.version !== update.expectedVersion) throw new PersistenceError('version_conflict')
 
@@ -87,6 +90,7 @@ export class FirestoreTripStore {
     actor: Actor,
     tripId: string,
     input: PendingRevision,
+    write: WriteTransaction,
   ): Promise<PendingRevision> {
     const document = toRevisionDocument(actor, parseInput(SaveRevisionBodySchema, input))
     const normalizedTripId = parseInput(RecordIdSchema, tripId)
@@ -96,7 +100,7 @@ export class FirestoreTripStore {
     if (document.revision.tripId !== normalizedTripId) throw new PersistenceError('invalid_request')
     const revision = fromRevisionDocument(document, normalizedTripId, ref.id)
 
-    await this.db.runTransaction(async (transaction) => {
+    await write(async (transaction) => {
       const trip = found(readOwned(actor, await transaction.get(tripRef), fromTripDocument))
       if (trip.version !== revision.baseTripVersion) throw new PersistenceError('version_conflict')
       const currentStop = trip.stops.find(({ id }) => id === revision.targetStopId)
@@ -117,8 +121,14 @@ export class FirestoreTripStore {
     return revision
   }
 
-  async getRevision(actor: Actor, tripId: string, revisionId: string): Promise<PendingRevision> {
+  async getRevision(
+    actor: Actor,
+    tripId: string,
+    revisionId: string,
+    assertActive: () => void,
+  ): Promise<PendingRevision> {
     const trip = await this.getTrip(actor, tripId)
+    assertActive()
     const snapshot = await this.trip(actor, trip.id)
       .collection('revisions')
       .doc(recordKey(revisionId))
@@ -128,8 +138,9 @@ export class FirestoreTripStore {
     )
   }
 
-  async listRevisions(actor: Actor, tripId: string) {
+  async listRevisions(actor: Actor, tripId: string, assertActive: () => void) {
     const trip = await this.getTrip(actor, tripId)
+    assertActive()
     const collection = this.trip(actor, trip.id).collection('revisions')
     return listOwned(actor, collection, REVISION_LIMIT, (data, key) =>
       fromRevisionDocument(data, trip.id, key),
