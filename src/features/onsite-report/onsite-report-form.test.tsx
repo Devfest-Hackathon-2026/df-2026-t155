@@ -149,7 +149,12 @@ describe('送信', () => {
     expect(submission.targetStopId).toBe('stop-lunch')
     expect(submission.context).toEqual({
       phase: 'on_site',
-      report: { kind: 'actual', description: '閉店・臨時休業だった' },
+      report: {
+        kind: 'actual',
+        description: '閉店・臨時休業だった',
+        category: 'closed',
+        targetStopId: submission.targetStopId,
+      },
     })
     expect(RevisionContextSchema.safeParse(submission.context).success).toBe(true)
     expect(submission.reason).toContain('閉店・臨時休業だった')

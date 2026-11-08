@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { ReviseTripResponseSchema, TripSchema, type ReviseTripRequest } from '../../domain'
+import {
+  ReviseTripResponseSchema,
+  TripSchema,
+  type Evidence,
+  type ReviseTripRequest,
+} from '../../domain'
 import { sampleTrip } from '../../domain/samples'
 import { GeminiCallError, type GeminiJsonClient } from '../gemini/client'
 import {
@@ -67,6 +72,7 @@ const route = (modes: { WALK?: RouteResult; DRIVE?: RouteResult }) => (options: 
 
 const basePlaces: MapsSetup['places'] = {
   朝の庭園: found('P1', '朝の庭園（架空）'),
+  昼食店A: found('P2', '昼食店A（架空）'),
   '14時の予約展示': found('P3', '14時の予約展示（架空）'),
   昼食店B: found('P4', '昼食店B'),
   昼食店C: found('P5', '昼食店C'),
@@ -84,6 +90,38 @@ const request: ReviseTripRequest = {
   targetStopId: 'stop-lunch',
   reason: '昼食店が臨時休業だった',
   context: { phase: 'planning' },
+}
+
+const closureRequest: ReviseTripRequest = {
+  ...request,
+  context: {
+    phase: 'on_site',
+    report: {
+      kind: 'actual',
+      description: '閉店・臨時休業だった',
+      category: 'closed',
+      targetStopId: request.targetStopId,
+    },
+  },
+}
+const closureEvidence: Evidence = {
+  ...sampleTrip.stops[1].evidence[0],
+  source: { kind: 'user_report', label: '本人の現地報告' },
+  applicability: '予定当日の現地での報告',
+  explanation: '利用者が休業の掲示を確認したと報告しました。',
+}
+const delayContext: ReviseTripRequest['context'] = {
+  phase: 'on_site',
+  report: {
+    kind: 'actual',
+    description: '移動の途中です',
+    category: 'delayed',
+    targetStopId: request.targetStopId,
+  },
+}
+const withoutOriginal: MapsSetup = {
+  ...fitting,
+  places: { ...basePlaces, 昼食店A: { status: 'no_candidates' } },
 }
 
 const clientReturning = (text: string) => ({ generateJson: vi.fn().mockResolvedValue(text) })
@@ -110,6 +148,149 @@ const proposed = (response: Awaited<ReturnType<typeof reviseTrip>>) => {
   if (response.status !== 'proposed') throw new Error(`提案を期待しました: ${response.status}`)
   return response.revisions
 }
+
+describe('現地報告と差し替え先の照合', () => {
+  it('元施設の同定に本人報告の矛盾があれば、Placesで別IDが返っても未確認', async () => {
+    const report = { ...closureEvidence, subject: 'place_identity' as const }
+    const trip = {
+      ...sampleTrip,
+      stops: sampleTrip.stops.with(1, { ...sampleTrip.stops[1], evidence: [report] }),
+    }
+    const { response } = await run(fitting, clientReturning(draft([{ name: '昼食店B' }])), {
+      ...request,
+      trip,
+    })
+    const [revision] = proposed(response)
+    expect(revision.constraintCheck.status).toBe('unknown')
+    expect(revision.diff.before.evidence).toEqual([report])
+    expect(revision.diff.after.evidence).not.toContainEqual(report)
+    expect(
+      await checkRevisionConstraints(trip, revision, { maps: makeMaps(fitting) }),
+    ).toMatchObject({
+      status: 'checked',
+      constraintCheck: { status: 'unknown' },
+    })
+  })
+
+  it.each(['delayed', 'other', 'legacy'] as const)(
+    '構造化または旧形式の報告 %s を安全に扱う',
+    async (category) => {
+      const base = { kind: 'actual' as const, description: '表示文を差し替えた報告' }
+      const report =
+        category === 'legacy' ? base : { ...base, category, targetStopId: request.targetStopId }
+      const { response } = await run(fitting, clientReturning(draft([{ name: '昼食店B' }])), {
+        ...request,
+        context: { phase: 'on_site', report },
+      })
+      expect(proposed(response)[0].constraintCheck.status).toBe('unknown')
+    },
+  )
+  it.each(['actual', 'simulated'] as const)(
+    '別名が同じPlace IDなら除外する（%s）',
+    async (kind) => {
+      const { response, maps } = await run(
+        { ...fitting, places: { ...basePlaces, 別名の食堂: found('P2', '別名の食堂') } },
+        clientReturning(draft([{ name: '別名の食堂' }])),
+        {
+          ...closureRequest,
+          context: { phase: 'on_site', report: { kind, description: '臨時休業' } },
+        },
+      )
+
+      expect(response.status).toBe('no_candidates')
+      expect(maps.searchPlaces).toHaveBeenCalledTimes(4)
+      expect(maps.computeRoute).toHaveBeenCalledTimes(2) // 変更前の2区間のみ
+    },
+  )
+
+  it('同じ系列の別支店を残し、元の店の休業報告は変更前に保持する', async () => {
+    const trip = {
+      ...sampleTrip,
+      stops: sampleTrip.stops.with(1, { ...sampleTrip.stops[1], evidence: [closureEvidence] }),
+    }
+    const name = '昼食店A（別支店）'
+    const { response } = await run(
+      { ...fitting, places: { [name]: found('P4', name), ...basePlaces } },
+      clientReturning(draft([{ name }])),
+      { ...closureRequest, trip },
+    )
+
+    const [revision] = proposed(response)
+    expect(revision.constraintCheck.status).toBe('satisfied')
+    expect(revision.diff.before.evidence).toEqual([closureEvidence])
+    expect(revision.diff.after.evidence).not.toContainEqual(closureEvidence)
+    expect(revision.diff.after.placeId).toBe('P4')
+    expect(revision.context).toEqual(closureRequest.context)
+  })
+
+  it.each([
+    ['検索結果なし', withoutOriginal],
+    [
+      '保存済みIDと照合結果が不一致',
+      { ...fitting, places: { ...basePlaces, 昼食店A: found('P8', '昼食店A（架空）') } },
+    ],
+  ] as const)(
+    '元の施設が未同定なら、保存済みPlace IDがあっても別施設と確認できない（%s）',
+    async (_, setup) => {
+      const trip = {
+        ...sampleTrip,
+        stops: sampleTrip.stops.with(1, { ...sampleTrip.stops[1], placeId: 'P2' }),
+      }
+      const { response } = await run(setup, clientReturning(draft([{ name: '昼食店B' }])), {
+        ...closureRequest,
+        trip,
+      })
+
+      expect(proposed(response)[0].constraintCheck).toMatchObject({
+        status: 'unknown',
+        explanation: expect.stringContaining('元の施設'),
+      })
+    },
+  )
+
+  it('元の施設の検索が失敗した場合は照合未成立と区別してAPI失敗を返す', async () => {
+    const places = { ...basePlaces, 昼食店A: new MapsCallError('network', 'test') }
+    const { response, maps } = await run(
+      { ...fitting, places },
+      clientReturning(draft([{ name: '昼食店B' }])),
+      closureRequest,
+    )
+    expect(response.status).toBe('external_service_error')
+    expect(maps.computeRoute).not.toHaveBeenCalled()
+  })
+
+  it('元の予定に、候補にも関わるか判断できない矛盾があれば保持して承認を止める', async () => {
+    const report = { ...closureEvidence, subject: 'other' as const }
+    const trip = {
+      ...sampleTrip,
+      stops: sampleTrip.stops.with(1, { ...sampleTrip.stops[1], evidence: [report] }),
+    }
+    const { response } = await run(fitting, clientReturning(draft([{ name: '昼食店B' }])), {
+      ...closureRequest,
+      trip,
+    })
+    const [revision] = proposed(response)
+    expect(revision.constraintCheck.status).toBe('unknown')
+    expect(revision.diff.before.evidence).toEqual([report])
+  })
+
+  it('定型の遅延報告があると、通常の経路が時間内でも現在の到着見込みは未確認', async () => {
+    const { response } = await run(fitting, clientReturning(draft([{ name: '昼食店B' }])), {
+      ...closureRequest,
+      context: delayContext,
+    })
+    const [revision] = proposed(response)
+    expect(revision.constraintCheck).toMatchObject({
+      status: 'unknown',
+      explanation: expect.stringContaining('遅れ'),
+    })
+    expect(revision.context).toEqual(delayContext)
+    const travel = revision.diff.after.evidence.filter(({ subject }) => subject === 'travel_time')
+    expect(travel).toMatchObject([{ status: 'consistent' }, { status: 'consistent' }])
+    expect(travel.every(({ explanation }) => explanation.includes('元の時刻表'))).toBe(true)
+    expect(revision.impactSummary).not.toContain('間に合う見込み')
+  })
+})
 
 describe('reviseTrip: 成功', () => {
   it('条件を満たす候補を、未承認のRevisionとして返し、元の旅程は変えない', async () => {
@@ -176,6 +357,27 @@ describe('reviseTrip: 成功', () => {
 
     expect(revisions.map((r) => r.diff.after.name)).toEqual(['昼食店B', '昼食店C'])
     expect(new Set(revisions.map((r) => r.id)).size).toBe(2)
+  })
+
+  it('別名の同一Place IDを一つにまとめ、同じ系列の別Place IDは残す', async () => {
+    const names = ['食堂（本店）', '本店の別名', '食堂（駅前支店）']
+    const places = {
+      ...basePlaces,
+      [names[0]]: found('P4', names[0]),
+      [names[1]]: found('P4', names[1]),
+      [names[2]]: found('P5', names[2]),
+    }
+    const { response, maps } = await run(
+      { ...fitting, places },
+      clientReturning(draft(names.map((name) => ({ name })))),
+    )
+    const revisions = proposed(response)
+    expect(revisions.map(({ diff }) => [diff.after.name, diff.after.placeId])).toEqual([
+      [names[0], 'P4'],
+      [names[2], 'P5'],
+    ])
+    expect(response).toMatchObject({ comparisons: revisions.map(({ id }) => ({ revisionId: id })) })
+    expect(maps.computeRoute).toHaveBeenCalledTimes(6)
   })
 
   it('旅行前と現地報告で、同じ処理を使う（文脈はRevisionに引き継ぐ）', async () => {
@@ -435,7 +637,7 @@ describe('乗車・乗換の予定は、施設として照合しない', () => {
 describe('reviseTrip: 候補の整理', () => {
   it('元の予定・重複と同じ名称は、候補にしない（照合は残った1件だけ）', async () => {
     const client = clientReturning(
-      draft([{ name: '昼食店A' }, { name: '昼食店B' }, { name: '昼食店B' }]),
+      draft([{ name: '昼食店A（架空）' }, { name: '昼食店B' }, { name: '昼食店B' }]),
     )
     const { response, maps } = await run(fitting, client)
 
@@ -457,7 +659,7 @@ describe('reviseTrip: 候補の整理', () => {
   it('有効な候補が無ければ、Mapsを呼ばずに no_candidates', async () => {
     const { response, maps, events } = await run(
       fitting,
-      clientReturning(draft([{ name: '昼食店A' }])),
+      clientReturning(draft([{ name: '昼食店A（架空）' }])),
     )
 
     expect(response.status).toBe('no_candidates')
@@ -543,6 +745,134 @@ describe('checkRevisionConstraints（適用の直前の再検証）', () => {
     return proposed(response)[0]
   }
   const deps = (setup: MapsSetup) => ({ maps: makeMaps(setup), now: () => NOW })
+
+  it('模擬報告の文脈を落とした実行時入力を、照会前に拒否する', async () => {
+    const simulated = {
+      ...(await revisionFor()),
+      context: { phase: 'on_site', report: { kind: 'simulated', description: '模擬' } },
+    }
+    const withoutContext = { targetStopId: simulated.targetStopId, diff: simulated.diff }
+    const recheck = deps(fitting)
+    // @ts-expect-error 必須文脈の欠落を、型を通らない入力として再現する。
+    expect(await checkRevisionConstraints(sampleTrip, withoutContext, recheck)).toMatchObject({
+      status: 'not_possible',
+    })
+    expect(recheck.maps.searchPlaces).not.toHaveBeenCalled()
+  })
+
+  it('再照合で別名候補が元のPlace IDへ解決した場合は適用を拒否する', async () => {
+    const revision = { ...(await revisionFor()), context: closureRequest.context }
+    const setup = {
+      ...fitting,
+      places: { ...basePlaces, 昼食店B: found('P2', '昼食店B') },
+    }
+    const recheck = deps(setup)
+    expect(await checkRevisionConstraints(sampleTrip, revision, recheck)).toMatchObject({
+      status: 'not_possible',
+      explanation: expect.stringContaining('同じ施設'),
+    })
+    expect(recheck.maps.computeRoute).not.toHaveBeenCalled()
+  })
+
+  it('再検証でも元施設が未同定なら承認不可', async () => {
+    const revision = await revisionFor()
+    const result = await checkRevisionConstraints(sampleTrip, revision, deps(withoutOriginal))
+    expect(result).toMatchObject({
+      status: 'checked',
+      constraintCheck: { status: 'unknown', explanation: expect.stringContaining('元の施設') },
+    })
+  })
+
+  it('復元したTripの根拠が空でも、候補の変更前に保持した同定の本人報告で適用を止める', async () => {
+    const revision = await revisionFor()
+    const before = {
+      ...revision.diff.before,
+      evidence: [{ ...closureEvidence, subject: 'place_identity' as const }],
+    }
+    const trip = {
+      ...sampleTrip,
+      stops: sampleTrip.stops.map((stop) => ({ ...stop, evidence: [] })),
+    }
+    expect(
+      await checkRevisionConstraints(
+        trip,
+        { ...revision, diff: { ...revision.diff, before } },
+        deps(fitting),
+      ),
+    ).toMatchObject({
+      status: 'checked',
+      constraintCheck: { status: 'unknown', explanation: expect.stringContaining('元の施設') },
+    })
+  })
+
+  it.each(['opening_hours', 'other'] as const)(
+    '再照合でPlacesが整合しても候補の現地報告の矛盾（%s）は解消済みにしない',
+    async (subject) => {
+      const revision = await revisionFor()
+      const conflicting = { ...closureEvidence, subject, claim: '候補を予定どおり利用できる' }
+      const diff = {
+        ...revision.diff,
+        after: { ...revision.diff.after, evidence: [...revision.diff.after.evidence, conflicting] },
+      }
+      const result = await checkRevisionConstraints(
+        sampleTrip,
+        { ...revision, context: closureRequest.context, diff },
+        deps(fitting),
+      )
+      expect(result).toMatchObject({ status: 'checked', constraintCheck: { status: 'unknown' } })
+      if (result.status !== 'checked') throw new Error('再照合結果を期待しました')
+      expect(result.after.evidence).toContainEqual(conflicting)
+    },
+  )
+
+  it('旅程の元の予定に適用範囲が不明な現地報告が残る場合は再検証でも承認不可', async () => {
+    const revision = await revisionFor()
+    const trip = {
+      ...sampleTrip,
+      stops: sampleTrip.stops.with(1, {
+        ...sampleTrip.stops[1],
+        evidence: [{ ...closureEvidence, subject: 'other' }],
+      }),
+    }
+    const result = await checkRevisionConstraints(trip, revision, deps(fitting))
+    expect(result).toMatchObject({ status: 'checked', constraintCheck: { status: 'unknown' } })
+  })
+
+  it('模擬報告の候補は適用前に拒否する', async () => {
+    const revision = {
+      ...(await revisionFor()),
+      context: {
+        phase: 'on_site',
+        report: { kind: 'simulated', description: '臨時休業' },
+      } as const,
+    }
+    const recheck = deps(fitting)
+    expect(await checkRevisionConstraints(sampleTrip, revision, recheck)).toMatchObject({
+      status: 'not_possible',
+      explanation: expect.stringContaining('模擬報告'),
+    })
+    expect(recheck.maps.searchPlaces).not.toHaveBeenCalled()
+  })
+
+  it('適用前にも遅延報告を通常のRoutes所要時間だけでは解消しない', async () => {
+    const revision = { ...(await revisionFor()), context: delayContext }
+    expect(await checkRevisionConstraints(sampleTrip, revision, deps(fitting))).toMatchObject({
+      status: 'checked',
+      constraintCheck: { status: 'unknown', explanation: expect.stringContaining('遅れ') },
+    })
+  })
+
+  it('前の予定と重なる場合は経路を取得できなくても再検証で拒否する', async () => {
+    const revision = await revisionFor()
+    const trip = {
+      ...sampleTrip,
+      stops: sampleTrip.stops.with(0, { ...sampleTrip.stops[0], durationMinutes: 121 }),
+    }
+    expect(await checkRevisionConstraints(trip, revision, deps(fitting))).toMatchObject({
+      status: 'not_possible',
+      explanation: expect.stringContaining('重な'),
+    })
+  })
 
   it('条件が変わらなければ、satisfied として再確認できる', async () => {
     const revision = await revisionFor()
@@ -678,7 +1008,7 @@ describe('変更前後の移動区間の比較（comparisons）', () => {
   })
 
   it('変更前の施設を特定できなければ、「区間なし」ではなく「確認できない（未照会）」として返す', async () => {
-    const { response } = await run(fitting, clientReturning(draft([{ name: '昼食店B' }])))
+    const { response } = await run(withoutOriginal, clientReturning(draft([{ name: '昼食店B' }])))
     if (response.status !== 'proposed') throw new Error('提案を期待しました')
     const { before } = response.comparisons![0]
 

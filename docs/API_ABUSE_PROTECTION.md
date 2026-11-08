@@ -2,7 +2,7 @@
 
 同一サーバープロセス・Firestoreクライアント内では、確認済みの利用枠超過だけを最大1秒、最大512件保持し、同じ要求の繰り返しによる制御文書の読取を減らす。全体枠とUID別枠を分け、費用ベクトルとUIDのハッシュを照合する。許可やストア障害は保存しない。制御文書の停止や期間切替、同時枠の解放後も最大1秒は以前の429が返る場合があるが、この間に予約を許可することはない。各インスタンスのキャッシュは共有されず、新規キーや期限切れ、インスタンス増加に伴うFirestore読取やその他の費用を制限しないため、全体の課金上限ではない。
 
-**一般公開不可。** 課金4ルートと保存11操作に、Firebase本人認証、招待UID、Web App Check、Firestoreの分散利用枠を接続した。機能フラグと本番の共通デモフラグは既定無効。画面側APIクライアントは本人のBearerとApp Checkを送る（#52のreflection-flowは未接続）。実環境検証・拒否トラフィックの費用対策が公開前に残る。Console設定と実Firebase疎通は未実施。 [Issue #29](https://github.com/cludewn/groundtrip/issues/29)
+**一般公開不可。** 課金4ルートと保存14操作（Revision適用と本人報告の取得・解消を含む）に、Firebase本人認証、招待UID、Web App Check、Firestoreの分散利用枠を接続した。機能フラグと本番の共通デモフラグは既定無効。画面側APIクライアントは本人のBearerとApp Checkを送る。#54等の画面統合・実環境検証・拒否トラフィックの費用対策が公開前に残る。Console設定と実Firebase疎通は未実施。 [Issue #29](https://github.com/cludewn/groundtrip/issues/29)
 
 #60は短期間・少人数の審査用。既存App Hostingでこの保護を適用し、公開の判断とは分けて[期間限定の運用条件](DEMO_ACCESS.md#期間限定のapp-hosting運用)を確認する。
 
@@ -19,7 +19,7 @@
 
 Geminiは `@google/genai` をVertex AIモードで使用し、認証はADC。既存設定はSDKの送信試行1回、自動継続なし、45秒のタイムアウト、最大出力8192トークン。PlacesとRoutesはADCのOAuthと `X-Goog-User-Project` を使い、アダプターで再送せず、呼び出し単位のタイムアウトは15秒。並列に送る処理がある。Placesは営業時間を要求する場合としない場合でSKUが異なる。リクエスト数と別に、Gemini入出力トークン・PlacesのFieldMask・Routesの機能別SKUを費用に計上する。 [部分修正の呼び出し内訳](PARTIAL_REVISION.md) · [Placesの課金](https://developers.google.com/maps/documentation/places/web-service/usage-and-billing) · [Routesの課金](https://developers.google.com/maps/documentation/routes/usage-and-billing)
 
-`checkRevisionConstraints` は内部からMapsを呼べる。現行mainにはこれを呼ぶ確定Routeがなく、#9で接続する際に新たな入口として扱う。現行のHTTP経路の点検では、Routeからの直接呼び出しに加えて、Geminiの `generateContent`、Placesの `searchText`、Routesの `computeRoutes` の利用箇所とアダプターの呼び出し元を確認した。
+`checkRevisionConstraints` は内部からMapsを呼べる。Revision適用（`POST /api/trips/{tripId}/revisions/{revisionId}/apply`）の確定前の再検証がこれを呼ぶため、適用を新たな有料の入口として扱い、同じ操作の予約と計量済みclientに接続した（[統合の内訳](#並行開発との統合)）。現行のHTTP経路の点検では、Routeからの直接呼び出しに加えて、Geminiの `generateContent`、Placesの `searchText`、Routesの `computeRoutes` の利用箇所とアダプターの呼び出し元を確認した。
 
 Firestoreは `PERSISTENCE_ENABLED` で制御し、各Routeの `withDataActor` が本文・業務ストア操作の前にフラグ、認証、招待UID、App Check、分散利用枠を確認する。Admin SDKは全拒否Rulesを迂回するため、UIDで保存先を分け、保存済みデータで所有者を検証する。以下の操作数は既存の取得件数やトランザクションの構造から見た目安で、再試行やインデックス等の課金は別に見積もる。 [保存APIと保存枠](FIRESTORE_PERSISTENCE.md) · [Firestore課金](https://firebase.google.com/docs/firestore/pricing)
 
@@ -28,6 +28,8 @@ Firestoreは `PERSISTENCE_ENABLED` で制御し、各Routeの `withDataActor` �
 | `GET /api/trips`、`GET /api/trips/{tripId}`                                           | 一覧は最大21文書、個別は1文書を読む                                                                                                  |
 | `POST /api/trips`、`PATCH /api/trips/{tripId}`                                        | 作成は重複・保存枠の確認と2書き込み。保存枠カウンターがない場合は最大20件を追加で確認。PATCHは版確認の読み取りとTripの書き込み       |
 | `GET /api/trips/{tripId}/revisions`、`GET /api/trips/{tripId}/revisions/{revisionId}` | 親Tripを読んでから、一覧は最大13文書、個別は1文書を読む                                                                              |
+| `POST /api/trips/{tripId}/revisions/{revisionId}/apply`                               | Trip・候補を読み、Places/Routesで再検証してから、Tripの更新と候補の承認を1つの取引で確定。有料と保存の枠を同時に使う                 |
+| `GET`・`POST /api/trips/{tripId}/revision-reports/{stopId}`                           | 本人報告の状態を読む。解消はTripを更新する。旧文書は候補を最大13件読んで状態を復元する                                               |
 | `POST /api/trips/{tripId}/revisions`                                                  | 親Trip・候補・保存枠の確認と2書き込み。保存枠カウンターがない場合は最大12件を追加で確認                                              |
 | `GET /api/learnings`、`GET /api/learnings/{learningId}`                               | 一覧は最大41文書、個別は1文書を読む                                                                                                  |
 | `POST /api/learnings/{learningId}/approve`                                            | Learning・元Tripを確認。初回は保存枠の確認と2書き込み。保存枠カウンターがない場合は最大40件を追加で確認。再承認はLearningを1書き込み |
@@ -121,13 +123,13 @@ App Checkの署名検証は統合テストでモックにする。Auth Emulator�
 
 ### 業務書き込みのfencing
 
-Trip作成・PATCH、Revision候補保存、Learning承認・撤回の5操作は、共通の `operation.write` を必須とする。
+Trip作成・PATCH、Revision候補保存、Learning承認・撤回に加え、Revision適用の確定、本人報告の解消、部分修正の生成前に行う本人報告の記録（保存有効時）の8操作は、共通の `operation.write` を必須とする。
 業務書き込みをステージした後、制御文書を読み、同じ期間・UID・リースIDに有効な保存枠があることを確認する。
 同じコミットに制御文書の `lastUpdateTime` を条件とする更新を含める。
 リースの書き込み権失効、回収、停止、期間切替が先に永続化されれば、古い業務書き込みもまとめて拒否される。
 制御文書の他の更新でも版競合が起き得るため、競合の頻度は実環境で測る。
 
-6つのGETは業務データを書き込まない。認証・利用枠と期限の確認を維持し、親Tripの読取後にRevisionを取得する2操作は、次の照会前にも期限を確認する。
+7つのGET（本人報告の取得を含む）は業務データを書き込まない。認証・利用枠と期限の確認を維持し、親Tripの読取後にRevisionを取得する2操作は、次の照会前にも期限を確認する。
 タイムアウトはクライアントへの応答を打ち切る。コミットが先に到達した場合や、失効の永続化より先に進行中のコミットが確定した場合は保存が成立し得る。
 Firestore Admin SDKのコミット条件でサーバーの現在時刻を `until` と比較できないため、制御文書に変化がなければ、最終期限確認からコミットまでの実時間の隙間が残る。
 コミット段階の失敗は `write_result_unknown` とし、業務コールバックを再試行しない。再送前に版・IDで取得し直す。
@@ -154,7 +156,7 @@ HTTPの期限でも送信済みRPCや内部再送が取り消されたとは判�
 
 ## 並行開発との統合
 
-- **#9・#46のRevision適用**。暫定予約は **業務Firestore読取14・書込10・Places 4・Routes 4**。読取は初回のTrip・Revision各1、従来の5試行を見込んだ確定前の再読取10、コミット結果照会2。書込はTrip・Revision各1の5倍の保守枠。Placesは前・次・元・候補、Routesは候補の前後2区間×徒歩・車の最大2手段。実装時は `withDataActor(request, cost, ...)` または `requireCostlyApiActor` と `runCostlyOperation` で、最初の業務読取前にまとめて予約する。Mapsは `meteredMaps(operation, maps)` 経由で取引外、確定は `operation.write` 経由で版を再照合し、結果照会も同じ操作の読取枠内で行う。1試行化後も14／10は暫定の保守枠とし、制御文書の費用は別計上する。
+- **#9・#46のRevision適用**（統合済み）。適用は `withDataActor(request, COSTS.applyRevision, ...)` で、最初の業務読取前に **業務Firestore読取14・書込10・Places 4・Routes 4** をまとめて予約する（有料と保存の枠を同時に取る）。読取は初回のTrip・Revision各1、従来の5試行を見込んだ確定前の再読取10、コミット結果照会2。書込はTrip・Revision各1の5倍の保守枠。Mapsは `meteredMaps(operation, maps)` 経由で取引外、確定は `operation.write` 経由で版を再照合し、結果不明のときの照会も同じ操作の読取枠内で一度だけ行う。業務の取引は再試行しないため実際は14／10に収まるが、暫定の保守枠として維持し、制御文書の費用は別計上する。適用の機能フラグ `TRIP_REVISION_APPLY_ENABLED` は認証・予約より前に判定する（停止中の要求が枠を消費しない）。部分修正の生成は、保存有効時だけ本人報告の記録（読取14・書込1の5倍、`operation.write`）を同じ操作の予約に加える。保存の候補保存は、旧文書の本人報告の復元分を加えた読取28・書込3の5倍。[予約量の一覧](PARTIAL_REVISION.md#29の予約量)
 - **#53・#54のLearning選択付き生成**。本人の保存済み一覧は最大40件＋打切り判定1件なので、選択がある場合は **業務Firestore読取最大41・Gemini 1** を業務読取前に一括予約する。検証済み `Actor.uid` と選択 `{ id, version }` を使い、現行版・承認状態・地域を再照合してから `meteredGemini(operation, client)` に渡す。認証ヘッダーを持たない内部 `Request` でHTTP Handlerを呼び直す経路は、同じActorと操作を受ける業務処理へ接続し直す。空選択では業務読取を省略できる。本文の `learnings` を信用する旧経路は閉じた（HTTP契約は `learningSelections` のみ。旧形式は400）。選択がある生成は `COSTS.generateWithLearnings`（Gemini 1・読取 `LEARNING_LIMIT + 1`）、空選択は `COSTS.generate`。 [#53](https://github.com/cludewn/groundtrip/pull/53) · [#54](https://github.com/cludewn/groundtrip/pull/54)
 - **#50・#52・#55を含むUI統合**。本人のBearerとApp Check、401・403・429・503の表示、セッション変更を接続する（生成・照合・修正候補・学び候補・学び一覧は接続済み。#52のreflection-flowは未接続）。結果不明の書き込みは既存版・IDの読取から確認する。適用やLearning承認のボタンからの自動再送を避ける。
 
@@ -189,7 +191,7 @@ App Hostingの初期案は `runConfig.maxInstances: 2`、`runConfig.concurrency:
 - [ ] #9・#46・#53・#54との統合後の全入口を再棚卸しし、同じ費用・同時枠に接続した。
 - [ ] 担当者がフラグ無効のビルドを用意し、対象サービスだけを段階的に `true` にした設定をロールアウトして、拒否動作・利用量・費用を監視できる。
 
-`pnpm test` は既存の課金4ルートと保存11操作を対象に、認証失敗・本番停止が下流処理より先に効くことを確認する。
+`pnpm test` は既存の課金4ルートと保存14操作（部分修正の生成・適用・本人報告を含む）を対象に、認証失敗・本番停止が下流処理より先に効くことを確認する。
 `pnpm test:emulators` では実Admin SDKとAuth Emulatorを使い、課金4ルートの有効・期限切れ・失効トークンの扱いを確認する。
 Gemini・Places・Routesはモックに差し替える。Emulatorは署名なしトークンを使うため、本番の署名検証は別途確認する。
 

@@ -1,9 +1,12 @@
-import type { Evidence, Stop } from '@/domain'
+import type { Evidence, RevisionContext, Stop, TravelComparison, TravelSegmentSlot } from '@/domain'
+import {
+  confirmedOriginalPlaceId,
+  isRevisionEvidenceConflict,
+  revisionReportUncertainty,
+} from '@/domain/revision-evidence'
 import { toMinutes } from '@/features/trip-map/model'
 
-import type { TravelComparison, TravelSlot } from './api-client'
-
-export function routesSegment(slot?: TravelSlot) {
+export function routesSegment(slot?: TravelSegmentSlot) {
   if (
     slot?.presence === 'segment' &&
     slot.segment.status === 'known' &&
@@ -21,7 +24,15 @@ function checkableEvidence(evidence: Evidence, subject: Evidence['subject']) {
 
 export function checkStopEvidence(stop: Stop, subject: 'place_identity' | 'opening_hours') {
   const evidence = stop.evidence.filter((item) => checkableEvidence(item, subject))
-  if (evidence.some(({ status }) => status === 'conflicting'))
+  if (
+    evidence.some(({ status }) => status === 'conflicting') ||
+    stop.evidence.some(
+      (item) =>
+        item.subject === subject &&
+        item.source.kind === 'user_report' &&
+        item.status === 'conflicting',
+    )
+  )
     return { status: 'conflicting' } as const
   const consistent = evidence.find(({ status }) => status === 'consistent')
   if (consistent && evidence.every(({ status }) => status === 'consistent')) {
@@ -36,6 +47,7 @@ export function checkCandidate(
   previous?: Stop,
   next?: Stop,
   comparison?: TravelComparison,
+  { original, context }: { original?: Stop; context?: RevisionContext } = {},
 ) {
   const legs = [
     { from: previous, to: candidate, slot: comparison?.after.fromPrevious },
@@ -56,19 +68,40 @@ export function checkCandidate(
     if (!segment) hasUnknownTravel = true
   }
 
+  const originalPlaceId =
+    original && confirmedOriginalPlaceId(original, comparison?.originalPlaceId)
+  if (candidate.placeId && originalPlaceId === candidate.placeId) {
+    return {
+      status: 'unknown',
+      explanation: '元の予定と同じ施設が示されているため、別の施設への差し替えを確認できません。',
+    } as const
+  }
+
+  if (!originalPlaceId) {
+    return {
+      status: 'unknown',
+      explanation: '元の施設を特定できず、候補と別の施設か確認できていません。',
+    } as const
+  }
+
+  if (
+    candidate.evidence.some((item) => isRevisionEvidenceConflict(item, 'candidate')) ||
+    original?.evidence.some((item) => isRevisionEvidenceConflict(item, 'original'))
+  ) {
+    return {
+      status: 'unknown',
+      explanation: '承認に関係する根拠の矛盾が解消できていません。',
+    } as const
+  }
+
+  const reportUncertainty = context
+    ? revisionReportUncertainty(context)
+    : '修正時の報告文脈を確認できません。'
+  if (reportUncertainty) return { status: 'unknown', explanation: reportUncertainty } as const
+
   const identity = checkStopEvidence(candidate, 'place_identity').status
   const hours = checkStopEvidence(candidate, 'opening_hours').status
   const travel = candidate.evidence.filter((item) => checkableEvidence(item, 'travel_time'))
-  if (
-    identity === 'conflicting' ||
-    hours === 'conflicting' ||
-    travel.some(({ status }) => status === 'conflicting')
-  ) {
-    return {
-      status: 'violated',
-      explanation: '施設・営業時間・移動について、候補と情報源の内容に矛盾があります。',
-    } as const
-  }
   if (
     !candidate.placeId ||
     identity !== 'consistent' ||

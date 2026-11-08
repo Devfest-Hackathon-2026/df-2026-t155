@@ -2,21 +2,26 @@ import { z } from 'zod'
 
 import {
   ApprovedLearningSchema,
+  ConstraintCheckSchema,
   LearningSchema,
+  ReviseTripRequestSchema,
+  RevisionProposalTokenSchema,
+  RevisionReasonSchema,
+  RevisionRouteEndpointsSchema,
   RevisionSchema,
   StopSchema,
   TripSchema,
 } from '@/domain'
-import { IdSchema, TextSchema } from '@/domain/primitives'
+import { IdSchema, TextSchema, TimestampSchema } from '@/domain/primitives'
 import { MAX_LEARNING_CONTENT_LENGTH } from '@/lib/learnings/lifecycle'
 
 export const RecordIdSchema = IdSchema.max(256).refine((id) => id.isWellFormed())
 export const VersionSchema = z.int().nonnegative()
 
 // URLのドットセグメントはエンコードしても正規化される。
-const PathIdSchema = RecordIdSchema.refine((id) => id !== '.' && id !== '..')
+export const PathIdSchema = RecordIdSchema.refine((id) => id !== '.' && id !== '..')
 const tripRouteNames = new Set(['generate', 'verify', 'revise'])
-const TripIdSchema = PathIdSchema.refine((id) => !tripRouteNames.has(id))
+export const TripIdSchema = PathIdSchema.refine((id) => !tripRouteNames.has(id))
 export const LearningIdSchema = PathIdSchema.refine((id) => id !== 'candidates')
 
 const RegionSchema = TextSchema.max(120)
@@ -47,15 +52,59 @@ export const PendingRevisionSchema = RevisionSchema.safeExtend({
   approval: z.strictObject({ status: z.literal('pending') }),
 })
 
+export const RevisionTravelModesSchema = ReviseTripRequestSchema.shape.travelModes.unwrap()
+
 export const SaveRevisionBodySchema = PendingRevisionSchema.safeExtend({
   id: PathIdSchema,
   tripId: RecordIdSchema,
   targetStopId: RecordIdSchema,
-  reason: TextSchema.max(1000),
+  reason: RevisionReasonSchema,
   context: PendingRevisionSchema.shape.context.refine(
     (context) => context.phase === 'planning' || context.report.description.length <= 1000,
   ),
   diff: z.strictObject({ before: WriteStopSchema, after: WriteStopSchema }),
+  travelModes: RevisionTravelModesSchema.optional(),
+  proposalToken: RevisionProposalTokenSchema.optional(),
+})
+
+export const RevisionReportStateSchema = z.strictObject({
+  reportVersion: VersionSchema,
+  blocked: z.boolean(),
+})
+export const RevisionReportStatesSchema = z
+  .array(RevisionReportStateSchema.extend({ stopId: RecordIdSchema }))
+  .max(4)
+  .refine((states) => new Set(states.map(({ stopId }) => stopId)).size === states.length)
+export const ResolveRevisionReportSchema = z.strictObject({
+  expectedVersion: VersionSchema,
+  expectedReportVersion: VersionSchema,
+  confirm: z.literal(true),
+})
+export const RevisionReportResponseSchema = RevisionReportStateSchema.extend({
+  tripVersion: VersionSchema,
+})
+export const RevisionProofContextSchema = z.strictObject({
+  reportVersion: VersionSchema,
+  routeEndpoints: RevisionRouteEndpointsSchema,
+})
+export type RevisionProofContext = z.infer<typeof RevisionProofContextSchema>
+
+// 保存履歴の承認と現在の制約判定は別。根拠を保存しないため、読み取り時は要再照合とする。
+const UncheckedRevisionRecordSchema = z.strictObject({
+  ...RevisionSchema.shape,
+  constraintCheck: ConstraintCheckSchema.extend({ status: z.literal('not_checked') }),
+})
+const hasValidRevisionDiff = (revision: z.infer<typeof UncheckedRevisionRecordSchema>) =>
+  PendingRevisionSchema.safeParse({ ...revision, approval: { status: 'pending' } }).success
+
+export const SavedRevisionSchema = UncheckedRevisionRecordSchema.refine(hasValidRevisionDiff)
+const AppliedRevisionSchema = UncheckedRevisionRecordSchema.extend({
+  approval: z.strictObject({ status: z.literal('approved'), decidedAt: TimestampSchema }),
+}).refine(hasValidRevisionDiff)
+
+export const ApplyRevisionBodySchema = z.strictObject({
+  expectedVersion: VersionSchema,
+  confirm: z.literal(true),
 })
 
 export const ApproveLearningBodySchema = z.strictObject({
@@ -91,11 +140,37 @@ export const TripListResponseSchema = z.strictObject({
   trips: z.array(TripSchema),
   listInfo: ListInfoSchema,
 })
-export const RevisionResponseSchema = z.strictObject({ revision: PendingRevisionSchema })
+export const PendingRevisionResponseSchema = z.strictObject({ revision: PendingRevisionSchema })
+export const RevisionResponseSchema = z.strictObject({ revision: SavedRevisionSchema })
 export const RevisionListResponseSchema = z.strictObject({
-  revisions: z.array(PendingRevisionSchema),
+  revisions: z.array(SavedRevisionSchema),
   listInfo: ListInfoSchema,
 })
+export const ApplyRevisionResponseSchema = z
+  .strictObject({
+    status: z.enum(['applied', 'already_applied']),
+    appliedTripVersion: VersionSchema.positive(),
+    trip: TripSchema,
+    revision: AppliedRevisionSchema,
+    verification: z.enum(['fresh', 'not_available']),
+  })
+  .refine(
+    ({ status, appliedTripVersion, trip, revision, verification }) =>
+      trip.id === revision.tripId &&
+      appliedTripVersion === revision.baseTripVersion + 1 &&
+      (status === 'applied'
+        ? verification === 'fresh' &&
+          trip.version === appliedTripVersion &&
+          trip.stops.some(
+            (stop) =>
+              stop.id === revision.targetStopId &&
+              stop.evidence.length > 0 &&
+              stop.evidence.every(({ status }) => status === 'consistent'),
+          )
+        : verification === 'not_available' &&
+          trip.version >= appliedTripVersion &&
+          trip.stops.every(({ evidence }) => evidence.length === 0)),
+  )
 export const LearningListResponseSchema = z.strictObject({
   learnings: z.array(VersionedLearningSchema),
   listInfo: ListInfoSchema,
@@ -103,5 +178,8 @@ export const LearningListResponseSchema = z.strictObject({
 
 export type ApproveLearningBody = z.infer<typeof ApproveLearningBodySchema>
 export type PendingRevision = z.infer<typeof PendingRevisionSchema>
+export type SaveRevisionBody = z.infer<typeof SaveRevisionBodySchema>
+export type SavedRevision = z.infer<typeof SavedRevisionSchema>
+export type ApplyRevisionResult = z.infer<typeof ApplyRevisionResponseSchema>
 export type VersionedLearning = z.infer<typeof VersionedLearningSchema>
 export type LearningSelection = z.infer<typeof LearningSelectionSchema>

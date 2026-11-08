@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import '../../../tests/helpers/mock-cost-control'
 
 import type { ReviseTripResponse } from '../../domain'
+import { WriteFenceError } from '../cost-control/write-transaction'
+import { PersistenceError } from '../persistence/errors'
 import { sampleReviseTripRequest, sampleRevision } from '../../domain/samples'
 import { MAX_REVISE_REQUEST_BYTES, handleReviseTripRequest, isTripRevisionEnabled } from './handler'
 
@@ -174,6 +176,45 @@ describe('POST /api/trips/revise', () => {
 
     expect(response.status).toBe(500)
     expect(JSON.stringify(await response.json())).not.toContain('秘密')
+  })
+
+  it('保存層の失敗は状態コードつきで返し、元の旅程を変えない', async () => {
+    const revise = vi.fn().mockRejectedValue(new PersistenceError('version_conflict'))
+    const response = await handleReviseTripRequest(post(validBody), {
+      isEnabled: () => true,
+      revise,
+    })
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toMatchObject({ status: 'version_conflict' })
+  })
+
+  it.each([
+    ['lease_lost', 'protection_unavailable'],
+    ['write_result_unknown', 'write_result_unknown'],
+  ] as const)(
+    '書き込み権の失敗 %s は503 %s で返し、内部の例外を漏らさない',
+    async (code, status) => {
+      const revise = vi.fn().mockRejectedValue(new WriteFenceError(code))
+      const response = await handleReviseTripRequest(post(validBody), {
+        isEnabled: () => true,
+        revise,
+      })
+
+      expect(response.status).toBe(503)
+      const body = await response.json()
+      expect(body.status).toBe(status)
+      expect(JSON.stringify(body)).not.toContain('WriteFenceError')
+    },
+  )
+
+  it('認証済みの利用者と、予約した操作を保存層・生成処理へ渡す', async () => {
+    const { revise, deps } = setup()
+    await handleReviseTripRequest(post(validBody), deps)
+
+    const [, operation, actor] = revise.mock.calls[0]
+    expect(actor).toEqual({ uid: 'test-actor' })
+    expect(operation).toMatchObject({ write: expect.any(Function), call: expect.any(Function) })
   })
 
   it('承認済みのRevisionなど、契約に反する応答は、流さずに500', async () => {

@@ -1,4 +1,6 @@
 import {
+  matchesRevisionReportTarget,
+  RevisionContextSchema,
   ReviseTripResponseSchema,
   type ConstraintCheck,
   type Evidence,
@@ -6,18 +8,25 @@ import {
   type ReviseTripRequest,
   type ReviseTripResponse,
   type Revision,
+  type RevisionContext,
+  type RevisionRouteEndpoints,
   type Stop,
   type Trip,
   type TravelComparison,
   type TravelSegmentSlot,
 } from '../../domain'
 import {
+  confirmedOriginalPlaceId,
+  isRevisionEvidenceConflict,
+  revisionReportUncertainty,
+} from '../../domain/revision-evidence'
+import {
   GeminiCallError,
   type GeminiCallFailureReason,
   type GeminiJsonClient,
 } from '../gemini/client'
 import type { MapsClient } from '../maps'
-import { parseName } from '../verification/name-match'
+import { compareNames, parseName } from '../verification/name-match'
 import {
   measureSegment,
   normalizeModes,
@@ -60,7 +69,7 @@ const GEMINI_FAILURE_MESSAGES: Record<GeminiCallFailureReason, string> = {
 const MAPS_FAILURE_MESSAGE =
   'Google Mapsとの通信に失敗したため、候補を確認できませんでした。時間をおいて、もう一度お試しください。元の旅程は、そのままです。'
 
-// 名称の比較キー。括弧書き（支店名など）を除いた名称で比べる：同じ店の別の支店も、同じ名称として扱う（保守的）。
+// 変更対象外の予定との名称重複を避けるための比較キー。
 const nameKey = (name: string): string => parseName(name).base
 
 // 乗車・乗換の予定は、予定名だけでは実際の終了地点を確定できないため、施設として差し替えない。
@@ -75,37 +84,56 @@ const externalFailure = (message: string): ProposalFailure => ({
 // （Places・Routesの呼び出し回数を増やさないため）。前後の施設は、Place IDだけが必要なので、営業時間は要求しない。
 interface Surroundings {
   target: Stop
-  index: number
   previous: Stop | null
   next: Stop | null
   previousPlaceId: string | null
   nextPlaceId: string | null
   originalPlaceId: string | null
+  originalLookupFailed: boolean
+  adjacentPlaceMismatch: boolean
 }
 
 async function resolveSurroundings(
   trip: Trip,
-  targetStopId: string,
+  index: number,
   maps: Pick<MapsClient, 'searchPlaces'>,
-  options: { includeOriginal: boolean },
-): Promise<Surroundings | null> {
-  const index = trip.stops.findIndex((stop) => stop.id === targetStopId)
-  if (index < 0) return null
-  const target = trip.stops[index]
+  priorOriginalEvidence: readonly Evidence[] = [],
+): Promise<Surroundings> {
+  const originalStop = trip.stops[index]
+  // 保存から復元された旅程に根拠が無い場合も、提案時の未解決の本人報告で適用を止める。
+  const conflicts = priorOriginalEvidence.filter((item) =>
+    isRevisionEvidenceConflict(item, 'original'),
+  )
+  const target =
+    conflicts.length > 0
+      ? { ...originalStop, evidence: [...originalStop.evidence, ...conflicts] }
+      : originalStop
   const previous = trip.stops[index - 1] ?? null
   const next = trip.stops[index + 1] ?? null
   // 乗車・乗換は施設ではないため、Placesを呼ばない（nullは「照会していない」。経路の根拠はunknownになる）。
-  const placeId = async (stop: Stop | null) =>
-    stop && stop.kind !== 'transport'
-      ? ((await lookupPlace(maps, trip, stop, { includeOpeningHours: false })).place?.placeId ??
-        null)
-      : null
-  const [previousPlaceId, nextPlaceId, originalPlaceId] = await Promise.all([
+  const placeId = async (stop: Stop | null) => {
+    if (!stop || stop.kind === 'transport') return { id: null, mismatch: false }
+    const { place } = await lookupPlace(maps, trip, stop, { includeOpeningHours: false })
+    return {
+      id: confirmedOriginalPlaceId(stop, place?.placeId),
+      mismatch: Boolean(place && stop.placeId !== null && place.placeId !== stop.placeId),
+    }
+  }
+  const [previousLookup, nextLookup, original] = await Promise.all([
     placeId(previous),
     placeId(next),
-    options.includeOriginal ? placeId(target) : Promise.resolve(null),
+    lookupPlace(maps, trip, target, { includeOpeningHours: false }),
   ])
-  return { target, index, previous, next, previousPlaceId, nextPlaceId, originalPlaceId }
+  return {
+    target,
+    previous,
+    next,
+    previousPlaceId: previousLookup.id,
+    nextPlaceId: nextLookup.id,
+    adjacentPlaceMismatch: previousLookup.mismatch || nextLookup.mismatch,
+    originalPlaceId: confirmedOriginalPlaceId(target, original.place?.placeId),
+    originalLookupFailed: original.lookup.kind === 'failed',
+  }
 }
 
 interface MeasuredSides {
@@ -164,10 +192,19 @@ const evidenceFrom = (
   suffix: string,
   fields: SegmentEvidenceFields | null,
   checkedAt: string,
-): Evidence | null => (fields ? evidence(stop, suffix, fields, checkedAt) : null)
+  reportImpactUnknown: boolean,
+): Evidence | null => {
+  if (!fields) return null
+  const explanation =
+    reportImpactUnknown && fields.status === 'consistent'
+      ? '元の時刻表で確保した時間内に収まる所要時間です。'
+      : fields.explanation
+  return evidence(stop, suffix, { ...fields, explanation }, checkedAt)
+}
 
 type Evaluation =
   | { kind: 'maps_failed' }
+  | { kind: 'excluded'; explanation: string }
   | {
       kind: 'judged'
       after: Stop
@@ -183,10 +220,16 @@ async function evaluateCandidate(
   trip: Trip,
   surroundings: Surroundings,
   candidateName: string,
-  deps: MapsDeps & { modes: readonly TravelModeSetting[]; checkedAt: string },
+  deps: MapsDeps & {
+    modes: readonly TravelModeSetting[]
+    checkedAt: string
+    context: RevisionContext
+    priorCandidateEvidence?: readonly Evidence[]
+    candidateMeasurements?: Map<string, Promise<MeasuredSides>>
+  },
 ): Promise<Evaluation> {
   const { maps, modes, checkedAt } = deps
-  const { target, previous, next } = surroundings
+  const { target, previous, next, originalPlaceId } = surroundings
   const candidate: Stop = { ...target, name: candidateName, placeId: null, evidence: [] }
 
   const { lookup, place } = await lookupPlace(maps, trip, candidate, { includeOpeningHours: true })
@@ -214,12 +257,18 @@ async function evaluateCandidate(
     }
   }
 
+  if (place.placeId === originalPlaceId) {
+    return { kind: 'excluded', explanation: '元の予定と同じ施設のため、差し替えられません。' }
+  }
+
   const hours = hoursEvidence(trip, candidate, place, checkedAt)
-  const sides = await measureSides(surroundings, candidate, place.placeId, {
-    maps,
-    modes,
-    checkedAt,
-  })
+  const measurements = deps.candidateMeasurements
+  const measured =
+    measurements?.get(place.placeId) ??
+    measureSides(surroundings, candidate, place.placeId, { maps, modes, checkedAt })
+  measurements?.set(place.placeId, measured)
+  const sides = await measured
+  const reportUncertainty = revisionReportUncertainty(deps.context)
 
   // Routesを照会していない区間は、Routes由来の根拠を付けない（null）。
   const travelBefore =
@@ -232,6 +281,7 @@ async function evaluateCandidate(
             applicability: `${trip.date} ${endTime(previous)}〜${candidate.plannedStartTime}（使える時間${availableMinutes({ previous, next: candidate })}分）`,
           }),
           checkedAt,
+          reportUncertainty !== undefined,
         )
       : null
   const travelAfter =
@@ -244,9 +294,14 @@ async function evaluateCandidate(
             applicability: `${trip.date} ${endTime(candidate)}〜${next.plannedStartTime}（使える時間${availableMinutes({ previous: candidate, next })}分）`,
           }),
           checkedAt,
+          reportUncertainty !== undefined,
         )
       : null
 
+  // 再照合は本人報告などの矛盾を上書きしない。出典をそのまま残し、成立の根拠には使わない。
+  const priorConflicts =
+    deps.priorCandidateEvidence?.filter((item) => isRevisionEvidenceConflict(item, 'candidate')) ??
+    []
   const after: Stop = {
     ...candidate,
     placeId: place.placeId,
@@ -255,8 +310,23 @@ async function evaluateCandidate(
       hours,
       ...(travelBefore ? [travelBefore] : []),
       ...(travelAfter ? [travelAfter] : []),
+      ...priorConflicts,
     ],
   }
+  const uncertainties: string[] = []
+  if (!originalPlaceId) {
+    uncertainties.push('元の施設を特定できず、候補と別の施設か確認できていません。')
+  }
+  if (
+    target.evidence.some((item) => isRevisionEvidenceConflict(item, 'original')) ||
+    priorConflicts.length > 0
+  ) {
+    uncertainties.push('承認に関係する根拠の矛盾が解消できていません。')
+  }
+  if (reportUncertainty) uncertainties.push(reportUncertainty)
+  const overlaps = [sides.fromPrevious, sides.toNext].some(
+    (side) => side?.fit.status === 'too_long' && side.segment.status === 'unknown',
+  )
   const judgement = judgeCandidate({
     identity,
     hours,
@@ -264,6 +334,8 @@ async function evaluateCandidate(
     travelBefore,
     expectsTravelAfter: next !== null,
     travelAfter,
+    overlaps,
+    uncertainties,
   })
   return { kind: 'judged', after, judgement, sides, travelBefore, travelAfter }
 }
@@ -276,49 +348,80 @@ const endTime = (stop: Stop): string =>
   )
 
 // 適用の直前に、サーバー側で制約を再検証するための関数。`satisfied`と判定されたときだけ、適用できる。
-// クライアントが返したconstraintCheckやevidenceは信用しない。所有者の認可・Tripの版の一致・
-// 変更前のStopとの一致は、呼び出し側（適用の処理）が別に検証する。
+// 成立の根拠は再取得する。既存の候補のEvidenceは、未解決の矛盾が残るかを見るためだけに使う。
+// 所有者の認可・Tripの版の一致・変更前のStopとの一致は、呼び出し側（適用の処理）が別に検証する。
 export type RevisionRecheck =
   | { status: 'checked'; constraintCheck: ConstraintCheck; after: Stop }
   | { status: 'not_possible'; explanation: string }
   | { status: 'external_service_error'; message: string }
+  | { status: 'endpoints_changed' }
 
 export async function checkRevisionConstraints(
   trip: Trip,
-  revision: Pick<Revision, 'targetStopId' | 'diff'>,
-  deps: MapsDeps,
+  revision: Pick<Revision, 'targetStopId' | 'diff' | 'context'>,
+  deps: MapsDeps & { expectedEndpoints?: RevisionRouteEndpoints },
 ): Promise<RevisionRecheck> {
-  // Placesを呼ぶ前に弾く（乗車・乗換は施設として照合しない）。
-  if (trip.stops.find((stop) => stop.id === revision.targetStopId)?.kind === 'transport') {
+  const context = RevisionContextSchema.safeParse(revision.context)
+  if (!context.success || !matchesRevisionReportTarget(context.data, revision.targetStopId)) {
+    return { status: 'not_possible', explanation: '修正時の報告文脈を確認できません。' }
+  }
+  const index = trip.stops.findIndex((stop) => stop.id === revision.targetStopId)
+  const target = trip.stops[index]
+  if (!target) return { status: 'not_possible', explanation: '対象の予定が、旅程にありません。' }
+  if (target.kind === 'transport') {
     return { status: 'not_possible', explanation: TRANSPORT_TARGET_MESSAGE }
   }
-  const surroundings = await resolveSurroundings(trip, revision.targetStopId, deps.maps, {
-    includeOriginal: false,
-  })
-  if (!surroundings)
-    return { status: 'not_possible', explanation: '対象の予定が、旅程にありません。' }
-  // クライアントが返したRevisionの不変条件。固定予定は変更できず、変更前の予定は対象と一致し、
-  // 変更後の名称は他の予定と重複しない（生成時の重複除外と同じ基準）。
-  if (surroundings.target.isFixed) {
+  if (target.isFixed) {
     return { status: 'not_possible', explanation: '固定予定は変更できません。' }
+  }
+  if (context.data.phase === 'on_site' && context.data.report.kind === 'simulated') {
+    return { status: 'not_possible', explanation: '模擬報告の候補は適用できません。' }
   }
   if (revision.diff.before.id !== revision.targetStopId) {
     return { status: 'not_possible', explanation: '変更前の予定が、対象の予定と一致しません。' }
   }
-  const afterKey = nameKey(revision.diff.after.name)
+  const afterName = revision.diff.after.name
+  const afterKey = nameKey(afterName)
+  if (!afterKey || compareNames(target.name, afterName) === 'exact') {
+    return { status: 'not_possible', explanation: '差し替え先の施設名を確認してください。' }
+  }
   if (
     trip.stops.some((stop) => stop.id !== revision.targetStopId && nameKey(stop.name) === afterKey)
   ) {
     return { status: 'not_possible', explanation: '他の予定と同じ名称には変更できません。' }
   }
+  const surroundings = await resolveSurroundings(
+    trip,
+    index,
+    deps.maps,
+    revision.diff.before.evidence,
+  )
+  if (surroundings.originalLookupFailed) {
+    return { status: 'external_service_error', message: MAPS_FAILURE_MESSAGE }
+  }
+  const { expectedEndpoints } = deps
+  if (
+    expectedEndpoints &&
+    (surroundings.adjacentPlaceMismatch ||
+      (surroundings.previousPlaceId !== null &&
+        surroundings.previousPlaceId !== expectedEndpoints.previousPlaceId) ||
+      (surroundings.nextPlaceId !== null &&
+        surroundings.nextPlaceId !== expectedEndpoints.nextPlaceId))
+  )
+    return { status: 'endpoints_changed' }
   const checkedAt = (deps.now?.() ?? new Date()).toISOString()
-  const evaluation = await evaluateCandidate(trip, surroundings, revision.diff.after.name, {
+  const evaluation = await evaluateCandidate(trip, surroundings, afterName, {
     ...deps,
     modes: normalizeModes(deps.travelModes),
     checkedAt,
+    context: context.data,
+    priorCandidateEvidence: revision.diff.after.evidence,
   })
   if (evaluation.kind === 'maps_failed') {
     return { status: 'external_service_error', message: MAPS_FAILURE_MESSAGE }
+  }
+  if (evaluation.kind === 'excluded') {
+    return { status: 'not_possible', explanation: evaluation.explanation }
   }
   if (evaluation.judgement.status === 'excluded') {
     return { status: 'not_possible', explanation: evaluation.judgement.explanation }
@@ -347,7 +450,7 @@ function impactSummary(
 }
 
 const NO_CANDIDATES_AFTER_CHECK =
-  '代替候補を作りましたが、施設を特定できない、または、営業時間・前後の移動の条件を満たさなかったため、提案できる候補がありません。理由や条件を変えて、もう一度お試しください。元の旅程は、そのままです。'
+  '元の予定と同じ施設、施設を特定できない、または営業時間・前後の移動の条件を満たさない候補を除いた結果、提案できる候補がありません。理由や条件を変えて、もう一度お試しください。元の旅程は、そのままです。'
 
 // 1地点の部分修正の候補（未承認のRevision）を作る。元のTripは更新しない。承認・保存・適用はしない。
 // 旅行前（planning）と現地報告（on_site）で、同じ処理を使う。
@@ -359,7 +462,8 @@ export async function reviseTrip(
   const { client, maps, createId = () => crypto.randomUUID(), now, report } = deps
   const { trip, targetStopId } = request
   const modes = normalizeModes(request.travelModes)
-  const target = trip.stops.find((stop) => stop.id === targetStopId)
+  const index = trip.stops.findIndex((stop) => stop.id === targetStopId)
+  const target = trip.stops[index]
   if (!target || target.isFixed) {
     // 契約の検証で弾かれるはずの入力。呼び出し側が検証を省いた場合の、最後の防波堤。
     return { status: 'no_candidates', message: '固定されていない予定を指定してください。' }
@@ -367,6 +471,12 @@ export async function reviseTrip(
   // Gemini・Mapsを呼ぶ前に弾く（乗車・乗換は施設として照合しない）。
   if (target.kind === 'transport') {
     return { status: 'insufficient_information', message: TRANSPORT_TARGET_MESSAGE }
+  }
+  if (!matchesRevisionReportTarget(request.context, targetStopId)) {
+    return {
+      status: 'insufficient_information',
+      message: '報告対象を修正対象と一致させてください。',
+    }
   }
 
   const { systemInstruction, prompt } = buildRevisionPrompt(request)
@@ -412,21 +522,29 @@ export async function reviseTrip(
     return { status: draft.failure.status, message: `AIの回答: ${draft.failure.reason}` }
   }
 
-  // 元の予定・他の予定・候補どうしと同じ名称は、差し替えの候補にならない。
-  const taken = new Set(trip.stops.map((stop) => nameKey(stop.name)))
+  // 元の予定と名称が完全一致する案や、他の予定と名称が重複する案は照会しない。
+  // 元の予定と似た名称（別支店など）は、Place IDで比較する。
+  const otherNames = new Set(
+    trip.stops.filter((stop) => stop.id !== targetStopId).map((stop) => nameKey(stop.name)),
+  )
+  const taken = new Set<string>()
   const candidates = draft.candidates.filter((candidate) => {
-    const key = nameKey(candidate.name)
-    if (key.length === 0 || taken.has(key)) return false
-    taken.add(key)
+    const { base, full } = parseName(candidate.name)
+    if (
+      !base ||
+      taken.has(full) ||
+      otherNames.has(base) ||
+      compareNames(target.name, candidate.name) === 'exact'
+    )
+      return false
+    taken.add(full)
     return true
   })
   if (candidates.length === 0) return invalidOutput('有効な候補が無い')
 
   const checkedAt = (now?.() ?? new Date()).toISOString()
-  const surroundings = await resolveSurroundings(trip, targetStopId, maps, {
-    includeOriginal: true,
-  })
-  if (!surroundings) return invalidOutput('対象の予定が無い')
+  const surroundings = await resolveSurroundings(trip, index, maps)
+  if (surroundings.originalLookupFailed) return externalFailure(MAPS_FAILURE_MESSAGE)
 
   // 変更前の移動区間は、同じリクエストの中で、1回だけ測る（候補どうしで共有する）。
   const beforeSides = await measureSides(surroundings, target, surroundings.originalPlaceId, {
@@ -435,20 +553,49 @@ export async function reviseTrip(
     checkedAt,
   })
 
+  const candidateMeasurements = new Map<string, Promise<MeasuredSides>>()
   const evaluations = await Promise.all(
     candidates.map((candidate) =>
-      evaluateCandidate(trip, surroundings, candidate.name, { maps, now, modes, checkedAt }),
+      evaluateCandidate(trip, surroundings, candidate.name, {
+        maps,
+        modes,
+        checkedAt,
+        context: request.context,
+        candidateMeasurements,
+      }),
     ),
   )
   if (evaluations.every((evaluation) => evaluation.kind === 'maps_failed')) {
     return externalFailure(MAPS_FAILURE_MESSAGE)
   }
 
-  const revisions: Revision[] = []
-  const comparisons: TravelComparison[] = []
+  const byPlace = new Map<
+    string,
+    {
+      after: Stop
+      sides: MeasuredSides
+      constraintCheck: ConstraintCheck
+      travelBefore: Evidence | null
+      travelAfter: Evidence | null
+    }
+  >()
   for (const evaluation of evaluations) {
     if (evaluation.kind !== 'judged' || evaluation.judgement.status !== 'candidate') continue
     const { after, judgement, sides, travelBefore, travelAfter } = evaluation
+    if (!after.placeId) continue
+    const constraintCheck = judgement.constraintCheck
+    const existing = byPlace.get(after.placeId)
+    if (
+      !existing ||
+      (existing.constraintCheck.status !== 'satisfied' && constraintCheck.status === 'satisfied')
+    ) {
+      byPlace.set(after.placeId, { after, sides, constraintCheck, travelBefore, travelAfter })
+    }
+  }
+
+  const revisions: Revision[] = []
+  const comparisons: TravelComparison[] = []
+  for (const { after, sides, constraintCheck, travelBefore, travelAfter } of byPlace.values()) {
     const id = `revision-${createId()}`
     revisions.push({
       id,
@@ -458,17 +605,17 @@ export async function reviseTrip(
       reason: request.reason,
       context: request.context,
       diff: { before: target, after },
-      impactSummary: impactSummary(
-        target,
-        after,
-        { travelBefore, travelAfter },
-        judgement.constraintCheck,
-      ),
-      constraintCheck: judgement.constraintCheck,
+      impactSummary: impactSummary(target, after, { travelBefore, travelAfter }, constraintCheck),
+      constraintCheck,
       approval: { status: 'pending' },
     })
     comparisons.push({
       revisionId: id,
+      originalPlaceId: surroundings.originalPlaceId,
+      routeEndpoints: {
+        previousPlaceId: surroundings.previousPlaceId,
+        nextPlaceId: surroundings.nextPlaceId,
+      },
       before: {
         fromPrevious: slotOf(beforeSides.fromPrevious, 'first_stop'),
         toNext: slotOf(beforeSides.toNext, 'last_stop'),

@@ -2,10 +2,11 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 
-import type { Stop, Trip } from '@/domain'
+import { MAX_REVISION_REASON_LENGTH, type Stop, type Trip } from '@/domain'
 import { StatusBadge } from '@/features/trip-map/evidence-badge'
 import type { RouteMeta } from '@/features/trip-map/model'
 import { RouteMap } from '@/features/trip-map/route-map'
+import type { ApplyRevisionResult } from '@/server/persistence/contracts'
 
 import {
   confirmedTrip,
@@ -62,7 +63,7 @@ function ProgressMark() {
 }
 
 // 依頼の理由（修正理由＋希望条件）の上限。保存契約（Revision.reason）に合わせる。
-const MAX_REASON_LENGTH = 1000
+const MAX_REASON_LENGTH = MAX_REVISION_REASON_LENGTH
 
 // 修正理由と希望条件を、サーバーへ送る一つの理由にまとめる。
 const composeReason = (reason: string, preferences: string) =>
@@ -81,8 +82,8 @@ interface RevisionReviewProps {
   // 適用できない理由。applyが無いときの承認ボタンの説明に使う（省略時は「未接続」）。
   applyUnavailableReason?: string
   onCancel: () => void
-  onApplied: (trip: Trip) => void
-  onApplyUnresolvedChange: (unresolved: boolean) => void
+  onApplied: (trip: Trip, receipt?: ApplyRevisionResult, revisionId?: string) => void
+  onApplyUnresolvedChange: (unresolved: boolean, revisionId?: string) => void
   // 現地報告は修正理由と文脈をまとめて受け取り、旅行前と同じ修正エンジンで扱う。
   onSiteReport?: {
     reason: string
@@ -243,23 +244,37 @@ export function RevisionReview({
   const requiresLatestTrip =
     applyUnresolved || applyFailure?.status === 'conflict' || applyFailure?.status === 'uncertain'
   const constraintSatisfied = candidate?.constraintCheck.status === 'satisfied'
-  const canApprove = generationAvailable && constraintSatisfied && !requiresLatestTrip
-  const unapprovableNote =
-    candidate?.constraintCheck.status === 'violated'
-      ? '旅程の条件に合わないため、この候補は選べません。'
-      : '旅程に組み込めるか確認できていないため、この候補は選べません。'
+  const simulated =
+    candidate?.context.phase === 'on_site' && candidate.context.report.kind === 'simulated'
+  const proposalToken = candidate && review?.proposal.proposalTokens?.[candidate.id]
+  const canApprove =
+    generationAvailable &&
+    constraintSatisfied &&
+    !requiresLatestTrip &&
+    !simulated &&
+    Boolean(proposalToken)
+  const constraintViolated = candidate?.constraintCheck.status === 'violated'
+  const unapprovableNote = constraintViolated
+    ? '旅程の条件に合わないため、この候補は選べません。'
+    : '旅程に組み込めるか確認できていないため、この候補は選べません。'
   // 現地報告では、承認できない具体的な理由を承認欄にも添える（比較欄が画面の外にあっても理由が分かる）。
   const unapprovableReason =
     onSiteReport && candidate ? `理由：${candidate.constraintCheck.explanation}` : ''
-  const approvalNote = !constraintSatisfied
+  const approvalNote = constraintViolated
     ? `${unapprovableNote}${unapprovableReason}`
-    : isApplying
-      ? null
-      : requiresLatestTrip
-        ? '再操作する前に最新の旅程を確認してください。'
-        : !apply
-          ? (applyUnavailableReason ?? '承認・適用サービスは未接続です。')
-          : null
+    : simulated
+      ? '模擬報告のため適用できません。'
+      : !constraintSatisfied
+        ? `${unapprovableNote}${unapprovableReason}`
+        : isApplying
+          ? null
+          : requiresLatestTrip
+            ? '再操作する前に最新の旅程を確認してください。'
+            : !apply
+              ? (applyUnavailableReason ?? '承認・適用サービスは未接続です。')
+              : !proposalToken
+                ? '候補の来歴を確認できません。保存した旅程から候補を作り直してください。'
+                : null
   // 現地報告から開いたときの「キャンセル」は、旅程ではなく報告画面に戻る操作になる。
   const cancelLabel = onSiteReport ? '報告を見直す' : 'キャンセル'
   const approvalStatus = isApplying
@@ -271,10 +286,23 @@ export function RevisionReview({
         : '未承認・未適用'
 
   const approve = async () => {
-    if (!review || !candidate || !canApprove || !apply || isApplying || activeApply.current) return
+    if (
+      !review ||
+      !candidate ||
+      !proposalToken ||
+      !canApprove ||
+      !apply ||
+      isApplying ||
+      activeApply.current
+    )
+      return
     // 表示時の候補と、本人が承認した時点のTripを検証用に確保する。
     // コールバックには別のコピーだけを渡し、検証用のデータを変更できないようにする。
-    const decision = structuredClone({ request: { ...review.request, trip }, revision: candidate })
+    const decision = structuredClone({
+      request: { ...review.request, trip },
+      revision: candidate,
+      proposalToken,
+    })
     if (!sameTrip(decision.request.trip, review.request.trip)) {
       setApplyFailure({ status: 'conflict' })
       return
@@ -283,19 +311,35 @@ export function RevisionReview({
     activeApply.current = attempt
     setApplyFailure(null)
     setIsApplying(true)
-    onApplyUnresolvedChange(true)
+    try {
+      // 永続ロックの記録に失敗したらHTTP送信を開始しない。
+      onApplyUnresolvedChange(true, decision.revision.id)
+    } catch (error) {
+      activeApply.current = null
+      setIsApplying(false)
+      setApplyFailure({
+        status: 'unavailable',
+        message: error instanceof Error ? error.message : '未確認状態を保存できません。',
+      })
+      return
+    }
     try {
       const result = await apply(structuredClone(decision))
       if (activeApply.current !== attempt) return
       if (result.status === 'applied') {
-        const nextTrip = confirmedTrip(decision.request.trip, decision.revision, result.trip)
+        const nextTrip = confirmedTrip(
+          decision.request.trip,
+          decision.revision,
+          result.trip,
+          result.receipt,
+        )
         if (nextTrip) {
-          onApplied(nextTrip)
+          onApplied(nextTrip, result.receipt, decision.revision.id)
         } else {
           setApplyFailure({ status: 'uncertain' })
         }
       } else {
-        if (result.status !== 'uncertain') onApplyUnresolvedChange(false)
+        if (result.status !== 'uncertain') onApplyUnresolvedChange(false, decision.revision.id)
         setApplyFailure({ ...result })
       }
     } catch {

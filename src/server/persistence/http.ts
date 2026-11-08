@@ -45,7 +45,8 @@ export async function withDataActor(
   }
 }
 
-function dataError(error: unknown): Response {
+// 保存系の失敗を応答に変える。ルートが認証・予約より前に機能停止を返すときにも使う。
+export function dataError(error: unknown): Response {
   if (error instanceof AuthError) return authErrorResponse(error)
   if (error instanceof WriteFenceError) {
     const unknown = error.code === 'write_result_unknown'

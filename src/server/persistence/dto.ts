@@ -4,6 +4,8 @@ import { z } from 'zod'
 
 import {
   ApprovedLearningSchema,
+  ApprovalSchema,
+  EvidenceSchema,
   LearningApplicationSchema,
   StopSchema,
   TripSchema,
@@ -16,12 +18,17 @@ import {
   ApproveLearningBodySchema,
   PendingRevisionSchema,
   RecordIdSchema,
+  RevisionTravelModesSchema,
+  RevisionProofContextSchema,
+  RevisionReportStatesSchema,
+  SavedRevisionSchema,
   VersionedLearningSchema,
   type PendingRevision,
   type VersionedLearning,
 } from './contracts'
 import { parseInput, parseStored, PersistenceError } from './errors'
 import { documentKey } from './paths'
+import { isRevisionEvidenceConflict } from '@/domain/revision-evidence'
 
 // 照合結果がドメインに追加されても、保存対象はここで許可した項目だけにする。
 const StopFieldsDtoSchema = z.strictObject(StopSchema.shape).pick({
@@ -55,6 +62,17 @@ const TripDtoSchema = z.strictObject({
   stops: z.array(StopDtoSchema).min(3).max(4),
   learningApplications: z.array(LearningApplicationDtoSchema),
 })
+const ReportConflictSchema = EvidenceSchema.safeExtend({
+  status: z.literal('conflicting'),
+  source: z.strictObject({
+    kind: z.literal('user_report'),
+    label: EvidenceSchema.shape.source.shape.label,
+  }),
+})
+const ReportConflictsSchema = z.strictObject({
+  before: z.array(ReportConflictSchema).max(16),
+  after: z.array(ReportConflictSchema).max(16),
+})
 const RevisionDtoSchema = z.strictObject({
   id: RecordIdSchema,
   tripId: RecordIdSchema,
@@ -63,14 +81,21 @@ const RevisionDtoSchema = z.strictObject({
   reason: PendingRevisionSchema.shape.reason,
   context: PendingRevisionSchema.shape.context,
   diff: z.strictObject({ before: StopDtoSchema, after: StopDtoSchema }),
-  approval: PendingRevisionSchema.shape.approval,
+  approval: ApprovalSchema,
+  travelModes: RevisionTravelModesSchema.optional(),
+  reportConflicts: ReportConflictsSchema.optional(),
+  proposalExpiresAt: z.int().positive().optional(),
+  proposalContext: RevisionProofContextSchema.optional(),
 })
 
 const OwnedFieldsSchema = z.strictObject({
   ownerUid: z.string().min(1).max(128),
 })
 
-const TripDocumentSchema = OwnedFieldsSchema.extend({ trip: TripDtoSchema })
+const TripDocumentSchema = OwnedFieldsSchema.extend({
+  trip: TripDtoSchema,
+  revisionReports: RevisionReportStatesSchema.optional(),
+})
 const RevisionDocumentSchema = OwnedFieldsSchema.extend({ revision: RevisionDtoSchema })
 const LearningDocumentSchema = z.discriminatedUnion('state', [
   OwnedFieldsSchema.extend({
@@ -143,8 +168,23 @@ export function fromTripDocument(data: unknown, id: string): Trip {
   return parseStored(TripSchema, { ...trip, stops: trip.stops.map(restoreStop) })
 }
 
-export function toRevisionDocument(actor: Actor, input: PendingRevision) {
+export function toRevisionDocument(
+  actor: Actor,
+  input: PendingRevision,
+  travelModes?: z.infer<typeof RevisionTravelModesSchema>,
+) {
   const revision = parseInput(PendingRevisionSchema, input)
+  const conflicts = (stop: Stop, scope: 'original' | 'candidate') =>
+    stop.evidence
+      .filter(
+        (item) => item.source.kind === 'user_report' && isRevisionEvidenceConflict(item, scope),
+      )
+      .map((item) => ({
+        ...item,
+        source: { kind: 'user_report' as const, label: item.source.label },
+      }))
+  const before = conflicts(revision.diff.before, 'original')
+  const after = conflicts(revision.diff.after, 'candidate')
   return parseInput(RevisionDocumentSchema, {
     ownerUid: actor.uid,
     revision: {
@@ -156,23 +196,39 @@ export function toRevisionDocument(actor: Actor, input: PendingRevision) {
       context: revision.context,
       diff: { before: toStopDto(revision.diff.before), after: toStopDto(revision.diff.after) },
       approval: revision.approval,
+      ...(travelModes === undefined ? {} : { travelModes }),
+      ...(before.length || after.length ? { reportConflicts: { before, after } } : {}),
     },
   })
 }
 
-export function fromRevisionDocument(data: unknown, tripId: string, id: string): PendingRevision {
-  const { revision } = parseStored(RevisionDocumentSchema, data)
+export function readRevisionDocument(data: unknown, tripId: string, id: string) {
+  const {
+    revision: { travelModes, reportConflicts, proposalExpiresAt, proposalContext, ...revision },
+  } = parseStored(RevisionDocumentSchema, data)
   if (documentKey(revision.id) !== id || revision.tripId !== tripId) {
     throw new PersistenceError('invalid_stored_data')
   }
-  return parseStored(PendingRevisionSchema, {
-    ...revision,
-    ...UNCHECKED_REVISION,
-    diff: {
-      before: restoreStop(revision.diff.before),
-      after: restoreStop(revision.diff.after),
-    },
-  })
+  return {
+    travelModes,
+    proposalExpiresAt,
+    proposalContext,
+    revision: parseStored(SavedRevisionSchema, {
+      ...revision,
+      ...UNCHECKED_REVISION,
+      ...(revision.approval.status === 'approved'
+        ? { impactSummary: '適用済みの変更です。現在の影響は再確認が必要です。' }
+        : {}),
+      diff: {
+        before: { ...restoreStop(revision.diff.before), evidence: reportConflicts?.before ?? [] },
+        after: { ...restoreStop(revision.diff.after), evidence: reportConflicts?.after ?? [] },
+      },
+    }),
+  }
+}
+
+export function fromRevisionDocument(data: unknown, tripId: string, id: string) {
+  return readRevisionDocument(data, tripId, id).revision
 }
 
 export function toLearningDocument(actor: Actor, record: VersionedLearning) {

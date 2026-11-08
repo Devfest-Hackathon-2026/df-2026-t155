@@ -43,6 +43,15 @@ describe('POST /api/trips/revise（実際のRoute）', () => {
     expect(fetchFn).not.toHaveBeenCalled()
   })
 
+  it('有効でも本人認証がなければ有料APIを呼ばない', async () => {
+    vi.stubEnv('TRIP_REVISION_ENABLED', 'true')
+    const fetchFn = forbidNetwork()
+    const unauthenticated = post()
+    unauthenticated.headers.delete('Authorization')
+    expect((await POST(unauthenticated)).status).toBe(401)
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
   it('有効でも接続設定が無ければ、通信せずに502を返し、更新後の旅程は返さない', async () => {
     vi.stubEnv('TRIP_REVISION_ENABLED', 'true')
     vi.stubEnv('GOOGLE_CLOUD_PROJECT', '')

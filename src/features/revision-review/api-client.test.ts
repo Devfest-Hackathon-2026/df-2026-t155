@@ -3,11 +3,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sampleRevision, sampleReviseTripRequest } from '@/domain/samples'
 
 import {
+  confirmedTrip,
   readRevisionProposal,
   requestRevisions,
   type RevisionProposal,
   type TravelSlot,
 } from './api-client'
+import { checkStopEvidence } from './proposal-checks'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -193,6 +195,7 @@ describe('候補生成 API の表示境界', () => {
     [415, { status: 'unsupported_media_type' }, 'invalid_request'],
     [500, { status: 'internal_error' }, 'unexpected'],
     [422, { status: 'no_candidates', message: '候補なし' }, 'no_candidates'],
+    [200, { status: 'no_candidates', message: '候補なし' }, 'no_candidates'],
     [422, { status: 'insufficient_information', message: '情報不足' }, 'insufficient_information'],
     [
       502,
@@ -246,8 +249,10 @@ const evidence = (subject: 'place_identity' | 'opening_hours' | 'travel_time' | 
       : { kind: 'places' as const, label: 'Google Places' },
   status: 'consistent' as const,
 })
+const candidateInput = { ...input, context: { phase: 'planning' } as const }
 const satisfied: RevisionProposal['revisions'][number] = {
   ...sampleRevision,
+  context: candidateInput.context,
   constraintCheck: { status: 'satisfied', explanation: '制約を満たす' },
   diff: {
     ...sampleRevision.diff,
@@ -285,13 +290,49 @@ const validLegs = {
 const candidateProposal = (after = validLegs, revision = satisfied): RevisionProposal => ({
   status: 'proposed',
   revisions: [revision],
-  comparisons: [{ revisionId: revision.id, before: validLegs, after }],
+  comparisons: [
+    { revisionId: revision.id, originalPlaceId: 'original-place', before: validLegs, after },
+  ],
 })
 
 describe('候補の承認に使う前提の検証', () => {
+  it.each([null, undefined])(
+    '元施設の同定結果が %s なら、候補自身が照合済みでも承認できない',
+    (originalPlaceId) => {
+      const planning = { phase: 'planning' } as const
+      const proposal = candidateProposal(validLegs, { ...satisfied, context: planning })
+      const { revisionId, before, after } = proposal.comparisons![0]
+      const legs = { revisionId, before, after }
+      const comparison = originalPlaceId === undefined ? legs : { ...legs, originalPlaceId }
+      const result = readRevisionProposal(
+        { ...proposal, comparisons: [comparison] },
+        { ...candidateInput, context: planning },
+      )
+      expect(result?.revisions[0].constraintCheck).toMatchObject({
+        status: 'unknown',
+        explanation: expect.stringContaining('元の施設'),
+      })
+    },
+  )
+
+  it('理由や文脈を取り違えた応答を受け付けない', () => {
+    expect(
+      readRevisionProposal(
+        candidateProposal(validLegs, { ...satisfied, reason: '別の依頼' }),
+        candidateInput,
+      ),
+    ).toBeNull()
+    expect(
+      readRevisionProposal(
+        candidateProposal(validLegs, { ...satisfied, context: sampleReviseTripRequest.context }),
+        candidateInput,
+      ),
+    ).toBeNull()
+  })
   it('時刻にちょうど収まる両区間は承認可のままにする', () => {
     expect(
-      readRevisionProposal(candidateProposal(), input)?.revisions[0].constraintCheck.status,
+      readRevisionProposal(candidateProposal(), candidateInput)?.revisions[0].constraintCheck
+        .status,
     ).toBe('satisfied')
   })
 
@@ -299,7 +340,7 @@ describe('候補の承認に使う前提の検証', () => {
     ['前の予定から1分遅れる', { ...validLegs, fromPrevious: makeLeg(previous.id, target.id, 61) }],
     ['次の固定予定に1分遅れる', { ...validLegs, toNext: makeLeg(target.id, next.id, 46) }],
   ] as const)('%s satisfied を承認不可にする', (_, legs) => {
-    const result = readRevisionProposal(candidateProposal(legs), input)
+    const result = readRevisionProposal(candidateProposal(legs), candidateInput)
     expect(result?.revisions[0].constraintCheck.status).toBe('violated')
     expect(result?.revisions[0].impactSummary).not.toBe(satisfied.impactSummary)
   })
@@ -309,8 +350,161 @@ describe('候補の承認に使う前提の検証', () => {
       ...satisfied,
       diff: { ...satisfied.diff, after: { ...satisfied.diff.after, durationMinutes: 121 } },
     }
-    const result = readRevisionProposal({ status: 'proposed', revisions: [revision] }, input)
+    const result = readRevisionProposal(
+      { status: 'proposed', revisions: [revision] },
+      candidateInput,
+    )
     expect(result?.revisions[0].constraintCheck.status).toBe('violated')
+  })
+
+  it('施設IDなしの satisfied は、移動・営業時間が整合していても承認できない', () => {
+    const revision = {
+      ...satisfied,
+      diff: { ...satisfied.diff, after: { ...satisfied.diff.after, placeId: null } },
+    }
+    expect(
+      readRevisionProposal(candidateProposal(validLegs, revision), candidateInput)?.revisions[0],
+    ).toMatchObject({ constraintCheck: { status: 'unknown' } })
+  })
+
+  it('元の予定と同じPlace IDなら、別名での satisfied も承認できない', () => {
+    const original = { ...target, placeId: satisfied.diff.after.placeId }
+    const revision = { ...satisfied, diff: { ...satisfied.diff, before: original } }
+    const trip = { ...candidateInput.trip, stops: candidateInput.trip.stops.with(1, original) }
+    expect(
+      readRevisionProposal(candidateProposal(validLegs, revision), { ...candidateInput, trip })
+        ?.revisions[0].constraintCheck.status,
+    ).toBe('unknown')
+  })
+
+  it('比較区間が欠け、前の予定と重なる場合も承認できない', () => {
+    const revision = {
+      ...satisfied,
+      diff: { ...satisfied.diff, after: { ...satisfied.diff.after, plannedStartTime: '10:59' } },
+    }
+    expect(
+      readRevisionProposal({ status: 'proposed', revisions: [revision] }, candidateInput)
+        ?.revisions[0].constraintCheck.status,
+    ).toBe('violated')
+  })
+
+  it('比較IDの重複・未知ID・変更前の端点違いを拒否する', () => {
+    const proposal = candidateProposal()
+    const comparison = proposal.comparisons![0]
+    for (const comparisons of [
+      [comparison, comparison],
+      [{ ...comparison, revisionId: 'unknown-revision' }],
+      [
+        {
+          ...comparison,
+          before: { ...comparison.before, fromPrevious: makeLeg(next.id, target.id, 10) },
+        },
+      ],
+    ]) {
+      expect(readRevisionProposal({ ...proposal, comparisons }, candidateInput)).toBeNull()
+    }
+  })
+
+  it.each([
+    ['opening_hours', 'user_report', 'unknown'],
+    ['travel_time', 'user_report', 'unknown'],
+    ['other', 'user_report', 'unknown'],
+    ['other', 'official', 'unknown'],
+    ['opening_hours', 'simulation', 'satisfied'],
+  ] as const)('矛盾する %s の出典 %s を区別する', (subject, kind, status) => {
+    const context = {
+      phase: 'on_site',
+      report: {
+        kind: 'actual',
+        description: '閉店・臨時休業だった',
+        category: 'closed',
+        targetStopId: target.id,
+      },
+    } as const
+    const reported = {
+      ...evidence(subject),
+      id: 'reported-evidence',
+      status: 'conflicting' as const,
+      source: { kind, label: '出典のラベル' },
+    }
+    const revision = {
+      ...satisfied,
+      context,
+      diff: {
+        ...satisfied.diff,
+        after: { ...satisfied.diff.after, evidence: [...satisfied.diff.after.evidence, reported] },
+      },
+    }
+    const result = readRevisionProposal(candidateProposal(validLegs, revision), {
+      ...candidateInput,
+      context,
+    })
+    expect(result?.revisions[0].constraintCheck.status).toBe(status)
+    expect(result?.revisions[0].diff.after.evidence.at(-1)).toEqual(reported)
+    if (subject === 'opening_hours') {
+      expect(checkStopEvidence(revision.diff.after, subject).status).toBe(
+        kind === 'simulation' ? 'consistent' : 'conflicting',
+      )
+    }
+  })
+
+  it('適用後、根拠の checkedAt だけが更新された応答を採用する', () => {
+    const after = {
+      ...satisfied.diff.after,
+      evidence: satisfied.diff.after.evidence.map((item) => ({
+        ...item,
+        checkedAt: '2026-11-08T12:01:00+09:00',
+      })),
+    }
+    const result = {
+      ...candidateInput.trip,
+      version: candidateInput.trip.version + 1,
+      stops: candidateInput.trip.stops.with(1, after),
+    }
+    const approved = { ...satisfied, context: { phase: 'planning' } as const }
+    expect(confirmedTrip(candidateInput.trip, approved, result)).toEqual(result)
+  })
+
+  it('適用応答では対象の再照合根拠が必要で、対象外の空欄には表示中の根拠を維持する', () => {
+    const base = candidateInput.trip
+    const after = satisfied.diff.after
+    const result = {
+      ...base,
+      version: base.version + 1,
+      stops: base.stops.map((stop) => (stop.id === target.id ? after : { ...stop, evidence: [] })),
+    }
+    expect(confirmedTrip(base, satisfied, result)).toEqual({
+      ...result,
+      stops: base.stops.with(1, after),
+    })
+    expect(
+      confirmedTrip(base, satisfied, {
+        ...result,
+        stops: result.stops.with(1, { ...after, evidence: [] }),
+      }),
+    ).toBeNull()
+    expect(
+      confirmedTrip(base, satisfied, {
+        ...result,
+        stops: result.stops.with(2, { ...result.stops[2], name: '対象外の変更' }),
+      }),
+    ).toBeNull()
+  })
+
+  it('定型の遅延報告に対する satisfied は、元の時刻表だけで承認できない', () => {
+    const context = {
+      phase: 'on_site',
+      report: {
+        kind: 'actual',
+        description: '表示用の文面',
+        category: 'delayed',
+        targetStopId: target.id,
+      },
+    } as const
+    const proposal = candidateProposal(validLegs, { ...satisfied, context })
+    expect(
+      readRevisionProposal(proposal, { ...candidateInput, context })?.revisions[0].constraintCheck,
+    ).toMatchObject({ status: 'unknown', explanation: expect.stringContaining('遅れ') })
   })
 
   it('車が許可されていなければ応答を拒否し、明示された場合は受け取る', () => {
@@ -319,10 +513,10 @@ describe('候補の承認に使う前提の検証', () => {
       toNext: makeLeg(target.id, next.id, 45, 'drive'),
     })
     expect(readRevisionProposal(proposal, sampleReviseTripRequest)).toBeNull()
-    expect(readRevisionProposal(proposal, input)).toBeNull()
+    expect(readRevisionProposal(proposal, candidateInput)).toBeNull()
     expect(
-      readRevisionProposal(proposal, { ...input, travelModes: ['walk', 'drive'] })?.revisions[0]
-        .constraintCheck.status,
+      readRevisionProposal(proposal, { ...candidateInput, travelModes: ['walk', 'drive'] })
+        ?.revisions[0].constraintCheck.status,
     ).toBe('satisfied')
   })
 
@@ -353,9 +547,9 @@ describe('候補の承認に使う前提の検証', () => {
     ],
     ['比較なし', { status: 'proposed', revisions: [satisfied] }],
   ] as const)('%s は検証済み時間として使わない', (_, proposal) => {
-    expect(readRevisionProposal(proposal, input)?.revisions[0].constraintCheck.status).toBe(
-      'unknown',
-    )
+    expect(
+      readRevisionProposal(proposal, candidateInput)?.revisions[0].constraintCheck.status,
+    ).toBe('unknown')
   })
 
   it.each([
@@ -377,15 +571,15 @@ describe('候補の承認に使う前提の検証', () => {
         },
       },
     })
-    expect(readRevisionProposal(proposal, input)?.revisions[0].constraintCheck.status ?? null).toBe(
-      expected,
-    )
+    expect(
+      readRevisionProposal(proposal, candidateInput)?.revisions[0].constraintCheck.status ?? null,
+    ).toBe(expected)
   })
 
   it.each([
     ['opening_hours', 'unverifiable', 'unknown'],
-    ['opening_hours', 'conflicting', 'violated'],
-    ['travel_time', 'conflicting', 'violated'],
+    ['opening_hours', 'conflicting', 'unknown'],
+    ['travel_time', 'conflicting', 'unknown'],
     ['other', 'unverifiable', 'satisfied'],
   ] as const)('%s の %s を関連する制約にだけ反映する', (subject, status, expected) => {
     const revision = {
@@ -401,7 +595,7 @@ describe('候補の承認に使う前提の検証', () => {
         },
       },
     }
-    const result = readRevisionProposal(candidateProposal(validLegs, revision), input)
+    const result = readRevisionProposal(candidateProposal(validLegs, revision), candidateInput)
     expect(result?.revisions[0].constraintCheck.status).toBe(expected)
     expect(result?.revisions[0].diff.after.evidence.at(-1)?.status).toBe(status)
   })
@@ -426,14 +620,19 @@ describe('候補の承認に使う前提の検証', () => {
     const proposal: RevisionProposal = {
       status: 'proposed',
       revisions: [revision],
-      comparisons: [{ revisionId: revision.id, before: slots, after: slots }],
+      comparisons: [
+        { revisionId: revision.id, originalPlaceId: 'original-place', before: slots, after: slots },
+      ],
     }
-    const firstInput = { ...input, targetStopId: previous.id }
+    const firstInput = { ...candidateInput, targetStopId: previous.id }
     expect(readRevisionProposal(proposal, firstInput)).toBeNull()
     expect(
       readRevisionProposal(proposal, {
         ...firstInput,
-        trip: { ...input.trip, stops: input.trip.stops.with(0, revision.diff.before) },
+        trip: {
+          ...candidateInput.trip,
+          stops: candidateInput.trip.stops.with(0, revision.diff.before),
+        },
       })?.revisions[0].constraintCheck.status,
     ).toBe('satisfied')
   })
@@ -444,10 +643,10 @@ describe('候補の承認に使う前提の検証', () => {
       id: `candidate-${index}`,
     }))
     expect(
-      readRevisionProposal({ status: 'proposed', revisions: revisions.slice(0, 3) }, input)
+      readRevisionProposal({ status: 'proposed', revisions: revisions.slice(0, 3) }, candidateInput)
         ?.revisions,
     ).toHaveLength(3)
-    expect(readRevisionProposal({ status: 'proposed', revisions }, input)).toBeNull()
+    expect(readRevisionProposal({ status: 'proposed', revisions }, candidateInput)).toBeNull()
   })
 })
 

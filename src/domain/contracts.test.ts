@@ -59,6 +59,33 @@ describe('旅程生成契約', () => {
 })
 
 describe('部分修正契約', () => {
+  it('構造化した報告は分類・対象を一緒に持ち、修正対象と一致させる', () => {
+    const report = {
+      kind: 'actual',
+      description: '本人の申告',
+      category: 'closed',
+      targetStopId: sampleRevision.targetStopId,
+    }
+    const context = { phase: 'on_site', report }
+    expect(ReviseTripRequestSchema.safeParse({ ...sampleReviseTripRequest, context }).success).toBe(
+      true,
+    )
+    expect(RevisionSchema.safeParse({ ...sampleRevision, context }).success).toBe(true)
+    for (const invalid of [
+      { ...report, targetStopId: 'stop-exhibition' },
+      { ...report, targetStopId: undefined },
+      { ...report, category: undefined },
+    ]) {
+      const wrongContext = { ...context, report: invalid }
+      expect(
+        ReviseTripRequestSchema.safeParse({ ...sampleReviseTripRequest, context: wrongContext })
+          .success,
+      ).toBe(false)
+      expect(RevisionSchema.safeParse({ ...sampleRevision, context: wrongContext }).success).toBe(
+        false,
+      )
+    }
+  })
   it('旅行前・現地の実報告・模擬報告で同じ契約を使う', () => {
     for (const context of [
       { phase: 'planning' },

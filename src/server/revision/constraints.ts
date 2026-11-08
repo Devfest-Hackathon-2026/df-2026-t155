@@ -14,6 +14,9 @@ export interface CandidateChecks {
   // 候補 → 次の予定。対象が最後の予定なら、区間が無い（expectsTravelAfter=false）。
   expectsTravelAfter: boolean
   travelAfter: Evidence | null
+  // 時刻が重なる場合はRoutesを照会しないため、根拠の有無とは別に判定する。
+  overlaps?: boolean
+  uncertainties?: readonly string[]
 }
 
 export type CandidateJudgement =
@@ -30,6 +33,14 @@ export function judgeCandidate(checks: CandidateChecks): CandidateJudgement {
       status: 'excluded',
       reason: 'unidentified',
       explanation: '施設を特定できないため、候補にできません。',
+    }
+  }
+
+  if (checks.overlaps) {
+    return {
+      status: 'excluded',
+      reason: 'violated',
+      explanation: '前後の予定と時刻が重なっているため、候補にできません。',
     }
   }
 
@@ -58,8 +69,9 @@ export function judgeCandidate(checks: CandidateChecks): CandidateJudgement {
 
   // 営業時間は必須の確認項目。移動は、対象の位置によって、前後のどちらかが無いことがある。
   // 区間が有るのに根拠が無い項目（未測定）は、整合とは扱わない。
-  const allConsistent = items.every((item) => item.evidence?.status === 'consistent')
-  if (allConsistent) {
+  const unverified = items.filter((item) => item.evidence?.status !== 'consistent')
+  const uncertainties = checks.uncertainties ?? []
+  if (unverified.length === 0 && uncertainties.length === 0) {
     return {
       status: 'candidate',
       constraintCheck: {
@@ -68,12 +80,12 @@ export function judgeCandidate(checks: CandidateChecks): CandidateJudgement {
       },
     }
   }
-  const unverified = items.filter((item) => item.evidence?.status !== 'consistent')
+  const unverifiedItems = unverified.map((item) => item.label).join('・')
   return {
     status: 'candidate',
     constraintCheck: {
       status: 'unknown',
-      explanation: `${unverified.map((item) => item.label).join('・')}を確認できていません。確認できるまで、承認できません。`,
+      explanation: `${unverifiedItems ? `${unverifiedItems}を確認できていません。` : ''}${uncertainties.join('')}確認できるまで、承認できません。`,
     },
   }
 }

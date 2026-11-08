@@ -2,18 +2,27 @@ import 'server-only'
 
 import { isDeepStrictEqual } from 'node:util'
 
-import type { Trip } from '@/domain'
+import type { DocumentReference, Transaction } from 'firebase-admin/firestore'
+import type { z } from 'zod'
+
+import type { ReviseTripRequest, Trip } from '@/domain'
 import type { Actor } from '@/lib/auth/server'
 import { getAdminFirestore } from '@/lib/firebase/admin'
 
 import type { WriteTransaction } from '../cost-control/write-transaction'
+import { normalizeModes } from '../verification/segment'
 
 import {
+  PendingRevisionSchema,
   CreateTripBodySchema,
   RecordIdSchema,
+  ResolveRevisionReportSchema,
+  TripIdSchema,
   SaveRevisionBodySchema,
   UpdateTripBodySchema,
   type PendingRevision,
+  type SaveRevisionBody,
+  type SavedRevision,
 } from './contracts'
 import {
   fromRevisionDocument,
@@ -22,9 +31,18 @@ import {
   toStopDto,
   toTripDocument,
 } from './dto'
-import { parseInput, PersistenceError } from './errors'
+import { parseInput, parseStored, PersistenceError } from './errors'
 import { reserveDocumentSlot, REVISION_LIMIT, TRIP_LIMIT } from './limits'
 import { found, listOwned, ownedCollection, readOwned, recordKey } from './paths'
+import { applyStoredRevision, type ApplyGuard, type VerifyRevision } from './revision-apply'
+import { verifyRevisionProposal } from './revision-provenance'
+import {
+  changeReportState,
+  hasUnresolvedReport,
+  readReportStates,
+  reportState,
+  storedReportStates,
+} from './revision-reports'
 
 export class FirestoreTripStore {
   constructor(private readonly db = getAdminFirestore()) {}
@@ -48,7 +66,7 @@ export class FirestoreTripStore {
         throw new PersistenceError('already_exists')
       }
       await reserveDocumentSlot(transaction, collection, TRIP_LIMIT)
-      transaction.create(ref, document)
+      transaction.create(ref, { ...document, revisionReports: [] })
     })
     return trip
   }
@@ -81,27 +99,112 @@ export class FirestoreTripStore {
         preferences: update.preferences,
       })
       const trip = fromTripDocument(document, ref.id)
-      transaction.set(ref, document)
+      transaction.update(ref, { trip: document.trip })
       return trip
     })
+  }
+
+  // 本人報告の状態をTripに記録することがあるため、書き込み権（`write`）で確定する。
+  async prepareRevisionGeneration(
+    actor: Actor,
+    request: ReviseTripRequest,
+    write: WriteTransaction,
+    assertActive: () => void,
+  ) {
+    const ref = this.trip(actor, request.trip.id)
+    return write(async (transaction) => {
+      const snapshot = await transaction.get(ref)
+      const trip = readOwned(actor, snapshot, fromTripDocument)
+      if (!trip) return
+      if (trip.version !== request.trip.version) throw new PersistenceError('version_conflict')
+      if (!isDeepStrictEqual(toTripDocument(actor, trip), toTripDocument(actor, request.trip))) {
+        throw new PersistenceError('revision_mismatch')
+      }
+      const target = request.trip.stops.find(({ id }) => id === request.targetStopId)
+      if (!target || target.isFixed) throw new PersistenceError('revision_mismatch')
+      let states = await readReportStates(transaction, actor, snapshot, trip, assertActive)
+      const reported = hasUnresolvedReport(request.context, target)
+      if (reported) states = changeReportState(states, target.id, true)
+      if (reported || !storedReportStates(snapshot))
+        transaction.update(ref, { revisionReports: states })
+      return { ...reportState(states, target.id), reported }
+    })
+  }
+
+  // 本人報告の状態の取得。業務データは書き込まない読取専用の取引。
+  async revisionReport(actor: Actor, tripId: string, stopId: string, assertActive: () => void) {
+    const ref = this.trip(actor, parseInput(TripIdSchema, tripId))
+    const targetId = parseInput(RecordIdSchema, stopId)
+    assertActive()
+    return this.db.runTransaction(
+      (transaction) => this.reportTransaction(actor, ref, targetId, transaction, assertActive),
+      { readOnly: true },
+    )
+  }
+
+  // 本人報告の解消。Tripを更新するため、書き込み権（`write`）で確定する。
+  async resolveRevisionReport(
+    actor: Actor,
+    tripId: string,
+    stopId: string,
+    input: z.infer<typeof ResolveRevisionReportSchema>,
+    write: WriteTransaction,
+    assertActive: () => void,
+  ) {
+    const ref = this.trip(actor, parseInput(TripIdSchema, tripId))
+    const targetId = parseInput(RecordIdSchema, stopId)
+    return write((transaction) =>
+      this.reportTransaction(actor, ref, targetId, transaction, assertActive, input),
+    )
+  }
+
+  private async reportTransaction(
+    actor: Actor,
+    ref: DocumentReference,
+    targetId: string,
+    transaction: Transaction,
+    assertActive: () => void,
+    input?: z.infer<typeof ResolveRevisionReportSchema>,
+  ) {
+    const snapshot = await transaction.get(ref)
+    const trip = found(readOwned(actor, snapshot, fromTripDocument))
+    found(trip.stops.find(({ id }) => id === targetId))
+    let states = await readReportStates(transaction, actor, snapshot, trip, assertActive)
+    if (input) {
+      if (trip.version !== input.expectedVersion) throw new PersistenceError('version_conflict')
+      const state = reportState(states, targetId)
+      if (state.reportVersion !== input.expectedReportVersion)
+        throw new PersistenceError('revision_report_changed')
+      if (state.blocked) {
+        states = changeReportState(states, targetId, false)
+        transaction.update(ref, { revisionReports: states })
+      }
+    }
+    return { tripVersion: trip.version, ...reportState(states, targetId) }
   }
 
   async saveRevision(
     actor: Actor,
     tripId: string,
-    input: PendingRevision,
+    input: SaveRevisionBody,
     write: WriteTransaction,
+    assertActive: () => void,
   ): Promise<PendingRevision> {
-    const document = toRevisionDocument(actor, parseInput(SaveRevisionBodySchema, input))
+    const { travelModes, proposalToken, ...candidate } = parseInput(SaveRevisionBodySchema, input)
+    const document = toRevisionDocument(actor, candidate, normalizeModes(travelModes))
     const normalizedTripId = parseInput(RecordIdSchema, tripId)
     const tripRef = this.trip(actor, normalizedTripId)
     const collection = tripRef.collection('revisions')
     const ref = collection.doc(recordKey(document.revision.id))
     if (document.revision.tripId !== normalizedTripId) throw new PersistenceError('invalid_request')
-    const revision = fromRevisionDocument(document, normalizedTripId, ref.id)
+    const revision = parseStored(
+      PendingRevisionSchema,
+      fromRevisionDocument(document, normalizedTripId, ref.id),
+    )
 
     await write(async (transaction) => {
-      const trip = found(readOwned(actor, await transaction.get(tripRef), fromTripDocument))
+      const snapshot = await transaction.get(tripRef)
+      const trip = found(readOwned(actor, snapshot, fromTripDocument))
       if (trip.version !== revision.baseTripVersion) throw new PersistenceError('version_conflict')
       const currentStop = trip.stops.find(({ id }) => id === revision.targetStopId)
       if (
@@ -115,8 +218,35 @@ export class FirestoreTripStore {
       if (readOwned(actor, existing, (data, key) => fromRevisionDocument(data, trip.id, key))) {
         throw new PersistenceError('already_exists')
       }
+      const proof = proposalToken
+        ? verifyRevisionProposal(actor, trip, document, proposalToken)
+        : undefined
+      let states = await readReportStates(transaction, actor, snapshot, trip, assertActive)
+      const state = reportState(states, revision.targetStopId)
+      const reported = hasUnresolvedReport(
+        revision.context,
+        revision.diff.before,
+        revision.diff.after,
+      )
+      if (
+        proof &&
+        (proof.proposalContext.reportVersion !== state.reportVersion ||
+          (state.blocked && !reported))
+      ) {
+        throw new PersistenceError('revision_report_changed')
+      }
+      const recordReport = reported && (!proof || !state.blocked)
+      if (recordReport) states = changeReportState(states, revision.targetStopId, true)
       await reserveDocumentSlot(transaction, collection, REVISION_LIMIT)
-      transaction.create(ref, document)
+      if (recordReport || !storedReportStates(snapshot))
+        transaction.update(tripRef, { revisionReports: states })
+      transaction.create(ref, {
+        ...document,
+        revision: {
+          ...document.revision,
+          ...proof,
+        },
+      })
     })
     return revision
   }
@@ -126,7 +256,7 @@ export class FirestoreTripStore {
     tripId: string,
     revisionId: string,
     assertActive: () => void,
-  ): Promise<PendingRevision> {
+  ): Promise<SavedRevision> {
     const trip = await this.getTrip(actor, tripId)
     assertActive()
     const snapshot = await this.trip(actor, trip.id)
@@ -136,6 +266,19 @@ export class FirestoreTripStore {
     return found(
       readOwned(actor, snapshot, (data, key) => fromRevisionDocument(data, trip.id, key)),
     )
+  }
+
+  // 検証（有料のMaps照会）と確定は、同じ操作（予約）の中で行う。確定は書き込み権で守る。
+  applyRevision(
+    actor: Actor,
+    tripId: string,
+    revisionId: string,
+    expectedVersion: number,
+    verify: VerifyRevision,
+    guard: ApplyGuard,
+  ) {
+    const tripRef = this.trip(actor, parseInput(TripIdSchema, tripId))
+    return applyStoredRevision(this.db, actor, tripRef, revisionId, expectedVersion, verify, guard)
   }
 
   async listRevisions(actor: Actor, tripId: string, assertActive: () => void) {

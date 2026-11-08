@@ -2,7 +2,12 @@ import { z } from 'zod'
 
 import { ApprovedLearningSchema, StopSchema, TripSchema } from './models'
 import { DateSchema, IdSchema, TextSchema, TimeZoneSchema } from './primitives'
-import { RevisionContextSchema, RevisionSchema } from './revision'
+import {
+  matchesRevisionReportTarget,
+  RevisionContextSchema,
+  RevisionReasonSchema,
+  RevisionSchema,
+} from './revision'
 import { TravelSegmentSchema } from './travel'
 
 // HTTPステータスやURLとは独立した共有ペイロード。外部サービスの生データは含めない。
@@ -49,7 +54,7 @@ export const ReviseTripRequestSchema = z
   .strictObject({
     trip: TripSchema,
     targetStopId: IdSchema,
-    reason: TextSchema,
+    reason: RevisionReasonSchema,
     context: RevisionContextSchema,
     // 移動が間に合うかを確認する、利用者が使える移動手段。省略時は徒歩だけ（車を使えるとは限らないため）。
     // 車は、利用者が使えると明示したときだけ、確認の対象にする。公共交通は、現段階では未対応。
@@ -61,6 +66,13 @@ export const ReviseTripRequestSchema = z
   })
   .superRefine((request, ctx) => {
     const target = request.trip.stops.find((stop) => stop.id === request.targetStopId)
+    if (!matchesRevisionReportTarget(request.context, request.targetStopId)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['context', 'report', 'targetStopId'],
+        message: '報告対象を修正対象と一致させてください',
+      })
+    }
     if (!target || target.isFixed) {
       ctx.addIssue({
         code: 'custom',
@@ -85,12 +97,26 @@ export const TravelComparisonSideSchema = z.strictObject({
   toNext: TravelSegmentSlotSchema,
 })
 
+export const RevisionRouteEndpointsSchema = z.strictObject({
+  previousPlaceId: IdSchema.max(1024).nullable(),
+  nextPlaceId: IdSchema.max(1024).nullable(),
+})
+export type RevisionRouteEndpoints = z.infer<typeof RevisionRouteEndpointsSchema>
+
 export const TravelComparisonSchema = z.strictObject({
   // 対応するRevisionのid（tripId・baseTripVersion・targetStopIdは、そのRevisionが持つ）。
   revisionId: IdSchema,
+  // 生成時に照合した元施設。nullは未同定、省略は旧応答で照合結果不明。
+  originalPlaceId: IdSchema.nullable().optional(),
+  routeEndpoints: RevisionRouteEndpointsSchema.optional(),
   before: TravelComparisonSideSchema,
   after: TravelComparisonSideSchema,
 })
+
+export const RevisionProposalTokenSchema = z
+  .string()
+  .max(12_000)
+  .regex(/^v2\.[0-9]{13}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/)
 
 export const ReviseTripResponseSchema = z.union([
   z
@@ -99,9 +125,13 @@ export const ReviseTripResponseSchema = z.union([
       revisions: z.array(RevisionSchema).min(1),
       // 任意。移動区間の比較は、Revisionごとに高々1件。
       comparisons: z.array(TravelComparisonSchema).optional(),
+      proposalTokens: z.record(IdSchema, RevisionProposalTokenSchema).optional(),
     })
     .superRefine((response, ctx) => {
       const byRevision = new Map(response.revisions.map((revision) => [revision.id, revision]))
+      if (Object.keys(response.proposalTokens ?? {}).some((id) => !byRevision.has(id))) {
+        ctx.addIssue({ code: 'custom', path: ['proposalTokens'], message: '候補IDが一致しません' })
+      }
       const seen = new Set<string>()
       response.comparisons?.forEach((comparison, index) => {
         const revision = byRevision.get(comparison.revisionId)

@@ -1,8 +1,8 @@
 import { COSTS } from '@/server/cost-control/costs'
 import {
-  SaveRevisionBodySchema,
+  PendingRevisionResponseSchema,
   RevisionListResponseSchema,
-  RevisionResponseSchema,
+  SaveRevisionBodySchema,
 } from '@/server/persistence/contracts'
 import { dataResponse, readDataBody, withDataActor } from '@/server/persistence/http'
 import { FirestoreTripStore } from '@/server/persistence/trips'
@@ -34,7 +34,8 @@ export function POST(request: Request, context: Context): Promise<Response> {
       tripId,
       input,
       operation.write,
+      operation.assertActive,
     )
-    return dataResponse(RevisionResponseSchema, { revision }, 201)
+    return dataResponse(PendingRevisionResponseSchema, { revision }, 201)
   })
 }

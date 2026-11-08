@@ -1,3 +1,8 @@
+import { isCostlyApiEnabled } from '@/server/costly-api'
+import { issueRevisionProposalTokens } from '@/server/persistence/revision-provenance'
+import { FirestoreTripStore } from '@/server/persistence/trips'
+
+import { COSTS } from '../../../../server/cost-control/costs'
 import { meteredGemini, meteredMaps } from '../../../../server/cost-control/providers'
 import { createLazyVertexGeminiClient } from '../../../../server/gemini/client'
 import { createLazyMapsClient } from '../../../../server/maps'
@@ -19,13 +24,35 @@ const logFailure = (event: RevisionFailureEvent) => {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  // 保存を有効にした環境だけ、本人報告の状態を確認・記録し、署名付きの候補を返す。
+  // その読み書きは、候補の生成と同じ操作（予約）に含め、書き込みは書き込み権で確定する。
+  const persistence = isCostlyApiEnabled(process.env.PERSISTENCE_ENABLED)
   return handleReviseTripRequest(request, {
     isEnabled: () => isTripRevisionEnabled(process.env),
-    revise: (tripRequest, operation) =>
-      reviseTrip(tripRequest, {
+    cost: persistence ? COSTS.reviseWithReports : COSTS.revise,
+    revise: async (tripRequest, operation, actor) => {
+      const report = persistence
+        ? await new FirestoreTripStore().prepareRevisionGeneration(
+            actor,
+            tripRequest,
+            operation.write,
+            operation.assertActive,
+          )
+        : undefined
+      if (report?.blocked && !report.reported) {
+        return {
+          status: 'insufficient_information',
+          message: '未解消の本人報告があります。報告の状態を確認してください。',
+        }
+      }
+      const result = await reviseTrip(tripRequest, {
         client: meteredGemini(operation, client),
         maps: meteredMaps(operation, maps),
         report: logFailure,
-      }),
+      })
+      return report
+        ? issueRevisionProposalTokens(actor, tripRequest, result, report.reportVersion)
+        : result
+    },
   })
 }

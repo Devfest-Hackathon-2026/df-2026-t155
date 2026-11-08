@@ -127,6 +127,7 @@ const generateRevisions = vi.fn<GenerateRevisions>(async (request) => {
     comparisons: [
       {
         revisionId: sampleRevision.id,
+        originalPlaceId: before.placeId ?? 'test-original-place',
         before: {
           fromPrevious: leg(morning.id, lunch.id, 10),
           toNext: leg(lunch.id, exhibition.id, 10),
@@ -137,6 +138,8 @@ const generateRevisions = vi.fn<GenerateRevisions>(async (request) => {
         },
       },
     ],
+    // 署名済み候補の形式を模したテスト値（署名検証そのものはサーバー側テストで行う）。
+    proposalTokens: { [sampleRevision.id]: `v2.1794132000000.e30.${'A'.repeat(43)}` },
   }
 })
 
@@ -304,7 +307,12 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await reportAndOpenCandidates(user, 'actual')
     expect(generateRevisions.mock.calls[0][0].context).toEqual({
       phase: 'on_site',
-      report: { kind: 'actual', description: '閉店・臨時休業だった' },
+      report: {
+        kind: 'actual',
+        description: '閉店・臨時休業だった',
+        category: 'closed',
+        targetStopId: 'stop-lunch',
+      },
     })
     await user.click(approve())
     await waitFor(() => expect(applyRevision).toHaveBeenCalledTimes(1))

@@ -95,7 +95,8 @@ Geminiの説明自体を検証済み根拠にしない。`user_report`も客観�
 
 提案応答には未承認のRevisionだけを含め、更新後のTripを含めない。
 元旅程と候補を別に保持し、利用者が比較して承認するまで反映しない。
-承認済みRevisionも「適用済み」を意味しない。今回、旅程を書き換える関数は実装していない。
+共通のRevisionスキーマだけでは、承認の認可や旅程への適用を保証できない。Firestoreで確定した履歴は
+[保存済みRevisionの適用契約](FIRESTORE_PERSISTENCE.md#revisionの適用と再取得)に従う。
 
 適用処理の実装時には、サーバーで本人の権限・最新の`Trip.version`・対象ID・
 `diff.before`と現在のStopの一致を確認し、移動・時刻・固定条件を再検証する。
@@ -105,6 +106,8 @@ Geminiの説明自体を検証済み根拠にしない。`user_report`も客観�
 
 旅行前は`context.phase: planning`、現地は`on_site`とし、同じ修正契約を使う。
 現地の`report.kind`は`actual`／`simulated`を必須にし、模擬トラブルを実測情報と混同しない。
+新しい現地報告は`category`（`closed`／`crowded`／`delayed`／`other`）と`targetStopId`を組で持つ。
+報告対象は修正対象と一致させる。旧形式の`kind`と`description`だけの報告も読み取り、適用範囲は未確認として扱う。
 
 ### 振り返りと次回への反映
 
@@ -145,7 +148,7 @@ Geminiの説明自体を検証済み根拠にしない。`user_report`も客観�
   変更前後の移動区間の比較をAPIでどう返すか、経路・費用の構造化差分、制約違反の詳細形式は未決定。サンプルには根拠のない所要時間・料金を設定しない。
 - 生成で渡した固定予定の保持、学びの適用先、要求と応答の一致を検証する処理は、
   今後の生成・修正処理で実装する。Zodの構造検証だけでこれらの保証は成立しない。
-- 保存APIのURL・認証・保存DTO・Learningの承認操作は[保存APIの契約](FIRESTORE_PERSISTENCE.md)を参照する。Revisionの承認・適用は#9/#28との接続で定める。
+- 保存APIのURL・認証・保存DTO・Learningの承認・Revisionの適用は[保存APIの契約](FIRESTORE_PERSISTENCE.md)を参照する。
   部分修正入力は初期連携用のTripスナップショットであり、サーバーの正本ではない。
 - Google Maps情報の保存期間・表示上の帰属・再照会方針は外部アダプター実装前に確認する。
   このモデルの存在は、施設情報の無期限保存の許可を意味しない。

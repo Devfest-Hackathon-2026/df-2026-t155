@@ -39,7 +39,14 @@ export function buildRevisionPrompt(request: ReviseTripRequest): RevisionPrompt 
     context:
       context.phase === 'planning'
         ? { phase: 'planning' }
-        : { phase: 'on_site', report: context.report },
+        : {
+            phase: 'on_site',
+            report: {
+              kind: context.report.kind,
+              description: context.report.description,
+              ...('category' in context.report && { category: context.report.category }),
+            },
+          },
   }
   return {
     systemInstruction: SYSTEM_INSTRUCTION,

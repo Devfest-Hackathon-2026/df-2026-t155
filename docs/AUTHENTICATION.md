@@ -373,7 +373,7 @@ CIに両Emulatorの専用ジョブを追加し、本番認証情報を渡さな�
 ## 公開前に必要なApp Check・利用制限
 
 **Firestore保存APIと有料APIの一般公開は保留する。**
-Issue #29で既存の課金4ルートとFirestore保存11操作に、本人認証・招待UID・Web App Check・Firestoreの分散利用枠を接続した。
+Issue #29で既存の課金4ルートとFirestore保存14操作（Revision適用と本人報告を含む）に、本人認証・招待UID・Web App Check・Firestoreの分散利用枠を接続した。
 App Check通常トークンは再利用できるため、UID別・全体の制限も必須。独自Next.js APIではサーバーでApp Checkを検証する。
 画面側の生成・照合・修正候補・学び候補・学び一覧のクライアントは、本人のBearerとApp Checkを送る。
 課金・保存を有効にする前に、実環境での署名・IAM・負荷確認、匿名UID量産と拒否トラフィックへの対策を確認する。

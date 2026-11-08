@@ -1,6 +1,9 @@
+import type { Actor } from '@/lib/auth/server'
 import { ReviseTripRequestSchema, ReviseTripResponseSchema } from '../../domain'
 import type { ReviseTripRequest, ReviseTripResponse } from '../../domain'
 import { COSTS } from '../cost-control/costs'
+import type { OperationCost } from '../cost-control/policy'
+import { WriteFenceError } from '../cost-control/write-transaction'
 import {
   isCostlyApiEnabled,
   requireCostlyApiActor,
@@ -9,6 +12,7 @@ import {
 } from '../costly-api'
 import { errorResponse, noStoreHeaders, readBodyWithLimit } from '../http'
 import { hasTimeConflict } from '../verification/travel'
+import { PersistenceError } from '../persistence/errors'
 
 // POST /api/trips/revise のHTTP処理。1地点の部分修正の候補（未承認のRevision）を返す。
 // 元の旅程は更新しない。承認・適用はこのAPIでは行わない。
@@ -22,7 +26,36 @@ export const isTripRevisionEnabled = (env: Record<string, string | undefined>): 
 
 export interface ReviseTripHandlerDeps {
   isEnabled: () => boolean
-  revise: (request: ReviseTripRequest, operation: CostlyOperation) => Promise<ReviseTripResponse>
+  // 予約する操作量。省略時は候補の生成（Gemini・Places・Routes）だけ。
+  // 保存を伴う生成では、本人報告の記録に使う保存の読み書きを含めた量を渡す。
+  cost?: OperationCost
+  revise: (
+    request: ReviseTripRequest,
+    operation: CostlyOperation,
+    actor: Actor,
+  ) => Promise<ReviseTripResponse>
+}
+
+// 保存の失敗（PersistenceError）と、書き込み権の失効・結果不明（WriteFenceError）を応答に変える。
+function storageFailureResponse(error: unknown): Response | undefined {
+  if (error instanceof PersistenceError) {
+    return Response.json(
+      { status: error.code, message: error.message },
+      { status: error.status, headers: noStoreHeaders },
+    )
+  }
+  if (error instanceof WriteFenceError) {
+    const unknown = error.code === 'write_result_unknown'
+    return Response.json(
+      {
+        status: unknown ? 'write_result_unknown' : 'protection_unavailable',
+        message: unknown
+          ? '保存結果を確認できませんでした。再送する前に保存内容を取得してください。'
+          : '保存の利用枠を安全に確認できませんでした。',
+      },
+      { status: 503, headers: noStoreHeaders },
+    )
+  }
 }
 
 const HTTP_STATUS_BY_FAILURE = {
@@ -101,8 +134,20 @@ export async function handleReviseTripRequest(
 
   let result: ReviseTripResponse
   try {
-    const outcome = await runCostlyOperation(actor, COSTS.revise, (operation) =>
-      deps.revise(parsed.data, operation),
+    const outcome = await runCostlyOperation(
+      actor,
+      deps.cost ?? COSTS.revise,
+      async (operation) => {
+        try {
+          return await deps.revise(parsed.data, operation, actor)
+        } catch (error) {
+          // 保存の失敗と書き込み権の失効は、状態を含む応答に変える。結果不明の応答ではリースを残す。
+          const response = storageFailureResponse(error)
+          if (!response) throw error
+          if (response.status >= 500) operation.keepLease()
+          return response
+        }
+      },
     )
     if (outcome instanceof Response) return outcome
     result = outcome

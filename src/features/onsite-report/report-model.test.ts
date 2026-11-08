@@ -76,7 +76,12 @@ describe('送信データの作成', () => {
     expect(RevisionContextSchema.safeParse(built.submission.context).success).toBe(true)
     expect(built.submission.context).toEqual({
       phase: 'on_site',
-      report: { kind: 'actual', description: '閉店・臨時休業だった' },
+      report: {
+        kind: 'actual',
+        description: '閉店・臨時休業だった',
+        category: 'closed',
+        targetStopId: LUNCH,
+      },
     })
     expect(built.submission.reason).toContain('閉店・臨時休業だった')
   })

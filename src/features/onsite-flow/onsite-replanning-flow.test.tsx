@@ -99,6 +99,7 @@ const proposeWith =
       comparisons: [
         {
           revisionId: sampleRevision.id,
+          originalPlaceId: before.placeId ?? 'test-original-place',
           before: {
             fromPrevious: leg(morning.id, lunch.id, 10),
             toNext: leg(lunch.id, exhibition.id, 10),
@@ -109,6 +110,8 @@ const proposeWith =
           },
         },
       ],
+      // サーバーから発行済みの候補であることを示すテスト用トークン。
+      proposalTokens: { [sampleRevision.id]: `v2.1794132000000.e30.${'A'.repeat(43)}` },
     }
   }
 
@@ -191,7 +194,12 @@ describe('現地報告から再計画', () => {
     expect(request.targetStopId).toBe('stop-lunch')
     expect(request.context).toEqual({
       phase: 'on_site',
-      report: { kind: 'actual', description: '閉店・臨時休業だった' },
+      report: {
+        kind: 'actual',
+        description: '閉店・臨時休業だった',
+        category: 'closed',
+        targetStopId: 'stop-lunch',
+      },
     })
     expect(request.reason).toContain('閉店・臨時休業だった')
     expect(request.trip.stops.find((stop) => stop.id === 'stop-exhibition')?.isFixed).toBe(true)
@@ -232,7 +240,12 @@ describe('現地報告から再計画', () => {
     await screen.findByRole('table')
     expect(generate.mock.calls[0][0].context).toEqual({
       phase: 'on_site',
-      report: { kind: 'simulated', description: '閉店・臨時休業だった' },
+      report: {
+        kind: 'simulated',
+        description: '閉店・臨時休業だった',
+        category: 'closed',
+        targetStopId: 'stop-lunch',
+      },
     })
 
     // 候補は成立していても、承認の操作は適用に届かない。理由は「未接続」ではなく模擬報告と伝える。
@@ -275,7 +288,12 @@ describe('現地報告から再計画', () => {
     const [decision] = apply.mock.calls[0]
     expect(decision.request.context).toEqual({
       phase: 'on_site',
-      report: { kind: 'actual', description: '閉店・臨時休業だった' },
+      report: {
+        kind: 'actual',
+        description: '閉店・臨時休業だった',
+        category: 'closed',
+        targetStopId: 'stop-lunch',
+      },
     })
     expect(decision.request.targetStopId).toBe('stop-lunch')
     expect(decision.request.reason).toContain('閉店・臨時休業だった')
