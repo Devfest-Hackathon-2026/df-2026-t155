@@ -29,7 +29,19 @@ vi.mock('@/lib/auth/client', () => ({
   },
 }))
 
+// 既定のヘッダー経路は実物の protected-api.ts を通し、App Check SDKとFirebase初期化だけを差し替える。
+const appCheck = vi.hoisted(() => ({ getToken: vi.fn() }))
+vi.mock('firebase/app-check', () => ({
+  initializeAppCheck: () => ({}),
+  getToken: appCheck.getToken,
+  ReCaptchaEnterpriseProvider: class {},
+}))
+vi.mock('@/lib/firebase/client', () => ({ getClientAuth: () => ({ app: {} }) }))
+
 beforeEach(() => {
+  vi.stubEnv('NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY', 'test-site-key')
+  appCheck.getToken.mockReset()
+  appCheck.getToken.mockResolvedValue({ token: 'test.app.check' })
   for (const operation of mocks.operations) operation.controller.abort()
   mocks.operations.clear()
   mocks.session = { uid: 'user-a', generation: 0 }
@@ -247,6 +259,38 @@ describe('認証セッションとの結び付け', () => {
     expect(result).toMatchObject({ ok: true, learnings: { scope: scopeA } })
     const init = fetchFn.mock.calls[0][1]
     expect(new Headers(init?.headers).get('authorization')).toBe('Bearer token-of-a')
+    // 保護APIなので、App Checkのトークンも同時に送る。
+    expect(new Headers(init?.headers).get('x-firebase-appcheck')).toBe('test.app.check')
+  })
+
+  it('App Checkを用意できないときは、取得せず、設定不足として別の失敗で返す', async () => {
+    appCheck.getToken.mockRejectedValue(new Error('recaptcha failed: secret-detail'))
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json(payload()))
+    const result = await loadApprovedLearningOptions({ scope: scopeA, fetchFn })
+
+    expect(result).toMatchObject({ ok: false, kind: 'app_check_unavailable' })
+    expect(JSON.stringify(result)).not.toContain('secret-detail')
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('サイトキーが無いときも送信しない', async () => {
+    vi.stubEnv('NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY', '')
+    const fetchFn = vi.fn<typeof fetch>(async () => Response.json(payload()))
+    const result = await loadApprovedLearningOptions({ scope: scopeA, fetchFn })
+
+    expect(result).toMatchObject({ ok: false, kind: 'app_check_unavailable' })
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('429は利用制限として、401・403とは別の失敗で返す', async () => {
+    const fetchFn = vi.fn<typeof fetch>(
+      async () => new Response('{"detail":"internal"}', { status: 429 }),
+    )
+    const result = await loadApprovedLearningOptions({ scope: scopeA, fetchFn })
+
+    expect(result).toMatchObject({ ok: false, kind: 'rate_limited' })
+    expect(JSON.stringify(result)).not.toContain('internal')
+    expect(fetchFn).toHaveBeenCalledOnce()
   })
 
   it('現在のUIDが取得するセッションと違えば、トークンを送らず取得もしない', async () => {

@@ -161,6 +161,13 @@ describe('TripPlanner: 生成の失敗', () => {
     ['invalid_request', '入力内容を受け付けられませんでした'],
     ['service_unavailable', '旅程の生成は現在利用できません'],
     ['payload_too_large', '入力内容が大きすぎます'],
+    ['unauthorized', '認証、招待、またはアプリの検証が通りませんでした'],
+    ['rate_limited', '利用の回数が上限に達しました'],
+    ['auth_required', '認証情報を取得できず、旅程の生成を送信しませんでした'],
+    [
+      'app_check_unavailable',
+      'アプリの検証（App Check）を用意できず、旅程の生成を送信しませんでした',
+    ],
     ['unexpected', '予期しないエラーが発生しました'],
   ] as const)(
     '%s は種類に応じた案内を出し、入力内容を保持したまま再試行できる',

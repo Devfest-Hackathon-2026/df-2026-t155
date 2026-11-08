@@ -458,6 +458,7 @@ export function ReflectionFlow({ initialTripId }: { initialTripId?: string }) {
             // セッションが変わったときは、履歴がそのセッションに結び付いていて見えなくなるので、同じく作り直される。
             key={history.history.trip.id}
             trip={history.history.trip}
+            scope={visibleHeld?.scope}
             revisions={history.history.revisions}
             store={store}
             canSave={auth.status === 'authenticated' && auth.scope === visibleHeld?.scope}

@@ -200,7 +200,7 @@ describe('VerificationPanel: 再照合の失敗', () => {
   it('401・403（認証）、429（利用制限）、送信しなかった認証失敗は、それぞれ別の文言で案内し、旅程が変わらないことを伝える', () => {
     const titles = new Set<string>()
     for (const [kind, expected] of [
-      ['unauthorized', '認証が必要なため、根拠を確認できませんでした'],
+      ['unauthorized', '認証、招待、またはアプリの検証が通らず、根拠を確認できませんでした'],
       ['rate_limited', '利用の回数が上限に達したため、根拠を確認できませんでした'],
       ['auth_required', '認証情報を取得できず、根拠の確認を送信しませんでした'],
     ] as const) {

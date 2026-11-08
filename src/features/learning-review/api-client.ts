@@ -7,6 +7,18 @@ import {
   type Revision,
   type Trip,
 } from '@/domain'
+import { getProtectedApiHeaders, getProtectedApiHeadersForScope } from '@/lib/auth/protected-api'
+import {
+  classifyProtectedHeaderError,
+  classifyProtectedStatus,
+  PROTECTED_FAILURE_MESSAGES,
+} from '@/lib/auth/protected-api-errors'
+import {
+  beginSessionScopeOperation,
+  SessionChangedError,
+  type SessionScope,
+  type SessionScopeOperation,
+} from '@/lib/auth/session-scope'
 
 // 学びの候補の作成API（POST /api/learnings/candidates）を呼ぶクライアント。
 // 応答は契約で検証する。候補は1〜3件で、すべて未承認でなければ採用しない
@@ -21,6 +33,12 @@ export type CandidatesFailureKind =
   | 'invalid_request'
   | 'payload_too_large'
   | 'service_unavailable'
+  | 'unauthorized'
+  | 'rate_limited'
+  | 'auth_required'
+  | 'app_check_unavailable'
+  // 要求を作った時点と認証セッション（UID・世代）が変わった。送信前なら送らず、送信後なら結果を使わない。
+  | 'session_changed'
   | 'interrupted'
   | 'unexpected'
 
@@ -41,6 +59,13 @@ export interface CandidatesRequest {
 export interface CandidatesOptions {
   fetchFn?: typeof fetch
   signal?: AbortSignal
+  // trip・revisionsを取得した認証セッション。指定すると、そのセッションのBearer＋App Checkだけで送り、
+  // 送信直前と応答後にも世代の一致を確かめる（別のUIDのトークンで、前のセッションのデータを送らない）。
+  // 振り返り画面など、保存済みデータを送る呼び出しは必ず指定する。架空のデモデータだけ省略できる。
+  scope?: SessionScope
+  // 既定は本人のBearer＋App Check（scope指定時はscopeに束縛したもの）。テストでは差し替える。
+  // scope指定時に、現在のUIDで新しく作り直す関数へ差し替えてはいけない。
+  getHeaders?: (scope?: SessionScope) => Promise<Headers>
 }
 
 const ProposedSchema = z.strictObject({
@@ -73,23 +98,88 @@ const failure = (kind: CandidatesFailureKind, message: string): CandidatesResult
 const UNEXPECTED_MESSAGE = 'サーバーから想定外の応答が返されました。'
 const INTERRUPTED_MESSAGE = '通信が中断されました。接続を確認して、もう一度お試しください。'
 
+const SESSION_CHANGED_MESSAGE =
+  '認証状態が変わったため、この結果は使いません。画面を開き直して、もう一度お試しください。'
+
 export async function requestLearningCandidates(
   request: CandidatesRequest,
-  { fetchFn = fetch, signal }: CandidatesOptions = {},
+  { fetchFn = fetch, signal, scope, getHeaders }: CandidatesOptions = {},
+): Promise<CandidatesResult> {
+  const headerSource =
+    getHeaders ??
+    (scope ? () => getProtectedApiHeadersForScope(scope) : () => getProtectedApiHeaders())
+  // ヘッダーを用意できなければ送信しない（課金APIを呼ばない・再試行しない）。
+  let headers: Headers
+  try {
+    headers = await headerSource(scope)
+  } catch (error) {
+    if (error instanceof SessionChangedError) {
+      return failure('session_changed', SESSION_CHANGED_MESSAGE)
+    }
+    const kind = classifyProtectedHeaderError(error)
+    return failure(kind, PROTECTED_FAILURE_MESSAGES[kind])
+  }
+  headers.set('Content-Type', 'application/json')
+
+  // ヘッダー取得（App Check待ちを含む）の後、fetchと同じ同期区間で世代を確かめ、通信を世代に登録する。
+  let operation: SessionScopeOperation | undefined
+  if (scope) {
+    try {
+      operation = beginSessionScopeOperation(scope, signal)
+      operation.assertCurrent('not_sent')
+    } catch (error) {
+      operation?.dispose()
+      if (error instanceof SessionChangedError) {
+        return failure('session_changed', SESSION_CHANGED_MESSAGE)
+      }
+      return failure('auth_required', PROTECTED_FAILURE_MESSAGES.auth_required)
+    }
+  }
+
+  try {
+    return await interpret(request, headers, fetchFn, operation?.signal ?? signal, () => {
+      try {
+        operation?.assertCurrent('unknown')
+        return true
+      } catch {
+        return false
+      }
+    })
+  } finally {
+    operation?.dispose()
+  }
+}
+
+async function interpret(
+  request: CandidatesRequest,
+  headers: Headers,
+  fetchFn: typeof fetch,
+  signal: AbortSignal | undefined,
+  stillCurrent: () => boolean,
 ): Promise<CandidatesResult> {
   let response: Response
   let text: string
   try {
     response = await fetchFn(LEARNING_CANDIDATES_ENDPOINT, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(request),
       signal,
     })
     text = await response.text()
   } catch {
-    return failure('interrupted', INTERRUPTED_MESSAGE)
+    // 認証切替による中断は、通信エラーではなく切替として知らせる。
+    return stillCurrent()
+      ? failure('interrupted', INTERRUPTED_MESSAGE)
+      : failure('session_changed', SESSION_CHANGED_MESSAGE)
   }
+  // 応答を読んでいる間に認証が切り替わった結果は、使わない（送信済みの可能性はある）。
+  if (!stillCurrent()) return failure('session_changed', SESSION_CHANGED_MESSAGE)
+
+  // 認証・利用制限は本文を見ずステータスで判定し、固定の文言を出す。
+  const protectedFailure = classifyProtectedStatus(response.status)
+  if (protectedFailure)
+    return failure(protectedFailure, PROTECTED_FAILURE_MESSAGES[protectedFailure])
 
   let body: unknown
   try {

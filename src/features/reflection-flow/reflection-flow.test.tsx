@@ -8,6 +8,7 @@ import { sampleRevision, sampleTrip } from '@/domain/samples'
 import { ClientAuthError } from '@/lib/auth/client'
 import type { VersionedLearning } from '@/server/persistence/contracts'
 
+import { fakeAppCheck } from '../../../tests/helpers/fake-app-check'
 import { fakeAuth } from '../../../tests/helpers/fake-auth-client'
 import {
   createFakeBackend,
@@ -18,6 +19,13 @@ import {
   type BackendCall,
 } from '../../../tests/helpers/fake-persistence-backend'
 import { ReflectionFlow } from './reflection-flow'
+
+// 保護APIのヘッダー（Bearer＋App Check）は実物のprotected-api.tsを通し、App Check SDKとFirebase初期化だけを差し替える。
+vi.mock(
+  'firebase/app-check',
+  async () => (await import('../../../tests/helpers/fake-app-check')).appCheckModule,
+)
+vi.mock('@/lib/firebase/client', () => ({ getClientAuth: () => ({ app: {} }) }))
 
 // 認証（Firebase）だけを差し替える。セッションスコープ・LearningReview・api-client・保存ポートは、本物をつないで確かめる。
 vi.mock('@/lib/auth/client', async (importOriginal) => {
@@ -131,6 +139,7 @@ const approvePosts = (backend: ReturnType<typeof setupBackend>, uid?: string) =>
   backend.approveCalls().filter((call) => uid === undefined || call.uid === uid)
 
 beforeEach(() => {
+  fakeAppCheck.reset()
   fakeAuth.reset()
   // 復元（initializeAnonymousSession）で得られるUID。
   fakeAuth.state.restoredUid = A
@@ -138,6 +147,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   vi.clearAllMocks()
 })
 
@@ -180,6 +190,31 @@ describe('ReflectionFlow：実際の画面・保存ポート・APIクライア�
     )
     expect(document.body.textContent).not.toContain('Firestore')
     expect(document.body.textContent).not.toContain(sampleTrip.id)
+  })
+
+  it('学びの候補の生成は、画面が取得したセッションに束縛して送る（世代に登録した通信で、Aのトークン）', async () => {
+    const backend = setupBackend()
+    const isCandidates = (call: { method: string; path: string }) =>
+      call.method === 'POST' && call.path === '/api/learnings/candidates'
+    let registeredAtSend = 0
+    let registeredBefore = 0
+    backend.intercept(isCandidates, async ({ proceed }) => {
+      registeredAtSend = fakeAuth.client.registerAuthSessionOperation.mock.calls.length
+      return proceed()
+    })
+    const user = userEvent.setup()
+    render(<ReflectionFlow />)
+    await openTrip(user)
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: '変更の履歴' })).toBeTruthy()
+    })
+    registeredBefore = fakeAuth.client.registerAuthSessionOperation.mock.calls.length
+    await makeCandidates(user)
+    // 候補の生成は、送信前に認証世代へ通信を登録している（scope未指定の経路では登録されない）。
+    expect(registeredAtSend).toBeGreaterThan(registeredBefore)
+    const sent = backend.calls.filter(isCandidates)
+    expect(sent).toHaveLength(1)
+    expect(sent[0].uid).toBe(A)
   })
 
   it('一部だけ保存できて失敗したとき、警告・状態行・保存済みの一覧が同じ事実を示す', async () => {

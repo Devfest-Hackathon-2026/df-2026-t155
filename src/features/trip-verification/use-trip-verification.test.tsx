@@ -10,8 +10,49 @@ import { useTripVerification, type VerifyTrip } from './use-trip-verification'
 import { VerificationPanel } from './verification-panel'
 import type { VerificationSummary } from './verification-summary'
 
+// 保護APIのヘッダー（Bearer＋App Check）はモックし、既定の照合の経路は実物を通す。
+const protectedApi = vi.hoisted(() => ({ getProtectedApiHeaders: vi.fn() }))
+vi.mock('@/lib/auth/protected-api', () => ({
+  getProtectedApiHeaders: protectedApi.getProtectedApiHeaders,
+}))
+
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
+})
+
+describe('useTripVerification: 既定の照合', () => {
+  it('verifyを省略しても、Bearer と App Check の両方を付けて送る', async () => {
+    protectedApi.getProtectedApiHeaders.mockResolvedValue(
+      new Headers({
+        Authorization: 'Bearer test.id.token',
+        'X-Firebase-AppCheck': 'test.app.check',
+      }),
+    )
+    const fetchFn = vi.fn<typeof fetch>().mockResolvedValue(new Response('{}', { status: 401 }))
+    vi.stubGlobal('fetch', fetchFn)
+    const { result } = renderHook(() => useTripVerification())
+
+    await act(async () => {
+      await result.current.run(sampleTrip)
+    })
+    const headers = new Headers(fetchFn.mock.calls[0][1]?.headers)
+    expect(headers.get('Authorization')).toBe('Bearer test.id.token')
+    expect(headers.get('X-Firebase-AppCheck')).toBe('test.app.check')
+  })
+
+  it('ヘッダーを用意できなければ、既定でも送信しない', async () => {
+    protectedApi.getProtectedApiHeaders.mockRejectedValue(new Error('x'))
+    const fetchFn = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchFn)
+    const { result } = renderHook(() => useTripVerification())
+
+    await act(async () => {
+      await result.current.run(sampleTrip)
+    })
+    expect(fetchFn).not.toHaveBeenCalled()
+    expect(result.current.state).toMatchObject({ phase: 'failed' })
+  })
 })
 
 describe('useTripVerification', () => {

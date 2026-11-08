@@ -17,6 +17,12 @@ import {
   type Trip,
 } from '@/domain'
 import { IdSchema, TextSchema } from '@/domain/primitives'
+import { getProtectedApiHeaders } from '@/lib/auth/protected-api'
+import {
+  classifyProtectedHeaderError,
+  classifyProtectedStatus,
+  PROTECTED_FAILURE_MESSAGES,
+} from '@/lib/auth/protected-api-errors'
 
 import { checkCandidate, retainsApprovedEvidence } from './proposal-checks'
 
@@ -50,7 +56,17 @@ export type RevisionResult =
   | RevisionProposal
   | z.infer<typeof ProposalFailureSchema>
   | {
-      status: 'unavailable' | 'interrupted' | 'conflict' | 'invalid_request' | 'unexpected'
+      status:
+        | 'unavailable'
+        | 'interrupted'
+        | 'conflict'
+        | 'invalid_request'
+        | 'unexpected'
+        // 認証・招待・アプリ検証の失敗（401・403）、利用制限（429）、送信できなかった（ヘッダーなし）。
+        | 'unauthorized'
+        | 'rate_limited'
+        | 'auth_required'
+        | 'app_check_unavailable'
       message?: string
     }
 
@@ -58,6 +74,12 @@ export type GenerateRevisions = (
   request: RevisionRequest,
   signal: AbortSignal,
 ) => Promise<RevisionResult>
+
+// 通信の差し替え口（テスト用）。既定は実際のfetchと、本人のBearer＋App Check。
+export interface RevisionRequestDeps {
+  fetchFn?: typeof fetch
+  getHeaders?: () => Promise<Headers>
+}
 
 // 本人の承認操作を受け取る。applied と失敗はサーバーで結果が確定した場合にだけ返す。
 export type ApplyRevision = (decision: {
@@ -68,22 +90,44 @@ export type ApplyRevision = (decision: {
   | { status: 'conflict' | 'unavailable' | 'failed' | 'uncertain'; message?: string }
 >
 
-export const requestRevisions: GenerateRevisions = async (request, signal) => {
+export const requestRevisions = async (
+  request: RevisionRequest,
+  signal: AbortSignal,
+  {
+    fetchFn = (...args) => fetch(...args),
+    getHeaders = getProtectedApiHeaders,
+  }: RevisionRequestDeps = {},
+): Promise<RevisionResult> => {
   const { travelModes, ...base } = request
   const input = ReviseTripRequestSchema.safeParse(base)
   const modes = travelModesSchema.safeParse(travelModes)
   if (!input.success || !modes.success) return { status: 'invalid_request' }
   const checkedRequest = { ...input.data, travelModes: modes.data }
 
+  // ヘッダーを用意できなければ送信しない（課金APIを呼ばない・再試行しない）。
+  let headers: Headers
+  try {
+    headers = await getHeaders()
+  } catch (error) {
+    const status = classifyProtectedHeaderError(error)
+    return { status, message: PROTECTED_FAILURE_MESSAGES[status] }
+  }
+  headers.set('Content-Type', 'application/json')
+
   let response: Response
   let bodyText: string
   try {
-    response = await fetch('/api/trips/revise', {
+    response = await fetchFn('/api/trips/revise', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(checkedRequest),
       signal,
     })
+    // 認証・利用制限は本文を見ずステータスで判定し、固定の文言を出す。
+    const protectedFailure = classifyProtectedStatus(response.status)
+    if (protectedFailure) {
+      return { status: protectedFailure, message: PROTECTED_FAILURE_MESSAGES[protectedFailure] }
+    }
     if ([404, 405, 503].includes(response.status)) return { status: 'unavailable' }
     if (response.status === 409) return { status: 'conflict' }
     if ([400, 413, 415].includes(response.status)) return { status: 'invalid_request' }

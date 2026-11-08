@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { TripSchema, type Trip } from '@/domain'
 import { sampleTrip } from '@/domain/samples'
@@ -10,6 +10,23 @@ import type { VerificationResult } from '@/features/trip-verification/api-client
 import type { VerifyTrip } from '@/features/trip-verification/use-trip-verification'
 
 import { HomePlanner } from './home-planner'
+
+// 保護APIのヘッダー（Bearer＋App Check）はモックし、送信までの経路は実物を通す。
+const protectedApi = vi.hoisted(() => ({ getProtectedApiHeaders: vi.fn() }))
+vi.mock('@/lib/auth/protected-api', () => ({
+  getProtectedApiHeaders: protectedApi.getProtectedApiHeaders,
+}))
+
+beforeEach(() => {
+  protectedApi.getProtectedApiHeaders.mockReset()
+  protectedApi.getProtectedApiHeaders.mockImplementation(
+    async () =>
+      new Headers({
+        Authorization: 'Bearer test.id.token',
+        'X-Firebase-AppCheck': 'test.app.check',
+      }),
+  )
+})
 
 afterEach(() => {
   cleanup()
@@ -142,6 +159,66 @@ describe('HomePlanner: 根拠の確認（照合）', () => {
     expect(route().getAllByText('未照合')).toHaveLength(1)
     expect(verifyButton('もう一度確認する')).toBeTruthy()
   })
+
+  it('既定の照合は、Authorization と X-Firebase-AppCheck の両方を付けて送る', async () => {
+    const fetchFn = echoServer()
+    vi.stubGlobal('fetch', fetchFn)
+    const user = userEvent.setup()
+    await showGeneratedTrip(user)
+    await user.click(verifyButton())
+    await panel().findByText(/照合結果あり/)
+
+    const headers = new Headers(fetchFn.mock.calls[0][1]?.headers)
+    expect(headers.get('Authorization')).toBe('Bearer test.id.token')
+    expect(headers.get('X-Firebase-AppCheck')).toBe('test.app.check')
+  })
+
+  it('App Checkを用意できなければ照合APIを呼ばず、区別した案内を出し、旅程はそのまま。自動では再送しない', async () => {
+    const fetchFn = echoServer()
+    vi.stubGlobal('fetch', fetchFn)
+    protectedApi.getProtectedApiHeaders.mockRejectedValue(
+      Object.assign(new Error('secret-detail'), { name: 'AppCheckUnavailableError' }),
+    )
+    const user = userEvent.setup()
+    await showGeneratedTrip(user)
+    await user.click(verifyButton())
+
+    const alert = await panel().findByRole('alert')
+    expect(alert.textContent).toContain('アプリの検証（App Check）を用意できず')
+    expect(alert.textContent).toContain('旅程はそのまま')
+    expect(alert.textContent).not.toContain('secret-detail')
+    expect(route().getAllByText('未照合')).toHaveLength(3)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(fetchFn).not.toHaveBeenCalled()
+    expect(protectedApi.getProtectedApiHeaders).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    [401, '認証、招待、またはアプリの検証が通らず'],
+    [403, '認証、招待、またはアプリの検証が通らず'],
+    [429, '利用の回数が上限に達したため'],
+    [503, '根拠の確認は現在利用できません'],
+  ] as const)(
+    'HTTP %i は区別した案内を出し、旅程は変わらず、自動では再送しない',
+    async (status, text) => {
+      const body =
+        status === 503
+          ? { status: 'service_unavailable', message: '停止中' }
+          : { message: 'サーバー内部の詳細' }
+      const fetchFn = vi.fn(async () => json(body, status))
+      vi.stubGlobal('fetch', fetchFn)
+      const user = userEvent.setup()
+      await showGeneratedTrip(user)
+      await user.click(verifyButton())
+
+      const alert = await panel().findByRole('alert')
+      expect(alert.textContent).toContain(text)
+      expect(alert.textContent).not.toContain('サーバー内部の詳細')
+      expect(route().getAllByText('未照合')).toHaveLength(3)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(fetchFn).toHaveBeenCalledOnce()
+    },
+  )
 
   it('Google由来の内容には、枠と「Google Maps」の帰属を付ける（概要・詳細シートの両方）', async () => {
     vi.stubGlobal('fetch', echoServer())

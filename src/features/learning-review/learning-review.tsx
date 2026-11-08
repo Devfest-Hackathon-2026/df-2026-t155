@@ -22,6 +22,7 @@ import {
   type CandidatesRequest,
   type CandidatesResult,
 } from './api-client'
+import { assertCurrentSessionScopeSync, type SessionScope } from '@/lib/auth/session-scope'
 import { validateIncomingCandidates } from './intake'
 import {
   approvedOf,
@@ -43,6 +44,9 @@ export type RequestCandidates = (
 
 interface LearningReviewProps {
   trip: Trip
+  // trip・revisionsを取得した認証セッション。指定すると、候補の生成はこのセッションのトークンでだけ送り、
+  // セッションが変わったら送らず、古い結果も採用しない。実データを渡す画面は必ず指定する（デモの架空データだけ省略可）。
+  scope?: SessionScope
   // 旅行中に行った部分修正の履歴。承認した、実際の報告に基づくものだけが、学びの材料になる。
   revisions?: Revision[]
   // テスト・先行開発で差し替える。省略時は実際のAPIを呼ぶ。
@@ -112,6 +116,7 @@ type Phase =
 //   前の旅程の候補・承認状態を消し、混在させない。
 export function LearningReview({
   trip,
+  scope,
   revisions = NO_REVISIONS,
   requestCandidates = requestLearningCandidates,
   now = () => new Date(),
@@ -283,7 +288,7 @@ export function LearningReview({
     try {
       result = await requestCandidates(
         { trip: startedTrip, revisions, feedback: text },
-        { signal: controller.signal },
+        { signal: controller.signal, ...(scope ? { scope } : {}) },
       )
     } catch {
       result = {
@@ -299,6 +304,17 @@ export function LearningReview({
       contextKeyRef.current !== startedContext
     ) {
       return
+    }
+    // 認証セッションが変わっていたら、結果は画面に反映しない（古いセッションの結果を、新しい画面へ入れない）。
+    if (scope) {
+      try {
+        assertCurrentSessionScopeSync(scope, 'unknown')
+      } catch {
+        inFlightRef.current = false
+        controllerRef.current = null
+        setPhase({ kind: 'idle' })
+        return
+      }
     }
     inFlightRef.current = false
     controllerRef.current = null

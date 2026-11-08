@@ -366,7 +366,18 @@ describe('破損・上限超過の保存データは、一部だけ採用せず�
 })
 
 describe('実クライアントの認証セッション切替（Emulator）', () => {
+  // App Checkはreキャプチャ鍵とブラウザが要るためEmulatorでは取れない。SDKだけを差し替え、
+  // 認証はEmulatorの実クライアントのまま、保護APIヘッダー本体（Bearer＋App Check必須）を通す。
+  let appCheckToken: () => Promise<{ token: string }>
+
   beforeEach(async () => {
+    appCheckToken = async () => ({ token: 'emulator.app.check' })
+    vi.stubEnv('NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY', 'emulator-site-key')
+    vi.doMock('firebase/app-check', () => ({
+      initializeAppCheck: () => ({}),
+      getToken: () => appCheckToken(),
+      ReCaptchaEnterpriseProvider: class {},
+    }))
     vi.resetModules()
     const { getClientAuth } = await import('../../src/lib/firebase/client')
     await getClientAuth().authStateReady()
@@ -381,6 +392,8 @@ describe('実クライアントの認証セッション切替（Emulator）', ()
 
   afterEach(async () => {
     vi.restoreAllMocks()
+    vi.doUnmock('firebase/app-check')
+    vi.unstubAllEnvs()
     await Promise.all(
       getApps()
         .filter((app) => app.name === 'groundtrip-client')
@@ -505,5 +518,23 @@ describe('実クライアントの認証セッション切替（Emulator）', ()
     })
     expect(spy).not.toHaveBeenCalled()
     expect((await getAdminAuth().listUsers(1000)).users.length).toBe(count)
+  })
+
+  it('App Checkのトークンを取れないときは、Emulatorの有効なセッションでも取得を送信しない', async () => {
+    const client = await import('../../src/lib/auth/client')
+    const { captureSessionScope } = await import('../../src/lib/auth/session-scope')
+    const { loadApprovedLearningOptions } = await import('@/features/learning-reuse/api-client')
+
+    await client.startNewAnonymousSession()
+    const scope = await captureSessionScope()
+    appCheckToken = async () => {
+      throw new Error('app check failed')
+    }
+    const spy = vi.fn(viaRoute)
+    expect(await loadApprovedLearningOptions({ scope, fetchFn: spy })).toMatchObject({
+      ok: false,
+      kind: 'app_check_unavailable',
+    })
+    expect(spy).not.toHaveBeenCalled()
   })
 })

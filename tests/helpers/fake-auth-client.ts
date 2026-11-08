@@ -81,6 +81,11 @@ function createFakeAuth() {
       issued.push(snapshot)
       return snapshot
     }),
+    // 保護API用ヘッダー（protected-api.ts）が、現在のUIDのBearerを作るために使う。
+    getAuthHeaders: vi.fn(
+      async () =>
+        new Headers({ Authorization: `Bearer ${(await client.getAuthSnapshot()).token}` }),
+    ),
     isAuthSessionCurrent: vi.fn(
       (expectedUid: string, expectedGeneration: number) =>
         uid === expectedUid && generation === expectedGeneration,

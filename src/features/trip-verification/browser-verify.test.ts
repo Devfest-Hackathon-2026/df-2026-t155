@@ -201,3 +201,21 @@ describe('createBrowserVerifier', () => {
     expect(fetchFn).toHaveBeenCalledOnce()
   })
 })
+
+describe('照合の入口: App Checkを用意できないとき', () => {
+  it('requireAuth: true では送信せず、app_check_unavailable で返す（SDKの原文は出さない）', async () => {
+    const fetchFn = vi.fn()
+    vi.stubGlobal('fetch', fetchFn)
+    const getHeaders = vi
+      .fn()
+      .mockRejectedValue(
+        Object.assign(new Error('recaptcha secret-detail'), { name: 'AppCheckUnavailableError' }),
+      )
+    const result = await createBrowserVerifier({ getHeaders, requireAuth: true })(sampleTrip)
+
+    expect(result).toMatchObject({ ok: false, failure: { kind: 'app_check_unavailable' } })
+    expect(JSON.stringify(result)).not.toContain('secret-detail')
+    expect(fetchFn).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
+})

@@ -15,7 +15,15 @@ import { captureSessionScope } from '@/lib/auth/session-scope'
 import { LearningListResponseSchema } from '@/server/persistence/contracts'
 import { createFirestoreLearningStore } from '@/features/reflection-flow/api-client'
 
+import { fakeAppCheck } from '../helpers/fake-app-check'
 import { fakeAuth } from '../helpers/fake-auth-client'
+
+// 保護APIのヘッダー（Bearer＋App Check）は本物のprotected-api.tsを通し、App Check SDKとFirebase初期化だけを差し替える。
+vi.mock(
+  'firebase/app-check',
+  async () => (await import('../helpers/fake-app-check')).appCheckModule,
+)
+vi.mock('@/lib/firebase/client', () => ({ getClientAuth: () => ({ app: {} }) }))
 
 // 認証クライアントだけを差し替える（IDトークンは、Auth Emulatorが発行した本物を使う）。
 // 保存API（Route Handlers）・Firestore Emulator・セッションスコープ・保存ポートは、すべて本物。
@@ -154,6 +162,7 @@ async function saveTripFor(session: Session, tripId = SHARED_TRIP) {
 }
 
 beforeEach(async () => {
+  fakeAppCheck.reset()
   fakeAuth.reset()
   ;[a, b] = await Promise.all([createSession('a'), createSession('b')])
   const tokens: Record<string, string> = { [a.uid]: a.token, [b.uid]: b.token }

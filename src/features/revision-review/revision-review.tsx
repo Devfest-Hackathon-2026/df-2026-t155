@@ -29,6 +29,14 @@ const generationMessages = {
   conflict: '旅程が更新されています。最新の旅程を確認してから部分修正を始め直してください。',
   invalid_request: '修正対象や入力内容を確認してください。',
   unexpected: '候補の応答を確認できませんでした。',
+  unauthorized:
+    '認証、招待、またはアプリの検証が通りませんでした。入力内容と表示中の旅程はそのままです。認証の状態を確認してから、もう一度お試しください。',
+  rate_limited:
+    '利用の回数が上限に達しています。入力内容はそのままです。しばらく時間をおいてからお試しください。繰り返し押しても上限は戻りません。',
+  auth_required:
+    '認証情報を取得できなかったため、依頼を送信しませんでした。入力内容はそのままです。認証の状態を確認してから、もう一度お試しください。',
+  app_check_unavailable:
+    'アプリの検証（App Check）を用意できなかったため、依頼を送信しませんでした。入力内容はそのままです。設定を確認するか、時間をおいてお試しください。',
 } satisfies Record<Exclude<RevisionResult['status'], 'proposed'>, string>
 
 const applyMessages = {

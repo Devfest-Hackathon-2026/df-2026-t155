@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { sampleApprovedLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 import { ClientAuthError } from '@/lib/auth/client'
+import { PROTECTED_FAILURE_MESSAGES } from '@/lib/auth/protected-api-errors'
 import {
   captureSessionScope,
   SessionChangedError,
@@ -9,6 +10,7 @@ import {
 } from '@/lib/auth/session-scope'
 import type { VersionedLearning } from '@/server/persistence/contracts'
 
+import { APP_CHECK_TOKEN, fakeAppCheck } from '../../../tests/helpers/fake-app-check'
 import { fakeAuth } from '../../../tests/helpers/fake-auth-client'
 import {
   createFakeBackend,
@@ -27,6 +29,13 @@ import {
   sameLearning,
   userMessageOf,
 } from './api-client'
+
+// 保護APIのヘッダー（Bearer＋App Check）は実物のprotected-api.tsを通し、App Check SDKとFirebase初期化だけを差し替える。
+vi.mock(
+  'firebase/app-check',
+  async () => (await import('../../../tests/helpers/fake-app-check')).appCheckModule,
+)
+vi.mock('@/lib/firebase/client', () => ({ getClientAuth: () => ({ app: {} }) }))
 
 // 認証クライアントだけを差し替える。セッションスコープ（session-scope.ts）は本物を使う。
 vi.mock('@/lib/auth/client', async (importOriginal) => {
@@ -56,6 +65,7 @@ const third = { ...sampleApprovedLearning, id: 'learning-third', content: '朝�
 const entry = (learning: typeof first, version = 1): VersionedLearning => ({ version, learning })
 
 beforeEach(async () => {
+  fakeAppCheck.reset()
   fakeAuth.reset()
   fakeAuth.signInAs(A)
   scope = await captureSessionScope()
@@ -360,6 +370,105 @@ describe('認証とHTTPエラーの扱い', () => {
     await expect(loadSavedTrips(scope, { fetchFn, signal: controller.signal })).rejects.toThrow(
       '通信に失敗しました',
     )
+  })
+})
+
+describe('保護API用ヘッダー（Bearer＋App Check）', () => {
+  const sendersOf = [
+    ['旅程の一覧', (fetchFn: typeof fetch) => loadSavedTrips(scope, { fetchFn })],
+    ['保存済みの学び', (fetchFn: typeof fetch) => loadSavedLearnings(scope, { fetchFn })],
+  ] as const
+
+  it.each(sendersOf)('%s：BearerとApp Checkのトークンを付けて送る', async (_name, load) => {
+    const backend = backendWith()
+    await load(backend.fetchFn)
+    const headers = new Headers(backend.fetchFn.mock.calls[0][1]?.headers)
+    expect(headers.get('Authorization')).toBe('Bearer token-of-user-a')
+    expect(headers.get('X-Firebase-AppCheck')).toBe(APP_CHECK_TOKEN)
+  })
+
+  it('保存（POST）にも、BearerとApp Checkのトークンを付ける', async () => {
+    const backend = backendWith()
+    const store = createFirestoreLearningStore(scope, vi.fn(), backend.fetchFn)
+    expect(await store.save([first])).toEqual({ ok: true })
+    const post = backend.fetchFn.mock.calls.find(([, init]) => init?.method === 'POST')
+    const headers = new Headers(post?.[1]?.headers)
+    expect(headers.get('Authorization')).toBe('Bearer token-of-user-a')
+    expect(headers.get('X-Firebase-AppCheck')).toBe(APP_CHECK_TOKEN)
+  })
+
+  it.each(sendersOf)('%s：App Checkのトークンを取得できなければ送信しない', async (_name, load) => {
+    fakeAppCheck.getToken.mockRejectedValue(new Error('recaptcha: sdk internal detail'))
+    const fetchFn = vi.fn()
+    const error = await load(fetchFn).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(ReflectionApiError)
+    expect(error).toMatchObject({ code: 'app_check_unavailable', outcome: 'not_sent' })
+    expect(userMessageOf(error)).toBe(PROTECTED_FAILURE_MESSAGES.app_check_unavailable)
+    expect(userMessageOf(error)).not.toContain('sdk internal')
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('App Checkの鍵の設定がないときも送信しない', async () => {
+    vi.stubEnv('NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY', '')
+    const fetchFn = vi.fn()
+    await expect(loadSavedTrips(scope, { fetchFn })).rejects.toMatchObject({
+      code: 'app_check_unavailable',
+      outcome: 'not_sent',
+    })
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('保存でApp Checkを用意できなければ、1件も送らず、未保存で再試行できるものとして返す', async () => {
+    fakeAppCheck.getToken.mockRejectedValue(new Error('boom'))
+    const backend = backendWith()
+    const result = await createFirestoreLearningStore(scope, vi.fn(), backend.fetchFn).save([first])
+    expect(result).toMatchObject({ ok: false, retryable: true, savedIds: [], unknownIds: [] })
+    expect((result as { message: string }).message).toContain('App Check')
+    expect(backend.fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('UIDが変わった後はApp Checkのトークンを取れても送らない（fail-closed）', async () => {
+    const backend = backendWith()
+    fakeAuth.signInAs(B)
+    await expect(loadSavedLearnings(scope, { fetchFn: backend.fetchFn })).rejects.toBeInstanceOf(
+      SessionChangedError,
+    )
+    expect(backend.fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('認証が切れているときは、App Checkの失敗とは別に、認証エラーのまま伝える', async () => {
+    fakeAuth.endSession()
+    const fetchFn = vi.fn()
+    await expect(loadSavedTrips(scope, { fetchFn })).rejects.toBeInstanceOf(ClientAuthError)
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [401, 'unauthorized'],
+    [403, 'unauthorized'],
+    [429, 'rate_limited'],
+  ] as const)(
+    '%i応答は、本文に関わらず平易な固定文言にし、未保存として扱う',
+    async (status, kind) => {
+      const fetchFn = vi
+        .fn()
+        .mockResolvedValue(failure(status, 'whatever_secret', 'users/abc 内部情報'))
+      const error = await loadSavedTrips(scope, { fetchFn }).catch((reason: unknown) => reason)
+      expect(error).toMatchObject({ status, outcome: 'rejected' })
+      expect(userMessageOf(error)).toBe(PROTECTED_FAILURE_MESSAGES[kind])
+      expect(userMessageOf(error)).not.toContain('内部情報')
+    },
+  )
+
+  it('403・429で本文がJSONでなくても、同じ固定文言を使う', async () => {
+    const forbidden = vi.fn().mockResolvedValue(html(403))
+    await expect(loadSavedTrips(scope, { fetchFn: forbidden })).rejects.toMatchObject({
+      message: PROTECTED_FAILURE_MESSAGES.unauthorized,
+    })
+    const limited = vi.fn().mockResolvedValue(html(429))
+    await expect(loadSavedTrips(scope, { fetchFn: limited })).rejects.toMatchObject({
+      message: PROTECTED_FAILURE_MESSAGES.rate_limited,
+    })
   })
 })
 

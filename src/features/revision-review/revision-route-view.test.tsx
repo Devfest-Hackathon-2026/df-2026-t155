@@ -14,6 +14,12 @@ import {
 } from './api-client'
 import { RevisionRouteView } from './revision-route-view'
 
+// 保護APIのヘッダー（Bearer＋App Check）はモックし、送信までの経路は実物を通す。
+vi.mock('@/lib/auth/protected-api', () => ({
+  getProtectedApiHeaders: async () =>
+    new Headers({ Authorization: 'Bearer test.id.token', 'X-Firebase-AppCheck': 'test.app.check' }),
+}))
+
 afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
@@ -296,6 +302,37 @@ describe('部分修正の候補比較', () => {
       liveRegion,
     )
   })
+
+  it.each([
+    [401, '認証、招待、またはアプリの検証が通りませんでした'],
+    [403, '認証、招待、またはアプリの検証が通りませんでした'],
+    [429, '利用の回数が上限に達しています'],
+    [503, '候補生成APIは現在利用できません'],
+  ] as const)(
+    'HTTP %i は区別した案内を出し、入力と旅程を保ち、自動では再送しない',
+    async (status, text) => {
+      const user = userEvent.setup()
+      const fetchFn = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(Response.json({ message: 'サーバー内部の詳細' }, { status }))
+      vi.stubGlobal('fetch', fetchFn)
+      render(<RevisionRouteView trip={trip} generate={requestRevisions} />)
+      await open(user)
+      await request(user)
+
+      const alert = await screen.findByRole('alert')
+      expect(alert.textContent).toContain(text)
+      expect(alert.textContent).not.toContain('サーバー内部の詳細')
+      expect((screen.getByLabelText('修正理由（必須）') as HTMLTextAreaElement).value).toBe(
+        '店が休み',
+      )
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(fetchFn).toHaveBeenCalledOnce()
+      const sent = new Headers(fetchFn.mock.calls[0][1]?.headers)
+      expect(sent.get('Authorization')).toBe('Bearer test.id.token')
+      expect(sent.get('X-Firebase-AppCheck')).toBe('test.app.check')
+    },
+  )
 
   it('409でフォーカスを失った場合はキャンセルへ移す', async () => {
     const user = userEvent.setup()

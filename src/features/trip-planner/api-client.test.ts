@@ -4,6 +4,9 @@ import { sampleGenerateTripRequest, sampleTrip } from '@/domain/samples'
 
 import { GENERATE_TRIP_ENDPOINT, requestTripGeneration } from './api-client'
 
+const protectedHeaders = async () =>
+  new Headers({ Authorization: 'Bearer test.id.token', 'X-Firebase-AppCheck': 'test.app.check' })
+
 const respond = (body: unknown, status: number) =>
   vi.fn<typeof fetch>().mockResolvedValue(
     new Response(typeof body === 'string' ? body : JSON.stringify(body), {
@@ -13,7 +16,7 @@ const respond = (body: unknown, status: number) =>
   )
 
 const call = (fetchFn: typeof fetch) =>
-  requestTripGeneration(sampleGenerateTripRequest, { fetchFn })
+  requestTripGeneration(sampleGenerateTripRequest, { fetchFn, getHeaders: protectedHeaders })
 
 const failureOf = async (fetchFn: typeof fetch) => {
   const result = await call(fetchFn)
@@ -31,7 +34,11 @@ describe('requestTripGeneration: 正常系', () => {
   it('JSONでPOSTし、入力をそのまま本文に載せ、中止用のsignalを渡す', async () => {
     const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
     const controller = new AbortController()
-    await requestTripGeneration(sampleGenerateTripRequest, { fetchFn, signal: controller.signal })
+    await requestTripGeneration(sampleGenerateTripRequest, {
+      fetchFn,
+      getHeaders: protectedHeaders,
+      signal: controller.signal,
+    })
 
     expect(fetchFn).toHaveBeenCalledTimes(1)
     const [url, init] = fetchFn.mock.calls[0]
@@ -81,6 +88,7 @@ describe('requestTripGeneration: 通信・想定外の応答', () => {
       .mockRejectedValue(new DOMException('aborted', 'AbortError'))
     const result = await requestTripGeneration(sampleGenerateTripRequest, {
       fetchFn,
+      getHeaders: protectedHeaders,
       signal: controller.signal,
     })
 
@@ -247,10 +255,58 @@ describe('requestTripGeneration: 本文の受信中の中断', () => {
     )
     const pending = requestTripGeneration(sampleGenerateTripRequest, {
       fetchFn,
+      getHeaders: protectedHeaders,
       signal: controller.signal,
     })
     controller.abort()
 
     expect(await pending).toMatchObject({ ok: false, failure: { kind: 'interrupted' } })
+  })
+})
+
+describe('requestTripGeneration: 保護API（Bearer＋App Check）', () => {
+  it('Authorization と X-Firebase-AppCheck の両方を付けて送り、Content-Type も保つ', async () => {
+    const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+    await call(fetchFn)
+
+    const headers = new Headers(fetchFn.mock.calls[0][1]?.headers)
+    expect(headers.get('Authorization')).toBe('Bearer test.id.token')
+    expect(headers.get('X-Firebase-AppCheck')).toBe('test.app.check')
+    expect(headers.get('Content-Type')).toBe('application/json')
+  })
+
+  it.each([
+    ['App Checkを用意できない', 'AppCheckUnavailableError', 'app_check_unavailable'],
+    ['認証情報を用意できない', 'ClientAuthError', 'auth_required'],
+  ] as const)('%s場合は送信せず（fail-closed）、%s として返す', async (_label, name, kind) => {
+    const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+    const getHeaders = vi.fn().mockRejectedValue(Object.assign(new Error('生の詳細'), { name }))
+    const result = await requestTripGeneration(sampleGenerateTripRequest, { fetchFn, getHeaders })
+
+    expect(result).toMatchObject({ ok: false, failure: { kind } })
+    expect(JSON.stringify(result)).not.toContain('生の詳細')
+    expect(fetchFn).not.toHaveBeenCalled()
+    expect(getHeaders).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    [401, 'unauthorized'],
+    [403, 'unauthorized'],
+    [429, 'rate_limited'],
+  ] as const)(
+    'HTTP %i は本文の形に関わらず %s とし、サーバーの文言を出さず、再送しない',
+    async (status, kind) => {
+      const fetchFn = respond({ status: 'invalid_request', message: 'サーバー内部の詳細' }, status)
+      const failure = await failureOf(fetchFn)
+
+      expect(failure.kind).toBe(kind)
+      expect(failure.message).not.toContain('サーバー内部の詳細')
+      expect(fetchFn).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it('503は従来どおり service_unavailable（保護・機能停止）で、401・429とは別の種類', async () => {
+    const fetchFn = respond({ status: 'service_unavailable', message: '停止中' }, 503)
+    expect((await failureOf(fetchFn)).kind).toBe('service_unavailable')
   })
 })

@@ -195,18 +195,19 @@ Trip・Revision・Learningを読み込んだ認証セッションと、承認・
 食い違うと、前のUIDの画面データを新しいUIDのトークンで保存・生成へ使ってしまう。
 これを防ぐための共有部品。独自の認証モデルやUID再作成は持たず、上記の`client.ts`だけを使う。
 
-| 部品（`src/lib/auth/`）                                  | 役割                                                                                                           |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `getAuthSnapshot()`（client.ts）                         | UID・IDトークン・認証世代を**同じUserから同じ取得処理で**組にして返す。失敗・エラー変換は`getIdToken`と同じ    |
-| `SessionScope`                                           | 公開値は不変の`{ uid }`。内部で取得時の認証世代に束縛し、トークンやUserは持たない                              |
-| `ScopedValue<T>`                                         | 取得したデータ`value`と、取得時の`scope`の組                                                                   |
-| `captureSessionScope()`                                  | 現在のセッションのスコープを取る。セッションがなければ`ClientAuthError`で失敗し、匿名アカウントは作らない      |
-| `getAuthHeadersForScope(scope)`                          | UIDと認証世代が`scope`と同じときだけ`Authorization`を返す。違えば`SessionChangedError`（トークンは渡さない）   |
-| `beginSessionScopeOperation(scope, signal?)`             | I/Oを認証世代に登録し、境界通知時に同期中断。外部の中断signalも伝える（送信済み書き込みは取り消せない）        |
-| `assertCurrentSessionScopeSync(scope, outcome?)`         | 同期区間でUIDと認証世代を確認。送信直前・状態更新の採用直前に使う                                              |
-| `assertCurrentSessionScope(scope, outcome?)`             | 非同期処理後にも現在のUIDと認証世代を確認。POST後の変更は`unknown`として示せる                                 |
-| `isSameScope(a, b)` / `assertSameScope(scoped, current)` | UIDと束縛された認証世代を比較。後者は違えば`SessionChangedError`を投げる                                       |
-| `useSessionScope()`（use-session-scope.ts）              | 認証状態を購読し、`restoring` / `authenticated`（`scope`あり） / `session_ended` / `error`と`scopeEpoch`を返す |
+| 部品（`src/lib/auth/`）                                     | 役割                                                                                                           |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `getAuthSnapshot()`（client.ts）                            | UID・IDトークン・認証世代を**同じUserから同じ取得処理で**組にして返す。失敗・エラー変換は`getIdToken`と同じ    |
+| `SessionScope`                                              | 公開値は不変の`{ uid }`。内部で取得時の認証世代に束縛し、トークンやUserは持たない                              |
+| `ScopedValue<T>`                                            | 取得したデータ`value`と、取得時の`scope`の組                                                                   |
+| `captureSessionScope()`                                     | 現在のセッションのスコープを取る。セッションがなければ`ClientAuthError`で失敗し、匿名アカウントは作らない      |
+| `getProtectedApiHeadersForScope(scope)`（protected-api.ts） | 課金・保存APIの送信用。`getAuthHeadersForScope`にApp Checkトークンを加える。App Checkを取れなければ送信しない  |
+| `getAuthHeadersForScope(scope)`                             | UIDと認証世代が`scope`と同じときだけ`Authorization`を返す。違えば`SessionChangedError`（トークンは渡さない）   |
+| `beginSessionScopeOperation(scope, signal?)`                | I/Oを認証世代に登録し、境界通知時に同期中断。外部の中断signalも伝える（送信済み書き込みは取り消せない）        |
+| `assertCurrentSessionScopeSync(scope, outcome?)`            | 同期区間でUIDと認証世代を確認。送信直前・状態更新の採用直前に使う                                              |
+| `assertCurrentSessionScope(scope, outcome?)`                | 非同期処理後にも現在のUIDと認証世代を確認。POST後の変更は`unknown`として示せる                                 |
+| `isSameScope(a, b)` / `assertSameScope(scoped, current)`    | UIDと束縛された認証世代を比較。後者は違えば`SessionChangedError`を投げる                                       |
+| `useSessionScope()`（use-session-scope.ts）                 | 認証状態を購読し、`restoring` / `authenticated`（`scope`あり） / `session_ended` / `error`と`scopeEpoch`を返す |
 
 利用側の約束。
 
@@ -374,7 +375,9 @@ CIに両Emulatorの専用ジョブを追加し、本番認証情報を渡さな�
 **Firestore保存APIと有料APIの一般公開は保留する。**
 Issue #29で既存の課金4ルートとFirestore保存11操作に、本人認証・招待UID・Web App Check・Firestoreの分散利用枠を接続した。
 App Check通常トークンは再利用できるため、UID別・全体の制限も必須。独自Next.js APIではサーバーでApp Checkを検証する。
-UI接続、実環境での署名・IAM・負荷確認、匿名UID量産と拒否トラフィックへの対策は公開前に確認する。
+画面側の生成・照合・修正候補・学び候補・学び一覧のクライアントは、本人のBearerとApp Checkを送る。
+課金・保存を有効にする前に、実環境での署名・IAM・負荷確認、匿名UID量産と拒否トラフィックへの対策を確認する。
+画面の接続範囲と未対応（#52のreflection-flow、実際のreCAPTCHA疎通は未検証）は[画面側クライアントの接続](API_ABUSE_PROTECTION.md)を参照。
 [クライアント契約、招待・上限設定、公開と停止の手順](API_ABUSE_PROTECTION.md)を参照。
 
 ## 保存APIと後続の接続

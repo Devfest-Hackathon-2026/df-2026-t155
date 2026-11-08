@@ -9,11 +9,16 @@ import {
   type Trip,
 } from '@/domain'
 import { ClientAuthError } from '@/lib/auth/client'
+import { getProtectedApiHeadersForScope } from '@/lib/auth/protected-api'
+import {
+  classifyProtectedHeaderError,
+  classifyProtectedStatus,
+  PROTECTED_FAILURE_MESSAGES,
+} from '@/lib/auth/protected-api-errors'
 import {
   assertCurrentSessionScope,
   assertCurrentSessionScopeSync,
   beginSessionScopeOperation,
-  getAuthHeadersForScope,
   SessionChangedError,
   type SessionScope,
 } from '@/lib/auth/session-scope'
@@ -203,7 +208,7 @@ type RequestOptions = {
   getHeaders?: (scope: SessionScope) => Promise<Headers>
 }
 
-// 取得した時点のセッション（scope）のトークンだけで送る。
+// 取得した時点のセッション（scope）のBearer＋App Checkだけで送る。
 // 送信の直前にUIDを確かめ、違えば送らずに失敗する（古い画面のデータを別のUIDのトークンで送らない）。
 async function authorizedJson<T>(
   scope: SessionScope,
@@ -216,10 +221,24 @@ async function authorizedJson<T>(
     body,
     signal,
     fetchFn = fetch,
-    getHeaders = getAuthHeadersForScope,
+    getHeaders = getProtectedApiHeadersForScope,
   } = options
   // 認証が失敗しても新しい匿名ユーザーを勝手に作らない。
-  const headers = await getHeaders(scope)
+  let headers: Headers
+  try {
+    headers = await getHeaders(scope)
+  } catch (error) {
+    // App Checkを用意できなかったときは送信しない。認証・セッションの失敗は従来どおり呼び出し側で扱う。
+    if (classifyProtectedHeaderError(error) === 'app_check_unavailable') {
+      throw new ReflectionApiError(
+        PROTECTED_FAILURE_MESSAGES.app_check_unavailable,
+        undefined,
+        'app_check_unavailable',
+        'not_sent',
+      )
+    }
+    throw error
+  }
   if (body !== undefined) headers.set('Content-Type', 'application/json')
 
   // ヘッダー取得後からfetchまでの境界も同期確認し、通信をセッション世代に登録する。
@@ -262,6 +281,20 @@ async function authorizedJson<T>(
       const knownFailure = own(KNOWN_FAILURES, responseCode)
       const known = knownFailure?.status === response.status ? knownFailure : undefined
       // 既知のコードだけ、定型文言と確定の有無を使う。未知の本文は、利用者に見せない。
+      if (!knownFailure) {
+        // 保護APIの共通ステータス（401/403/429）は、未知の本文でもステータスで判定する。
+        // サーバーは保存先に触れる前に拒否するので、何も変更されていない。
+        // 既知コードとステータスが食い違う矛盾した応答は信頼せず、従来どおり結果不明とする。
+        const protectedFailure = classifyProtectedStatus(response.status)
+        if (protectedFailure) {
+          throw new ReflectionApiError(
+            PROTECTED_FAILURE_MESSAGES[protectedFailure],
+            response.status,
+            undefined,
+            'rejected',
+          )
+        }
+      }
       throw new ReflectionApiError(
         known?.message ?? fallbackMessage(response.status),
         response.status,

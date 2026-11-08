@@ -9,9 +9,9 @@ import {
 
 // 画面から照合APIを呼ぶ入口。認証ヘッダーを付ける場所は、ここの1か所だけにする。
 //
-// 課金APIの保護（認証）はIssue #29で決める。仕様が決まるまでは、トークンを付けず、従来どおりの呼び出しにする。
-// 決まったら、`createBrowserVerifier({ getHeaders: getAuthHeaders, requireAuth: true })`
-// （getAuthHeaders は src/lib/auth/client.ts）を、画面の `verify` に渡すだけで足りる。
+// 実際の画面では protected-verify.ts の `verifyTripWithProtectedApi`
+// （`createBrowserVerifier({ getHeaders: getProtectedApiHeaders, requireAuth: true })`）を使う。
+// ここ（verifyTripFromBrowser）はヘッダーを付けない素の入口で、テスト・認証なしの用途に残している。
 //
 // requireAuth（既定は false）：
 // - false（現状）：トークンを取得できなくても、ヘッダーなしで送り、判断はサーバーに任せる。

@@ -13,12 +13,14 @@ export type VerificationFailureKind =
   | 'invalid_request'
   | 'payload_too_large'
   | 'service_unavailable'
-  // 認証が必要、または認証の有効期限が切れている（HTTP 401・403）。結果は採用しない。
+  // 認証・招待・アプリ検証のいずれかが通らなかった（HTTP 401・403）。結果は採用しない。
   | 'unauthorized'
   // 利用制限に達した（HTTP 429）。結果は採用しない。
   | 'rate_limited'
   // 認証が必要な設定で、認証情報を用意できず、送信しなかった（通信はしていない）。
   | 'auth_required'
+  // App Checkを用意できず、送信しなかった（鍵の設定なし・reCAPTCHA失敗。通信はしていない）。
+  | 'app_check_unavailable'
   | 'interrupted'
   | 'unexpected'
 
@@ -52,9 +54,12 @@ const failure = (kind: VerificationFailureKind, message: string): VerificationRe
 
 const UNEXPECTED_MESSAGE = 'サーバーから想定外の応答が返されました。'
 const INTERRUPTED_MESSAGE = '通信が中断されました。接続を確認して、もう一度お試しください。'
-const UNAUTHORIZED_MESSAGE = '認証が必要です。または、認証の有効期限が切れています。'
+const UNAUTHORIZED_MESSAGE =
+  '認証、招待、またはアプリの検証が通りませんでした。認証の有効期限が切れているか、このアカウントは利用できない可能性があります。'
 const RATE_LIMITED_MESSAGE = '利用の回数が上限に達しています。'
 const AUTH_UNAVAILABLE_MESSAGE = '認証情報を取得できなかったため、照合の依頼を送信しませんでした。'
+const APP_CHECK_UNAVAILABLE_MESSAGE =
+  'アプリの検証（App Check）を用意できなかったため、照合の依頼を送信しませんでした。'
 
 // 認証が必要な送信で、認証情報を用意できなかった（送信していない）。fetchの代わりに投げる。
 export class AuthRequiredError extends Error {
@@ -67,7 +72,10 @@ export class AuthRequiredError extends Error {
 // 認証の失敗か。認証基盤のエラー（ClientAuthError）は、型を直接参照せず、名前で見分ける
 // （照合の入口に、認証SDKの読み込みを持ち込まないため）。文言は、そのエラー自身のものを使う。
 export const isAuthError = (error: unknown): error is Error =>
-  error instanceof Error && (error.name === 'AuthRequiredError' || error.name === 'ClientAuthError')
+  error instanceof Error &&
+  (error.name === 'AuthRequiredError' ||
+    error.name === 'ClientAuthError' ||
+    error.name === 'AppCheckUnavailableError')
 
 // キーの並び順に依存しない、安定した文字列にする（キーをソートして再帰的にJSON化）。
 const sortKeys = (value: unknown): unknown => {
@@ -110,6 +118,10 @@ export async function requestTripVerification(
     text = await response.text()
   } catch (error) {
     // 認証情報を用意できず送信しなかった場合は、通信の中断と区別する。
+    // App Checkの失敗はSDKの文言を出さず、固定の文言にする。
+    if (error instanceof Error && error.name === 'AppCheckUnavailableError') {
+      return failure('app_check_unavailable', APP_CHECK_UNAVAILABLE_MESSAGE)
+    }
     if (isAuthError(error)) return failure('auth_required', error.message)
     return failure('interrupted', INTERRUPTED_MESSAGE)
   }

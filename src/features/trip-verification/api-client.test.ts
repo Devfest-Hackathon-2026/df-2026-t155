@@ -198,7 +198,8 @@ describe('requestTripVerification: 認証・利用制限', () => {
           ok: false,
           failure: {
             kind: 'unauthorized',
-            message: '認証が必要です。または、認証の有効期限が切れています。',
+            message:
+              '認証、招待、またはアプリの検証が通りませんでした。認証の有効期限が切れているか、このアカウントは利用できない可能性があります。',
           },
         })
       }

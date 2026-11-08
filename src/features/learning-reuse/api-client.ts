@@ -1,12 +1,13 @@
 import {
   assertCurrentSessionScope,
   beginSessionScopeOperation,
-  getAuthHeadersForScope,
   SessionChangedError,
   type ScopedValue,
   type SessionScope,
   type SessionScopeOperation,
 } from '@/lib/auth/session-scope'
+import { getProtectedApiHeadersForScope } from '@/lib/auth/protected-api'
+import { classifyProtectedHeaderError } from '@/lib/auth/protected-api-errors'
 import type { VersionedLearning } from '@/server/persistence/contracts'
 
 import { isSelectableLearningList, ReusableLearningListResponseSchema } from './learning-list'
@@ -21,7 +22,16 @@ export type LearningLoadResult =
       ok: false
       // session: 認証状態を確認できない（失効・復元失敗）。session_changed: 取得時のUIDまたは認証世代が変わった。
       kind:
-        'session' | 'session_changed' | 'unavailable' | 'interrupted' | 'incomplete' | 'unexpected'
+        | 'session'
+        | 'session_changed'
+        // App Checkを用意できず、送信しなかった（鍵の設定なし・reCAPTCHA失敗）。
+        | 'app_check_unavailable'
+        // 利用制限（HTTP 429）。
+        | 'rate_limited'
+        | 'unavailable'
+        | 'interrupted'
+        | 'incomplete'
+        | 'unexpected'
       message: string
     }
 
@@ -30,8 +40,8 @@ export interface LearningLoadOptions {
   scope: SessionScope
   signal?: AbortSignal
   fetchFn?: typeof fetch
-  // 既定は getAuthHeadersForScope。UIDが scope と違えばトークンを出さずに失敗する。
-  // 現在のUIDで getAuthHeaders() を作り直す関数に差し替えてはいけない。
+  // 既定は getProtectedApiHeadersForScope（Bearer＋App Check）。UIDが scope と違えばトークンを出さずに失敗し、
+  // App Checkを用意できなくても送信しない。現在のUIDで getAuthHeaders() を作り直す関数に差し替えてはいけない。
   getHeaders?: (scope: SessionScope) => Promise<Headers>
   // Integration tests may supply a scope from an isolated Firebase app.
   beginOperation?: typeof beginSessionScopeOperation
@@ -46,7 +56,7 @@ export async function loadApprovedLearningOptions({
   scope,
   signal,
   fetchFn = fetch,
-  getHeaders = getAuthHeadersForScope,
+  getHeaders = getProtectedApiHeadersForScope,
   beginOperation = beginSessionScopeOperation,
 }: LearningLoadOptions): Promise<LearningLoadResult> {
   let headers: Headers
@@ -56,6 +66,12 @@ export async function loadApprovedLearningOptions({
     // 取得前にUIDが変わっていた。別のUIDのトークンでは取得しない。
     if (error instanceof SessionChangedError) {
       return fail('session_changed', '認証状態が変わりました。学びを読み込み直してください。')
+    }
+    if (classifyProtectedHeaderError(error) === 'app_check_unavailable') {
+      return fail(
+        'app_check_unavailable',
+        'アプリの検証（App Check）を用意できなかったため、学びを読み込めませんでした。時間をおいてお試しください。',
+      )
     }
     return fail('session', '認証状態を確認できません。ログイン状態を確認してください。')
   }
@@ -112,8 +128,18 @@ export async function loadApprovedLearningOptions({
     }
     if (signal?.aborted) return fail('interrupted', '読み込みを中断しました。')
 
+    // 本文は見ず、ステータスで判定する（サーバーの本文は画面へ出さない）。
     if (response.status === 401 || response.status === 403) {
-      return fail('session', '認証状態を確認できません。ログイン状態を確認してください。')
+      return fail(
+        'session',
+        '認証、招待、またはアプリの検証が通りませんでした。ログイン状態を確認してください。',
+      )
+    }
+    if (response.status === 429) {
+      return fail(
+        'rate_limited',
+        '利用の回数が上限に達しています。しばらく時間をおいてお試しください。',
+      )
     }
     if (response.status === 503) {
       return fail('unavailable', '保存済みの学びを現在取得できません。')

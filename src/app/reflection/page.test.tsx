@@ -4,9 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { sampleRevision, sampleTrip } from '@/domain/samples'
 
+import { fakeAppCheck } from '../../../tests/helpers/fake-app-check'
 import { fakeAuth } from '../../../tests/helpers/fake-auth-client'
 import { createFakeBackend } from '../../../tests/helpers/fake-persistence-backend'
 import ReflectionPage from './page'
+
+// 保護APIのヘッダー（Bearer＋App Check）は実物のprotected-api.tsを通し、App Check SDKとFirebase初期化だけを差し替える。
+vi.mock(
+  'firebase/app-check',
+  async () => (await import('../../../tests/helpers/fake-app-check')).appCheckModule,
+)
+vi.mock('@/lib/firebase/client', () => ({ getClientAuth: () => ({ app: {} }) }))
 
 // 認証（Firebase）だけを差し替える。ページ・ReflectionFlow・セッションスコープ・LearningReviewは本物を使う。
 vi.mock('@/lib/auth/client', async (importOriginal) => {
@@ -20,6 +28,7 @@ vi.mock('@/lib/auth/client', async (importOriginal) => {
 let backend: ReturnType<typeof createFakeBackend>
 
 beforeEach(() => {
+  fakeAppCheck.reset()
   fakeAuth.reset()
   fakeAuth.state.restoredUid = 'user-1'
   backend = createFakeBackend({ 'user-1': { trips: [sampleTrip], revisions: [sampleRevision] } })

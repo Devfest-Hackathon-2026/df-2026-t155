@@ -76,7 +76,6 @@ async function runFlow() {
     url = String(input)
     method = init?.method
     const headers = new Headers(init?.headers)
-    headers.set('Authorization', 'Bearer test.id.token')
     const response = await POST(
       new Request(new URL(String(input), 'http://localhost'), { ...init, headers }),
     )
@@ -84,7 +83,14 @@ async function runFlow() {
     body = await response.clone().json()
     return response
   }
-  const result = await requestTripGeneration(request, { fetchFn })
+  const result = await requestTripGeneration(request, {
+    fetchFn,
+    getHeaders: async () =>
+      new Headers({
+        Authorization: 'Bearer test.id.token',
+        'X-Firebase-AppCheck': 'test.app.check',
+      }),
+  })
   expect(url).toBe('/api/trips/generate')
   expect(method).toBe('POST')
   return { status, body, result }
