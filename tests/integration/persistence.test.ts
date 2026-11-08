@@ -19,6 +19,7 @@ import { ReviseTripRequestSchema } from '@/domain'
 import { sampleLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin'
 import { editLearning, rejectLearning } from '@/lib/learnings/lifecycle'
+import { resolveSelectedLearnings } from '@/server/learning-reuse/selection'
 import { getApplicableLearnings } from '@/server/learnings/store'
 import {
   LearningListResponseSchema,
@@ -331,6 +332,14 @@ describe('Firestore Emulator＋認証済みRoute Handlers', () => {
     })
     expect(await getApplicableLearnings(store, a.uid, trip.region)).toEqual([first.learning])
     expect(await getApplicableLearnings(store, a.uid, '対象外の地域')).toEqual([])
+    // 画面で見た版の選択を、本人の保存済みデータと照合して採用する。
+    expect(await store.listVersionedApproved(a.uid)).toEqual([first])
+    expect(
+      await resolveSelectedLearnings(store, a.uid, trip.region, [{ id, version: first.version }]),
+    ).toEqual([first.learning])
+    await expect(
+      resolveSelectedLearnings(store, b.uid, trip.region, [{ id, version: first.version }]),
+    ).rejects.toMatchObject({ code: 'selection_changed' })
     await expectCode(await getLearning(b.request(), params), 404, 'not_found')
     await expectCode(await approve(learningInput(otherTrip.id, 1), b), 404, 'not_found')
     await expectCode(
@@ -362,6 +371,13 @@ describe('Firestore Emulator＋認証済みRoute Handlers', () => {
       await (await getLearning(a.request(), params)).json(),
     )
     expect(second).toMatchObject({ version: 2, learning: { content: next.content } })
+    // 同じIDの内容が再承認で差し替わった後は、古い版の選択を拒否し、新しい版の選択は採用する。
+    await expect(
+      resolveSelectedLearnings(store, a.uid, trip.region, [{ id, version: first.version }]),
+    ).rejects.toMatchObject({ code: 'selection_changed' })
+    expect(
+      await resolveSelectedLearnings(store, a.uid, trip.region, [{ id, version: second.version }]),
+    ).toEqual([second.learning])
     await expectCode(
       await revokeLearning(a.request('DELETE', undefined, '?expectedVersion=1'), params),
       409,
@@ -373,6 +389,9 @@ describe('Firestore Emulator＋認証済みRoute Handlers', () => {
     await expectCode(await getLearning(a.request(), params), 404, 'not_found')
     await expectCode(await approve(initial), 409, 'learning_revoked')
     expect(await store.listApproved(a.uid)).toEqual([])
+    await expect(
+      resolveSelectedLearnings(store, a.uid, trip.region, [{ id, version: second.version }]),
+    ).rejects.toMatchObject({ code: 'selection_changed' })
     const raw = await getAdminFirestore().doc(`users/${a.uid}/learnings/${id}`).get()
     expect(raw.data()).toMatchObject({ state: 'revoked', id })
     expect(raw.data()).not.toHaveProperty('learning')
@@ -589,6 +608,12 @@ describe('Firestoreの保存枠と一覧', () => {
     await expect(new FirestoreLearningStore().listApproved(session.uid)).rejects.toMatchObject({
       code: 'invalid_stored_data',
     })
+    // 破損文書が1件でもあれば、選択を一部だけ採用せず、学びなしで作る案内に変換できる失敗にする。
+    await expect(
+      resolveSelectedLearnings(new FirestoreLearningStore(), session.uid, trip.region, [
+        { id: 'valid-learning', version: 1 },
+      ]),
+    ).rejects.toMatchObject({ code: 'unavailable' })
   })
 
   it.each(['a/b', '__proto__', '%2F', '旅程-𠮷'])(

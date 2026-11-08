@@ -127,7 +127,11 @@ Stopごとの根拠16件、変更理由・現地報告各1000文字、Learning�
 - **PR #39** のUIは全件を `save(approved[])` に渡し、0件では呼び出さない。
   接続時は変更した項目だけを版付きで承認し、結果を項目ごとに表示する。途中で失敗した場合は保存済みと未保存を区別して再試行する。
   最後の1件も独立した撤回操作で削除できるようにし、下書きの編集・却下とサーバー上の承認・撤回を別々に表示する。
-- **#13** は `getApplicableLearnings(new FirestoreLearningStore(), actor.uid, region)` を使い、本人の有効な承認済みLearningを取り出す。
-  生成APIでは本文中のLearningを認可に使わず、サーバーで採用・反映先を確定する。
-  反映済みTripの保存を接続する際は、参照したLearningの存在・所有者・現行承認を保存トランザクション内で検証する。
+- **#13** は `resolveSelectedLearnings(new FirestoreLearningStore(), actor.uid, region, selections)` を使い、
+  利用者が画面で選んだ `{ id, version }` を、`listVersionedApproved` で取り出した本人の有効な承認済みLearningの現行版と照合する。
+  生成APIでは本文中のLearningを認可に使わず、サーバーで採用・反映先を確定する（詳細は[学びの接続契約](LEARNINGS.md)）。
+  画面の選択は、取得時の認証セッション（UID）と組で保持し、別のUIDのトークンで送らない。
+  `resolveSelectedLearnings` が返す値は、Firestoreを読んだ時点のスナップショット。外部のGemini呼び出しをトランザクションで囲まない。
+  反映済みTripの保存を接続する際は、参照したLearningの存在・所有者・現行承認と、生成時に検証した版を
+  保存トランザクション内で再検証する（現在の保存APIは適用記録つきのTripを受け付けない。提案は[学びの接続契約](LEARNINGS.md)）。
 - Trip・Revisionの削除や匿名UID喪失後のデータ保持期限は、後続のデータ運用で定める。

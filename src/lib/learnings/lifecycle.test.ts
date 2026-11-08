@@ -5,7 +5,9 @@ import { sampleApprovedLearning, sampleLearning } from '../../domain/samples'
 import {
   approveLearning,
   editLearning,
+  isLearningApplicableToRegion,
   MAX_LEARNING_CONTENT_LENGTH,
+  normalizeLearningRegion,
   rejectLearning,
   selectApplicableLearnings,
 } from './lifecycle'
@@ -138,5 +140,31 @@ describe('selectApplicableLearnings: 未承認が次回へ適用されない', (
     const edited = editLearning(sameRegion, { content: '内容を変えた' })
 
     expect(edited.ok && selectApplicableLearnings([edited.learning], region)).toEqual([])
+  })
+})
+
+describe('地域の正規化（画面とサーバーで共通）', () => {
+  const sameRegion = approveLearning({ ...pending, id: 'learning-higashiyama' }, DECIDED_AT)
+
+  it('前後の空白だけを除き、全角・半角などの表記揺れは同一視しない', () => {
+    expect(normalizeLearningRegion(`  ${region}　`)).toBe(region)
+    expect(normalizeLearningRegion('京都')).not.toBe(normalizeLearningRegion('京都市'))
+    expect(normalizeLearningRegion('ＫＹＯＴＯ')).not.toBe(normalizeLearningRegion('KYOTO'))
+  })
+
+  it('前後に空白がある入力地域でも、同じ表記の地域限定の学びを選べる', () => {
+    expect(isLearningApplicableToRegion(sameRegion, `  ${region}  `)).toBe(true)
+    expect(
+      selectApplicableLearnings(
+        [sameRegion],
+        `	${region}
+`,
+      ),
+    ).toEqual([sameRegion])
+  })
+
+  it('空白を除いても表記が違う地域は、適用されない', () => {
+    expect(isLearningApplicableToRegion(sameRegion, `${region}周辺`)).toBe(false)
+    expect(selectApplicableLearnings([sameRegion], ' 京都市 ')).toEqual([])
   })
 })

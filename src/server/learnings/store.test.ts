@@ -68,6 +68,38 @@ describe('InMemoryLearningStore', () => {
     expect(await store.remove('user-a', sampleApprovedLearning.id)).toBe(false)
   })
 
+  it('版つきで取得でき、保存のたびに加算される。撤回後に保存し直しても過去の版を再利用しない', async () => {
+    const store = new InMemoryLearningStore()
+    await store.saveApproved('user-a', sampleApprovedLearning)
+    expect(await store.listVersionedApproved('user-a')).toEqual([
+      { version: 1, learning: sampleApprovedLearning },
+    ])
+
+    await store.saveApproved('user-a', { ...sampleApprovedLearning, content: '更新した内容' }, 1)
+    expect((await store.listVersionedApproved('user-a'))[0].version).toBe(2)
+
+    expect(await store.remove('user-a', sampleApprovedLearning.id)).toBe(true)
+    expect(await store.listVersionedApproved('user-a')).toEqual([])
+    // 撤回済みを再度削除しても、撤回済みのまま。期待版つきの再保存は拒否する。
+    expect(await store.remove('user-a', sampleApprovedLearning.id)).toBe(false)
+    expect(await codeOf(store.saveApproved('user-a', sampleApprovedLearning, 2))).toBe(
+      'version_conflict',
+    )
+
+    await store.saveApproved('user-a', { ...sampleApprovedLearning, content: '別の内容' })
+    expect(await store.listVersionedApproved('user-a')).toMatchObject([
+      { version: 3, learning: { content: '別の内容' } },
+    ])
+  })
+
+  it('版つきの一覧も、利用者ごとに分離され、空のUIDを拒否する', async () => {
+    const store = new InMemoryLearningStore()
+    await store.saveApproved('user-a', sampleApprovedLearning)
+
+    expect(await store.listVersionedApproved('user-b')).toEqual([])
+    expect(await codeOf(store.listVersionedApproved(''))).toBe('invalid_owner')
+  })
+
   it('取得した値を書き換えても、保存済みの内容は変わらない', async () => {
     const store = new InMemoryLearningStore()
     await store.saveApproved('user-a', sampleApprovedLearning)

@@ -81,11 +81,18 @@ export class FirestoreLearningStore implements Pick<LearningStore, 'listApproved
     return listOwned(actor, this.learnings(actor), LEARNING_LIMIT, fromLearningDocument)
   }
 
-  async listApproved(ownerUid: string): Promise<ApprovedLearning[]> {
+  // 版つきで返す。次回の旅程に使う学びの選択は、画面で見た版と照合するためこちらを使う。
+  // 破損・打ち切りで不完全な一覧は、一部だけ採用せず拒否する。
+  async listVersionedApproved(ownerUid: string): Promise<VersionedLearning[]> {
     const { items, listInfo } = await this.list({ uid: ownerUid })
     if (listInfo.skippedInvalid || listInfo.truncated) {
       throw new PersistenceError('invalid_stored_data')
     }
+    return items
+  }
+
+  async listApproved(ownerUid: string): Promise<ApprovedLearning[]> {
+    const items = await this.listVersionedApproved(ownerUid)
     return items.map(({ learning }) => learning)
   }
 

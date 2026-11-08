@@ -1,5 +1,6 @@
 import { ApprovedLearningSchema, type ApprovedLearning } from '../../domain'
 import { selectApplicableLearnings } from '../../lib/learnings/lifecycle'
+import type { VersionedLearning } from '../persistence/contracts'
 
 // 承認済みの学びの保存先。保存できるのは承認済みだけで、利用者ごとに分離する。
 // ownerUidは、認証済みの利用者のUID（サーバーが検証した値）だけを渡す。リクエスト本文の値は渡さない。
@@ -28,7 +29,8 @@ const requireOwner = (ownerUid: string) => {
   }
 }
 
-type LearningRecords = Map<string, { learning: ApprovedLearning; version: number } | null>
+// 撤回済みは本文を消し、版だけを残す。同じIDを再保存しても、過去に発行した版を再利用しない。
+type LearningRecords = Map<string, { learning: ApprovedLearning | null; version: number }>
 
 // 開発・テスト・デモ用のメモリ実装。プロセスが終われば消える。永続化ではない。
 export class InMemoryLearningStore implements LearningStore {
@@ -49,7 +51,10 @@ export class InMemoryLearningStore implements LearningStore {
     const current = owned.get(approved.data.id)
     const version = current?.version ?? 0
     // デモの直接呼び出しは従来どおり。LearningStore経由では期待版が必須。
-    if (expectedVersion !== undefined && (current === null || version !== expectedVersion)) {
+    if (
+      expectedVersion !== undefined &&
+      (current?.learning === null || version !== expectedVersion)
+    ) {
       throw new LearningStoreError('version_conflict', '保存内容の版が変わりました')
     }
     owned.set(approved.data.id, { learning: structuredClone(approved.data), version: version + 1 })
@@ -57,9 +62,14 @@ export class InMemoryLearningStore implements LearningStore {
   }
 
   async listApproved(ownerUid: string): Promise<ApprovedLearning[]> {
+    return (await this.listVersionedApproved(ownerUid)).map(({ learning }) => learning)
+  }
+
+  // 保存のたびに加算される版つきで返す。画面で見た版との照合に使う。
+  async listVersionedApproved(ownerUid: string): Promise<VersionedLearning[]> {
     requireOwner(ownerUid)
     return [...(this.byOwner.get(ownerUid)?.values() ?? [])].flatMap((item) =>
-      item ? [structuredClone(item.learning)] : [],
+      item.learning ? [{ version: item.version, learning: structuredClone(item.learning) }] : [],
     )
   }
 
@@ -67,11 +77,11 @@ export class InMemoryLearningStore implements LearningStore {
     requireOwner(ownerUid)
     const owned = this.byOwner.get(ownerUid)
     const current = owned?.get(learningId)
-    if (!owned || !current) return false
+    if (!owned || !current || current.learning === null) return false
     if (expectedVersion !== undefined && expectedVersion !== current.version) {
       throw new LearningStoreError('version_conflict', '保存内容の版が変わりました')
     }
-    owned.set(learningId, null)
+    owned.set(learningId, { learning: null, version: current.version })
     return true
   }
 }
