@@ -2,13 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import '../../../../../tests/helpers/mock-cost-control'
 
-import type { GenerateTripRequest } from '@/domain'
 import { requestTripGeneration } from '@/features/trip-planner/api-client'
+import { sampleApprovedLearning } from '@/domain/samples'
 import { GeminiCallError } from '@/server/gemini/client'
+import type { GenerateTripConditions } from '@/server/trip-generation/http-request'
 
 import { POST } from './route'
 
 const gemini = vi.hoisted(() => ({ generateJson: vi.fn() }))
+// 保存済みの学び（サーバー側の正本）。選択の解決に使われる。
+const store = vi.hoisted(() => ({ listVersionedApproved: vi.fn() }))
+
+vi.mock('@/server/persistence/learnings', () => ({
+  FirestoreLearningStore: class {
+    listVersionedApproved = store.listVersionedApproved
+  },
+}))
 
 vi.mock('@/server/gemini/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/server/gemini/client')>()),
@@ -21,7 +30,7 @@ vi.mock('@/lib/firebase/admin', async (importOriginal) => ({
   getAdminAuth: () => ({ verifyIdToken: async () => ({ uid: 'test-actor' }) }),
 }))
 
-const request: GenerateTripRequest = {
+const request: GenerateTripConditions = {
   date: '2026-11-08',
   region: '京都',
   timeZone: 'Asia/Tokyo',
@@ -49,7 +58,6 @@ const request: GenerateTripRequest = {
       ],
     },
   ],
-  learnings: [],
 }
 
 const draft = (nextStart: string) => ({
@@ -160,5 +168,103 @@ describe('旅程生成のRouteからクライアントまで', () => {
       'dummy-secret-value',
     )
     expect(gemini.generateJson).toHaveBeenCalledTimes(1)
+  })
+})
+
+// 学びの再利用：本文のlearningsは受け付けず、{ id, version } をサーバーが保存済みの現行版と照合して解決する。
+describe('旅程生成のRoute：学びの選択', () => {
+  const base = request
+  const selection = { id: sampleApprovedLearning.id, version: 2 }
+
+  const post = (body: unknown) =>
+    POST(
+      new Request('http://localhost/api/trips/generate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: 'Bearer test.id.token',
+          'X-Firebase-AppCheck': 'test.app.check',
+        },
+        body: JSON.stringify(body),
+      }),
+    )
+
+  beforeEach(() => {
+    vi.stubEnv('TRIP_GENERATION_ENABLED', 'true')
+    gemini.generateJson.mockReset()
+    store.listVersionedApproved.mockReset()
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+  })
+
+  it('選択を本人（認証済みUID）の保存済みデータで解決し、その学びだけをGeminiへ渡す', async () => {
+    store.listVersionedApproved.mockResolvedValue([
+      { version: 2, learning: sampleApprovedLearning },
+    ])
+    gemini.generateJson.mockResolvedValue(JSON.stringify(draft('11:30')))
+
+    const response = await post({ ...base, learningSelections: [selection] })
+
+    expect(response.status).toBe(200)
+    // UIDは本文ではなく検証済みトークンから取る。
+    expect(store.listVersionedApproved).toHaveBeenCalledWith('test-actor')
+    expect(JSON.stringify(gemini.generateJson.mock.calls[0][0])).toContain(
+      sampleApprovedLearning.content,
+    )
+  })
+
+  it('本文に承認済みの学び（旧形式のlearnings）を付けても400。Geminiも保存先も呼ばない', async () => {
+    const forged = { ...sampleApprovedLearning, content: '偽の学び（クライアント申告）' }
+    const response = await post({ ...base, learningSelections: [], learnings: [forged] })
+
+    expect(response.status).toBe(400)
+    expect(gemini.generateJson).not.toHaveBeenCalled()
+    expect(store.listVersionedApproved).not.toHaveBeenCalled()
+  })
+
+  it('版が現行と違えば409 selection_changed。Geminiを呼ばない', async () => {
+    store.listVersionedApproved.mockResolvedValue([
+      { version: 3, learning: sampleApprovedLearning },
+    ])
+
+    const response = await post({ ...base, learningSelections: [selection] })
+
+    expect(response.status).toBe(409)
+    expect((await response.json()).status).toBe('selection_changed')
+    expect(gemini.generateJson).not.toHaveBeenCalled()
+  })
+
+  it('他人の学びのID（本人の一覧にない）は409。本文は返さない', async () => {
+    store.listVersionedApproved.mockResolvedValue([])
+
+    const response = await post({ ...base, learningSelections: [selection] })
+
+    expect(response.status).toBe(409)
+    expect(JSON.stringify(await response.json())).not.toContain(sampleApprovedLearning.content)
+    expect(gemini.generateJson).not.toHaveBeenCalled()
+  })
+
+  it('保存先の障害は503 learnings_unavailable（内部の詳細を含めない）。Geminiを呼ばない', async () => {
+    store.listVersionedApproved.mockRejectedValue(new Error('firestore dummy-secret-value'))
+
+    const response = await post({ ...base, learningSelections: [selection] })
+
+    expect(response.status).toBe(503)
+    const text = await response.text()
+    expect(text).toContain('learnings_unavailable')
+    expect(text).not.toContain('dummy-secret-value')
+    expect(gemini.generateJson).not.toHaveBeenCalled()
+  })
+
+  it('選択が空なら保存先を読まず、学びなしで生成する', async () => {
+    gemini.generateJson.mockResolvedValue(JSON.stringify(draft('11:30')))
+
+    const response = await post({ ...base, learningSelections: [] })
+
+    expect(response.status).toBe(200)
+    expect(store.listVersionedApproved).not.toHaveBeenCalled()
   })
 })

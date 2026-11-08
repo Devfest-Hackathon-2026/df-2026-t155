@@ -9,11 +9,8 @@ import { POST as candidates } from '../../src/app/api/learnings/candidates/route
 import { POST as generate } from '../../src/app/api/trips/generate/route'
 import { POST as revise } from '../../src/app/api/trips/revise/route'
 import { POST as verify } from '../../src/app/api/trips/verify/route'
-import {
-  sampleGenerateTripRequest,
-  sampleReviseTripRequest,
-  sampleTrip,
-} from '../../src/domain/samples'
+import { sampleReviseTripRequest, sampleTrip } from '../../src/domain/samples'
+import { sampleGenerateTripBody } from '../helpers/generate-request'
 import { requireActor, requireOwner } from '../../src/lib/auth/server'
 import { getAdminAuth } from '../../src/lib/firebase/admin'
 
@@ -142,7 +139,7 @@ const paidRoutes = [
     '/api/trips/generate',
     'TRIP_GENERATION_ENABLED',
     generate,
-    sampleGenerateTripRequest,
+    sampleGenerateTripBody(),
     paidAdapters.generateJson,
   ],
   [

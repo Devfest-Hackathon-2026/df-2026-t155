@@ -10,6 +10,8 @@ const transaction = (reads: number, writes: number): OperationCost => ({
 
 export const COSTS = {
   generate: { gemini: 1 },
+  // 選んだ学びを保存済みの現行版と照合する分（一覧の読み取り）を加える。
+  generateWithLearnings: { gemini: 1, reads: LEARNING_LIMIT + 1 },
   verify: { places: 4, routes: 3 },
   revise: { gemini: 1, places: 6, routes: 16 },
   learningCandidates: { gemini: 1 },

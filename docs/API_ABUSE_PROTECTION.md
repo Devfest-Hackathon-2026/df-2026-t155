@@ -4,6 +4,8 @@
 
 **一般公開不可。** 課金4ルートと保存11操作に、Firebase本人認証、招待UID、Web App Check、Firestoreの分散利用枠を接続した。機能フラグと本番の共通デモフラグは既定無効。画面側APIクライアントは本人のBearerとApp Checkを送る（#52のreflection-flowは未接続）。実環境検証・拒否トラフィックの費用対策が公開前に残る。Console設定と実Firebase疎通は未実施。 [Issue #29](https://github.com/cludewn/groundtrip/issues/29)
 
+#60は短期間・少人数の審査用。既存App Hostingでこの保護を適用し、公開の判断とは分けて[期間限定の運用条件](DEMO_ACCESS.md#期間限定のapp-hosting運用)を確認する。
+
 ## 調査時点の入口と呼び出し量
 
 基準は `main` の `25c3e0b`。公開HTTPから課金APIへ到達する経路は以下の4つ。数値は現行コードで可能な1リクエスト当たりの上限であり、今回の利用枠の設定値ではない。
@@ -153,7 +155,7 @@ HTTPの期限でも送信済みRPCや内部再送が取り消されたとは判�
 ## 並行開発との統合
 
 - **#9・#46のRevision適用**。暫定予約は **業務Firestore読取14・書込10・Places 4・Routes 4**。読取は初回のTrip・Revision各1、従来の5試行を見込んだ確定前の再読取10、コミット結果照会2。書込はTrip・Revision各1の5倍の保守枠。Placesは前・次・元・候補、Routesは候補の前後2区間×徒歩・車の最大2手段。実装時は `withDataActor(request, cost, ...)` または `requireCostlyApiActor` と `runCostlyOperation` で、最初の業務読取前にまとめて予約する。Mapsは `meteredMaps(operation, maps)` 経由で取引外、確定は `operation.write` 経由で版を再照合し、結果照会も同じ操作の読取枠内で行う。1試行化後も14／10は暫定の保守枠とし、制御文書の費用は別計上する。
-- **#53・#54のLearning選択付き生成**。本人の保存済み一覧は最大40件＋打切り判定1件なので、選択がある場合は **業務Firestore読取最大41・Gemini 1** を業務読取前に一括予約する。検証済み `Actor.uid` と選択 `{ id, version }` を使い、現行版・承認状態・地域を再照合してから `meteredGemini(operation, client)` に渡す。認証ヘッダーを持たない内部 `Request` でHTTP Handlerを呼び直す経路は、同じActorと操作を受ける業務処理へ接続し直す。空選択では業務読取を省略できる。現行の汎用生成が本文の `learnings` を信用する経路も公開前に統合側で閉じる。 [#53](https://github.com/cludewn/groundtrip/pull/53) · [#54](https://github.com/cludewn/groundtrip/pull/54)
+- **#53・#54のLearning選択付き生成**。本人の保存済み一覧は最大40件＋打切り判定1件なので、選択がある場合は **業務Firestore読取最大41・Gemini 1** を業務読取前に一括予約する。検証済み `Actor.uid` と選択 `{ id, version }` を使い、現行版・承認状態・地域を再照合してから `meteredGemini(operation, client)` に渡す。認証ヘッダーを持たない内部 `Request` でHTTP Handlerを呼び直す経路は、同じActorと操作を受ける業務処理へ接続し直す。空選択では業務読取を省略できる。本文の `learnings` を信用する旧経路は閉じた（HTTP契約は `learningSelections` のみ。旧形式は400）。選択がある生成は `COSTS.generateWithLearnings`（Gemini 1・読取 `LEARNING_LIMIT + 1`）、空選択は `COSTS.generate`。 [#53](https://github.com/cludewn/groundtrip/pull/53) · [#54](https://github.com/cludewn/groundtrip/pull/54)
 - **#50・#52・#55を含むUI統合**。本人のBearerとApp Check、401・403・429・503の表示、セッション変更を接続する（生成・照合・修正候補・学び候補・学び一覧は接続済み。#52のreflection-flowは未接続）。結果不明の書き込みは既存版・IDの読取から確認する。適用やLearning承認のボタンからの自動再送を避ける。
 
 ## Consoleの手動操作と緊急停止

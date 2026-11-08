@@ -41,6 +41,18 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs())
 
 describe('保護API用のWebクライアント', () => {
+  it('通常用とデモ用のFirebaseアプリに、それぞれApp Checkを初期化する', async () => {
+    const { getAppCheckToken } = await import('./protected-api')
+    const normal = { name: 'normal' } as import('firebase/app').FirebaseApp
+    const demo = { name: 'demo' } as import('firebase/app').FirebaseApp
+    await getAppCheckToken(normal)
+    await getAppCheckToken(demo)
+    await getAppCheckToken(normal)
+    expect(init).toHaveBeenCalledTimes(2)
+    expect(init.mock.calls[0][0]).toBe(normal)
+    expect(init.mock.calls[1][0]).toBe(demo)
+  })
+
   it('FirebaseアプリのApp Checkを1回初期化し、2種類のヘッダーを返す', async () => {
     const { getProtectedApiHeaders } = await import('./protected-api')
     const headers = await getProtectedApiHeaders()

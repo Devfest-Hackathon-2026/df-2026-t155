@@ -7,23 +7,28 @@ Geminiで日帰り旅行（1日・1地域・3〜4地点）の旅程を**提案**
 
 - **機能フラグ**。既定は無効。本番の招待制デモは `TRIP_GENERATION_ENABLED` と共通デモフラグが必要。停止中は認証・本文読み取り・Gemini呼び出し前に503を返す。
 - **認証**。有効時はFirebase IDトークン、招待UID、Web App Check、共有利用枠が必要。[認証エラーとクライアント契約](API_ABUSE_PROTECTION.md#クライアント契約)を参照。
-- リクエスト: `GenerateTripRequest`（`Content-Type: application/json`、本文32KB以下）。本文はストリームで読み、
-  上限を超えた時点で読み取りを中止する。
+- リクエスト: 旅行条件（日付・地域・タイムゾーン・希望・固定Stop）と、選んだ学びの `learningSelections: { id, version }[]`
+  （`GenerateTripHttpRequestSchema`。`Content-Type: application/json`、本文32KB以下）。本文はストリームで読み、
+  上限を超えた時点で読み取りを中止する。**承認済みの学びの本文（`learnings`）は受け付けない**（付いていれば400）。
+  学びは、サーバーが認証済みUIDの保存済みデータと `{ id, version }` を照合して解決する（`docs/LEARNINGS.md`）。
+  選択が空なら学びなしで生成し、保存先は読まない。
 - 成功: HTTP 200、`{ status: 'proposed', trip }`。
 - 失敗: 共通契約の`ProposalFailure`（`status`と`message`）。更新後の旅程は含まない。
 
-| HTTP | `status`                                     | 意味                                                                   |
-| ---- | -------------------------------------------- | ---------------------------------------------------------------------- |
-| 200  | `proposed`                                   | 旅程の提案。承認・保存・確定ではない                                   |
-| 422  | `no_candidates` / `insufficient_information` | 条件を満たす旅程を作れない／入力が足りない（AIの申告または検証不合格） |
-| 502  | `external_service_error`                     | Geminiの呼び出し失敗（接続・権限・拒否・途中終了・空応答・未設定）     |
-| 400  | `invalid_request`                            | 入力が契約に違反、または本文を読み取れない（`issues`に項目ごとの理由） |
-| 503  | `service_unavailable`                        | 機能停止中。Geminiは呼ばない                                           |
-| 413  | `payload_too_large`                          | 本文が32KBを超える                                                     |
-| 415  | `unsupported_media_type`                     | `Content-Type`がJSONではない                                           |
-| 500  | `internal_error`                             | 想定外の失敗、または応答が共通契約に違反                               |
+| HTTP | `status`                                     | 意味                                                                                                    |
+| ---- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| 200  | `proposed`                                   | 旅程の提案。承認・保存・確定ではない                                                                    |
+| 422  | `no_candidates` / `insufficient_information` | 条件を満たす旅程を作れない／入力が足りない（AIの申告または検証不合格）                                  |
+| 502  | `external_service_error`                     | Geminiの呼び出し失敗（接続・権限・拒否・途中終了・空応答・未設定）                                      |
+| 409  | `selection_changed`                          | 選んだ学びが変更・撤回・地域不一致（Geminiは呼ばない。選び直しを案内する）                              |
+| 503  | `learnings_unavailable`                      | 保存済みの学びを確認できない（機能停止の `service_unavailable` とは別。学びを使わずに作る道を案内する） |
+| 400  | `invalid_request`                            | 入力が契約に違反、または本文を読み取れない（`issues`に項目ごとの理由）                                  |
+| 503  | `service_unavailable`                        | 機能停止中。Geminiは呼ばない                                                                            |
+| 413  | `payload_too_large`                          | 本文が32KBを超える                                                                                      |
+| 415  | `unsupported_media_type`                     | `Content-Type`がJSONではない                                                                            |
+| 500  | `internal_error`                             | 想定外の失敗、または応答が共通契約に違反                                                                |
 
-400／413／415／500／503は共通契約の`GenerateTripResponse`ではなく、API層だけのエラー（`status`と`message`）。
+400／409／413／415／500／503は共通契約の`GenerateTripResponse`ではなく、API層だけのエラー（`status`と`message`）。
 クライアントの通信中断・生成中は、完了応答とは別の操作状態として扱う。
 
 ## 生成結果について守っていること
@@ -55,6 +60,4 @@ Geminiで日帰り旅行（1日・1地域・3〜4地点）の旅程を**提案**
 ## 未実装・要判断
 
 - 共有利用制限とApp Checkの実環境確認・画面接続が必要。[公開条件](API_ABUSE_PROTECTION.md#初回公開の判定)を満たすまで一般公開を保留する。
-- 学びの承認状態はHTTP入力の自己申告のまま。#10・#13で、サーバー側が本人の承認済みデータを
-  取得・検証する形に置き換える。
 - Places・Routesによる照合は未実装（Issue #7）。

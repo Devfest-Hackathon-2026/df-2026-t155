@@ -55,7 +55,21 @@ const SAVED_LIST_NOTE =
   '上の画面で候補を編集・却下しても、この一覧の承認は取り消されません。' +
   '保存済みの学びを撤回する操作は、まだ提供していません。'
 
-export function ReflectionFlow({ initialTripId }: { initialTripId?: string }) {
+interface ReflectionFlowProps {
+  initialTripId?: string
+  // トップ画面の中に置くとき。ページの見出し（h1）を持たず、節の見出しとして出す。
+  embedded?: boolean
+  // 学びの保存を試みたあとに呼ぶ（成功・失敗にかかわらず）。次の旅の学びの選択を読み込み直すために使う。
+  onLearningsChanged?: () => void
+}
+
+export function ReflectionFlow({
+  initialTripId,
+  embedded = false,
+  onLearningsChanged,
+}: ReflectionFlowProps) {
+  // トップ画面の中では、見出しをh3・h4にする（トップ画面の旅程の節がh2のため）。
+  const SubHeading = embedded ? 'h4' : 'h2'
   const auth = useSessionScope()
   const [bootError, setBootError] = useState<TopError | null>(null)
   // 直近に認証済みだったセッション。認証の確認中・失敗の間も、UIDが同じなら画面の内容を保つ。
@@ -78,6 +92,11 @@ export function ReflectionFlow({ initialTripId }: { initialTripId?: string }) {
   const [savedBound, setSavedBound] = useState<Bound<SavedPhase> | null>(null)
   const [sessionNotice, setSessionNotice] = useState('')
   const bootRequestRef = useRef(0)
+  // 保存ストアは認証セッションごとに作る（版の記憶を持つ）ため、通知の関数はrefで持ち、作り直さない。
+  const learningsChangedRef = useRef(onLearningsChanged)
+  useEffect(() => {
+    learningsChangedRef.current = onLearningsChanged
+  }, [onLearningsChanged])
   // 取得の種類ごとの札。遅れて届いた古い応答や、別のセッションの応答を採用しない。
   const [tripsGate] = useState(createRequestGate)
   const [historyGate] = useState(createRequestGate)
@@ -216,7 +235,10 @@ export function ReflectionFlow({ initialTripId }: { initialTripId?: string }) {
   const store = useMemo(
     () =>
       visibleHeld
-        ? createFirestoreLearningStore(visibleHeld.scope, () => void refreshSaved())
+        ? createFirestoreLearningStore(visibleHeld.scope, () => {
+            void refreshSaved()
+            learningsChangedRef.current?.()
+          })
         : undefined,
     [visibleHeld, refreshSaved],
   )
@@ -298,7 +320,11 @@ export function ReflectionFlow({ initialTripId }: { initialTripId?: string }) {
   return (
     <div className="space-y-6">
       <header className="space-y-2">
-        <h1 className="text-2xl font-semibold">保存した旅行を振り返る</h1>
+        {embedded ? (
+          <h3 className="text-lg font-semibold">保存した旅行を振り返る</h3>
+        ) : (
+          <h1 className="text-2xl font-semibold">保存した旅行を振り返る</h1>
+        )}
         <p className="text-sm">
           保存した旅程を選び、感想と変更履歴から次の旅のための学びを作ります。
           学びは本人が確認・承認して保存するまで、次回には使われません。
@@ -352,9 +378,9 @@ export function ReflectionFlow({ initialTripId }: { initialTripId?: string }) {
       )}
       {trips?.kind === 'ready' && (
         <section className="space-y-3" aria-labelledby="saved-trips-heading">
-          <h2 id="saved-trips-heading" className="text-lg font-semibold">
+          <SubHeading id="saved-trips-heading" className="text-lg font-semibold">
             保存済みの旅行
-          </h2>
+          </SubHeading>
           {trips.warning && (
             <p role="alert" className="text-sm">
               {trips.warning}
@@ -468,9 +494,9 @@ export function ReflectionFlow({ initialTripId }: { initialTripId?: string }) {
             onApprovedChange={handleApprovedChange}
           />
           <section aria-labelledby="saved-learnings-heading" className="space-y-2">
-            <h2 id="saved-learnings-heading" className="text-lg font-semibold">
+            <SubHeading id="saved-learnings-heading" className="text-lg font-semibold">
               保存済みの学び
-            </h2>
+            </SubHeading>
             <p id="saved-learnings-note" className="text-sm">
               {SAVED_LIST_NOTE}
             </p>

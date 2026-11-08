@@ -1,5 +1,6 @@
 'use client'
 
+import type { FirebaseApp } from 'firebase/app'
 import {
   getToken,
   initializeAppCheck,
@@ -12,18 +13,22 @@ import { getAuthHeaders } from './client'
 import { AppCheckUnavailableError } from './protected-api-errors'
 import { getAuthHeadersForScope, type SessionScope } from './session-scope'
 
-let appCheck: AppCheck | undefined
+const appChecks = new WeakMap<FirebaseApp, AppCheck>()
 
 // App Checkのトークンを取る。鍵がない・初期化やトークン取得に失敗したときは例外（呼び出し側は送信しない）。
 // SDKの生エラーは外へ出さず、AppCheckUnavailableErrorに置き換える。
-async function getAppCheckToken(): Promise<string> {
+export async function getAppCheckToken(app = getClientAuth().app): Promise<string> {
   const siteKey = process.env.NEXT_PUBLIC_RECAPTCHA_ENTERPRISE_SITE_KEY?.trim()
   if (!siteKey) throw new AppCheckUnavailableError('config_missing')
   try {
-    appCheck ??= initializeAppCheck(getClientAuth().app, {
-      provider: new ReCaptchaEnterpriseProvider(siteKey),
-      isTokenAutoRefreshEnabled: false,
-    })
+    let appCheck = appChecks.get(app)
+    if (!appCheck) {
+      appCheck = initializeAppCheck(app, {
+        provider: new ReCaptchaEnterpriseProvider(siteKey),
+        isTokenAutoRefreshEnabled: false,
+      })
+      appChecks.set(app, appCheck)
+    }
     const { token } = await getToken(appCheck)
     return token
   } catch {

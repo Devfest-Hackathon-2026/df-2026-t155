@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { TripSchema } from '@/domain'
 import { sampleApprovedLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 import { ClientAuthError } from '@/lib/auth/client'
 import { PROTECTED_FAILURE_MESSAGES } from '@/lib/auth/protected-api-errors'
@@ -27,6 +28,8 @@ import {
   loadSavedTrips,
   ReflectionApiError,
   sameLearning,
+  saveTrip,
+  TRIP_NOT_SAVABLE_CODE,
   userMessageOf,
 } from './api-client'
 
@@ -1528,5 +1531,85 @@ describe('レビュー指摘の回帰：一覧の一意性・ステータスと�
     expect(backend.account(A).learnings.has(first.id)).toBe(true)
     // 古い世代の保存からは、一覧更新の通知をしない。
     expect(onSaved).not.toHaveBeenCalled()
+  })
+})
+
+// 保存できる旅程：版0・適用記録なし。
+const savableTrip = TripSchema.parse({ ...sampleTrip, learningApplications: [] })
+
+describe('旅程の保存（POST /api/trips）', () => {
+  it('本人のBearerとApp Checkで保存し、保存先が返した旅程を返す', async () => {
+    const backend = createFakeBackend({ [A]: {} })
+    vi.stubGlobal('fetch', backend.fetchFn)
+
+    const saved = await saveTrip(scope, savableTrip)
+
+    expect(saved.id).toBe(savableTrip.id)
+    const [call] = backend.calls
+    expect(call).toMatchObject({ method: 'POST', path: '/api/trips', uid: A })
+    expect(backend.account(A).trips.map((trip) => trip.id)).toEqual([savableTrip.id])
+    const init = backend.fetchFn.mock.calls[0][1]
+    expect(new Headers(init?.headers).get('X-Firebase-AppCheck')).toBe(APP_CHECK_TOKEN)
+    vi.unstubAllGlobals()
+  })
+
+  it('学びを使って作った旅程（適用記録あり）は、送らずに保存できない理由を返す', async () => {
+    const backend = createFakeBackend({ [A]: {} })
+    vi.stubGlobal('fetch', backend.fetchFn)
+
+    await expect(saveTrip(scope, sampleTrip)).rejects.toMatchObject({
+      code: TRIP_NOT_SAVABLE_CODE,
+      outcome: 'not_sent',
+    })
+    expect(backend.calls).toHaveLength(0)
+    vi.unstubAllGlobals()
+  })
+
+  it('現地での変更を反映した旅程（版が1以上）は、送らずに保存できない理由を返す', async () => {
+    const backend = createFakeBackend({ [A]: {} })
+    vi.stubGlobal('fetch', backend.fetchFn)
+
+    await expect(saveTrip(scope, { ...savableTrip, version: 1 })).rejects.toThrow(
+      /現地での変更を反映した旅程/,
+    )
+    expect(backend.calls).toHaveLength(0)
+    vi.unstubAllGlobals()
+  })
+
+  it('送信後に応答を失ったときは「結果不明」とし、再送しない', async () => {
+    const backend = createFakeBackend({ [A]: {} })
+    backend.intercept(
+      (call) => call.method === 'POST',
+      ({ proceed }) => {
+        proceed()
+        throw new TypeError('offline')
+      },
+    )
+    vi.stubGlobal('fetch', backend.fetchFn)
+
+    await expect(saveTrip(scope, savableTrip)).rejects.toMatchObject({ outcome: 'unknown' })
+    expect(backend.calls).toHaveLength(1)
+    vi.unstubAllGlobals()
+  })
+
+  it('同じIDがすでにある（409）ときは、サーバーが何も変更せず拒否した扱い', async () => {
+    const backend = createFakeBackend({ [A]: { trips: [savableTrip] } })
+    vi.stubGlobal('fetch', backend.fetchFn)
+
+    await expect(saveTrip(scope, savableTrip)).rejects.toMatchObject({
+      status: 409,
+      outcome: 'rejected',
+    })
+    vi.unstubAllGlobals()
+  })
+
+  it('別のUIDに切り替わった後は、古いセッションの旅程を送らない', async () => {
+    const backend = createFakeBackend({ [A]: {}, [B]: {} })
+    vi.stubGlobal('fetch', backend.fetchFn)
+    fakeAuth.signInAs(B)
+
+    await expect(saveTrip(scope, savableTrip)).rejects.toBeInstanceOf(SessionChangedError)
+    expect(backend.calls).toHaveLength(0)
+    vi.unstubAllGlobals()
   })
 })

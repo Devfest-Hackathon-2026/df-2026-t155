@@ -95,7 +95,6 @@ describe('TripPlanner: 生成の成功', () => {
       timeZone: 'Asia/Tokyo',
       preferences: ['ゆっくり歩きたい', '抹茶を食べたい'],
       fixedStops: [],
-      learnings: [],
     })
     // 結果の見出しへフォーカスが移る。
     expect(document.activeElement).toBe(heading)
@@ -265,5 +264,63 @@ describe('TripPlanner: 画面を離れたとき', () => {
     // 破棄済みの画面への更新による警告が出ていない。
     expect(consoleError).not.toHaveBeenCalled()
     consoleError.mockRestore()
+  })
+})
+
+describe('TripPlanner: 学びの選択の差し込み口と、認証セッション変更時の破棄', () => {
+  it('学びの選択部品に、入力中の旅行先を渡す', async () => {
+    const user = userEvent.setup()
+    render(
+      <TripPlanner
+        generate={vi.fn<GenerateTrip>()}
+        renderLearningPicker={(region) => <p data-testid="picker">地域：{region}</p>}
+      />,
+    )
+
+    await user.type(field(/旅行先/), '京都')
+
+    expect(screen.getByTestId('picker').textContent).toBe('地域：京都')
+  })
+
+  it('discardKeyが変わると、生成結果と失敗の表示を捨てる。入力欄の値は残す', async () => {
+    const generate = vi.fn<GenerateTrip>().mockResolvedValue(success)
+    const user = userEvent.setup()
+    const { rerender } = render(<TripPlanner generate={generate} discardKey="0" />)
+
+    await fillValid(user)
+    await user.click(submitButton())
+    await screen.findByRole('heading', { name: '旅程の提案' })
+
+    rerender(<TripPlanner generate={generate} discardKey="1" />)
+
+    expect(screen.queryByRole('heading', { name: '旅程の提案' })).toBeNull()
+    expect((field(/旅行先/) as HTMLInputElement).value).toBe('京都市東山エリア')
+    // 捨てたあとも、続けて作成できる。
+    await user.click(submitButton())
+    expect(await screen.findByRole('heading', { name: '旅程の提案' })).toBeTruthy()
+  })
+
+  it('discardKeyが変わると、生成中の通信を中止し、あとから届いた結果を表示しない', async () => {
+    let signal: AbortSignal | undefined
+    let finish: (result: GenerationResult) => void = () => undefined
+    const generate = vi.fn<GenerateTrip>().mockImplementation((_request, options) => {
+      signal = options?.signal
+      return new Promise<GenerationResult>((resolve) => {
+        finish = resolve
+      })
+    })
+    const user = userEvent.setup()
+    const { rerender } = render(<TripPlanner generate={generate} discardKey="0" />)
+
+    await fillValid(user)
+    await user.click(submitButton())
+    await screen.findByText('旅程を生成しています。しばらくお待ちください。')
+    rerender(<TripPlanner generate={generate} discardKey="1" />)
+
+    await waitFor(() => expect(signal?.aborted).toBe(true))
+    finish(success)
+    await Promise.resolve()
+    expect(screen.queryByRole('heading', { name: '旅程の提案' })).toBeNull()
+    expect(submitButton().textContent).toBe('旅程を作成する')
   })
 })

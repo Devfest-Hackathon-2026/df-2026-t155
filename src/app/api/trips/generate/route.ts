@@ -1,5 +1,7 @@
 import { meteredGemini } from '../../../../server/cost-control/providers'
 import { createLazyVertexGeminiClient } from '../../../../server/gemini/client'
+import { resolveSelectedLearnings } from '../../../../server/learning-reuse/selection'
+import { FirestoreLearningStore } from '../../../../server/persistence/learnings'
 import {
   generateTrip,
   type GenerationFailureEvent,
@@ -25,6 +27,9 @@ const logFailure = (event: GenerationFailureEvent) => {
 export async function POST(request: Request): Promise<Response> {
   return handleGenerateTripRequest(request, {
     isEnabled: () => isTripGenerationEnabled(process.env),
+    // 選択があるときだけ呼ばれる。保存先への接続は、そのときまで作らない。
+    resolveLearnings: (ownerUid, region, selections) =>
+      resolveSelectedLearnings(new FirestoreLearningStore(), ownerUid, region, selections),
     generate: (tripRequest, operation) =>
       generateTrip(tripRequest, { client: meteredGemini(operation, client), report: logFailure }),
   })

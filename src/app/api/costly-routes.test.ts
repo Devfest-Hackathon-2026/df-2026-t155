@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { sampleGenerateTripRequest, sampleReviseTripRequest, sampleTrip } from '@/domain/samples'
+import { sampleReviseTripRequest, sampleTrip } from '@/domain/samples'
 
+import { sampleGenerateTripBody } from '../../../tests/helpers/generate-request'
+
+import { GET as session } from './auth/session/route'
 import { POST as candidates } from './learnings/candidates/route'
 import { POST as generate } from './trips/generate/route'
 import { POST as revise } from './trips/revise/route'
@@ -38,7 +41,7 @@ const privateDetails = 'private UID, API key and SDK diagnostics'
 const authHeader = `Bearer ${token}`
 
 const routes = [
-  ['/api/trips/generate', 'TRIP_GENERATION_ENABLED', generate, sampleGenerateTripRequest],
+  ['/api/trips/generate', 'TRIP_GENERATION_ENABLED', generate, sampleGenerateTripBody()],
   ['/api/trips/verify', 'TRIP_VERIFICATION_ENABLED', verify, { trip: sampleTrip }],
   ['/api/trips/revise', 'TRIP_REVISION_ENABLED', revise, sampleReviseTripRequest],
   [
@@ -61,6 +64,7 @@ beforeEach(() => {
   vi.stubEnv('COSTLY_API_INVITED_UIDS', '["verified-uid"]')
   vi.stubEnv('NEXT_PUBLIC_FIREBASE_APP_ID', 'test-app')
   vi.stubEnv('COSTLY_API_DEMO_ENABLED', '')
+  vi.stubEnv('DEMO_ACCESS_ENABLED', undefined)
   vi.stubGlobal(
     'fetch',
     vi.fn(() => {
@@ -76,9 +80,24 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+it('App Hostingへの直接アクセスで通常の認証疎通ができる', async () => {
+  vi.stubEnv('NODE_ENV', 'production')
+  vi.stubEnv('DEMO_ACCESS_ENABLED', 'false')
+  const response = await session(
+    new Request('https://groundtrip-example.hosted.app/api/auth/session', {
+      headers: { Authorization: authHeader },
+    }),
+  )
+  expect(response.status).toBe(200)
+  expect(await response.json()).toEqual({ uid: 'verified-uid' })
+  expect(verifyIdToken).toHaveBeenCalledExactlyOnceWith(token, true)
+  expect(verifyAppCheck).not.toHaveBeenCalled()
+  expect(reserveCost).not.toHaveBeenCalled()
+})
+
 describe.each(routes)('POST %s の認証と公開停止', (path, flag, post, input) => {
   function request(authorization?: string, body = JSON.stringify(input)) {
-    return new Request(`http://localhost${path}`, {
+    return new Request(`https://groundtrip-example.hosted.app${path}`, {
       method: 'POST',
       headers: {
         'X-Firebase-AppCheck': 'test.app.check',
@@ -124,11 +143,31 @@ describe.each(routes)('POST %s の認証と公開停止', (path, flag, post, inp
     expectStoppedBeforeBody(incoming)
   })
 
+  it.each(['true', 'false'])(
+    '本番への直接要求は交換フラグ %s に関わらず #58 の認証・利用枠を通す',
+    async (exchangeFlag) => {
+      vi.stubEnv('NODE_ENV', 'production')
+      vi.stubEnv('COSTLY_API_DEMO_ENABLED', 'true')
+      vi.stubEnv('DEMO_ACCESS_ENABLED', exchangeFlag)
+      vi.stubEnv(flag, 'true')
+      reserveCost.mockResolvedValue({ kind: 'limited', scope: 'global' })
+      const response = await post(request(authHeader))
+      expect(response.status).toBe(429)
+      expect(await response.json()).toMatchObject({ error: { code: 'global_limit' } })
+      expect(verifyIdToken).toHaveBeenCalledBefore(verifyAppCheck)
+      expect(verifyAppCheck).toHaveBeenCalledBefore(reserveCost)
+      expect(generateJson).not.toHaveBeenCalled()
+      expect(searchPlaces).not.toHaveBeenCalled()
+      expect(computeRoute).not.toHaveBeenCalled()
+    },
+  )
+
   it('本番の招待デモフラグを指定しても利用枠を取得できなければ停止する', async () => {
     vi.stubEnv('NODE_ENV', 'production')
     vi.stubEnv('COSTLY_API_DEMO_ENABLED', 'true')
     vi.stubEnv(flag, 'true')
     reserveCost.mockResolvedValue({ kind: 'unavailable' })
+    vi.stubEnv('DEMO_ACCESS_ENABLED', 'false')
     const response = await post(request(authHeader))
 
     expect(response.status).toBe(503)

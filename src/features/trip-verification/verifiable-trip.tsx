@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import type { Trip } from '@/domain'
 import { RevisionRouteView } from '@/features/revision-review/revision-route-view'
@@ -45,7 +45,25 @@ const fresh = (source: Trip): View => ({
 // 旅程の内容が変わったとき（部分修正の適用など）は、変更の影響を受けた根拠だけを取り下げて未確認に戻し
 // （影響を受けない予定の根拠と、本人の報告などは残す。withdraw-verification.ts）、
 // 確認中だった場合は通信を中止して、その理由を通知する。
-export function VerifiableTrip({ trip: source, verify }: { trip: Trip; verify?: VerifyTrip }) {
+// 旅程の下に続く導線（保存・現地報告・振り返り）へ渡すもの。
+export interface VerifiableTripAfterContext {
+  // いま画面に出している旅程（固定の切り替えや部分修正を反映済み）。
+  trip: Trip
+  // 路線図の外（現地報告など）で旅程が変わったときに、画面へ採用する旅程を決める。
+  // 路線図の中の変更と同じく、変更後の旅程に対して前回の照合結果の一部を取り下げ（変更後は未確認）、
+  // 確認中の通信を止める。路線図にも採用した旅程を反映する。
+  adoptExternalChange: (changed: Trip) => Trip
+}
+
+export function VerifiableTrip({
+  trip: source,
+  verify,
+  renderAfter,
+}: {
+  trip: Trip
+  verify?: VerifyTrip
+  renderAfter?: (context: VerifiableTripAfterContext) => ReactNode
+}) {
   const [stored, setStored] = useState<View>(() => fresh(source))
   const view = stored.source === source ? stored : fresh(source)
   const { state, run, cancel } = useTripVerification(verify)
@@ -99,6 +117,13 @@ export function VerifiableTrip({ trip: source, verify }: { trip: Trip; verify?: 
     return adopted
   }
 
+  // 路線図の外で旅程が変わったとき。取り下げは adoptChange と同じで、路線図が表示する旅程も差し替える。
+  const adoptExternalChange = (changed: Trip): Trip => {
+    const adopted = adoptChange(changed)
+    update((previous) => ({ ...previous, prop: adopted }))
+    return adopted
+  }
+
   const summary = summarizeVerification(view.current)
   const status: PanelStatus = !view.verified
     ? { kind: 'unverified', googleTotal: summary.google.total }
@@ -117,6 +142,7 @@ export function VerifiableTrip({ trip: source, verify }: { trip: Trip; verify?: 
         onVerify={() => void verifyNow()}
       />
       <RevisionRouteView trip={view.prop} adoptTripChange={adoptChange} />
+      {renderAfter?.({ trip: view.current, adoptExternalChange })}
     </div>
   )
 }

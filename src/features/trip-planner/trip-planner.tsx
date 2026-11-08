@@ -19,6 +19,7 @@ import {
   type TripFormField,
   type TripFormValues,
 } from './form-model'
+import { initialGenerationState, type GenerationState } from './generation-state'
 import { TripProposalPreview } from './trip-proposal-preview'
 import { useTripGeneration, type GenerateTrip } from './use-trip-generation'
 
@@ -27,6 +28,11 @@ interface TripPlannerProps {
   generate?: GenerateTrip
   // 生成された旅程の表示。#8の旅程一覧UIはここへ差し込む。省略時は暫定の一覧を出す。
   renderTrip?: (trip: Trip) => ReactNode
+  // 前の旅の学びを選ぶ部品の差し込み口。旅行先（入力途中の値）を渡す。省略時は何も出さない。
+  renderLearningPicker?: (region: string) => ReactNode
+  // 値が変わったら（認証セッションが変わったとき）、進行中の生成を中止し、生成結果と失敗の表示を捨てる。
+  // 入力欄の値は利用者が入れたものなので、捨てずに残す。
+  discardKey?: string
 }
 
 const defaultRenderTrip = (trip: Trip) => <TripProposalPreview trip={trip} />
@@ -35,18 +41,36 @@ const inputClassName = 'gt-field px-3 py-3'
 
 // 旅行条件の入力から旅程の生成・表示までの入口。生成された旅程は提案であり、
 // 自動で承認・確定・保存しない。入力値は生成の成否にかかわらず保持する。
-export function TripPlanner({ generate, renderTrip = defaultRenderTrip }: TripPlannerProps) {
+export function TripPlanner({
+  generate,
+  renderTrip = defaultRenderTrip,
+  renderLearningPicker,
+  discardKey = '',
+}: TripPlannerProps) {
   const [values, setValues] = useState<TripFormValues>(initialFormValues)
   const [errors, setErrors] = useState<TripFormErrors>({})
   const [fixedStopErrors, setFixedStopErrors] = useState<FixedStopErrorMap>({})
   const [fixedStopNotice, setFixedStopNotice] = useState('')
+  const initialDiscardKey = useRef(discardKey)
   // 追加した行の画面上の識別子（入力欄の対応づけ用）。
   const nextRowKey = useRef(1)
   const addFixedStopRef = useRef<HTMLButtonElement>(null)
   // 次の描画のあとにフォーカスを移す入力欄のid（行の追加直後など）。
   const [focusId, setFocusId] = useState<string | null>(null)
-  const { state, run } = useTripGeneration(generate)
+  const { state: generationState, run, reset } = useTripGeneration(generate)
+  // 認証セッションが変わった描画では、前のセッションの結果を一度も表示しない（描画中の状態調整）。
+  const [appliedDiscardKey, setAppliedDiscardKey] = useState(discardKey)
+  if (appliedDiscardKey !== discardKey) setAppliedDiscardKey(discardKey)
+  const state: GenerationState =
+    appliedDiscardKey === discardKey ? generationState : initialGenerationState
   const isGenerating = state.phase === 'generating'
+  useEffect(() => {
+    // 初回は何も捨てない。変わったときだけ、進行中の通信と結果を捨てる。
+    if (discardKey !== initialDiscardKey.current) {
+      initialDiscardKey.current = discardKey
+      reset()
+    }
+  }, [discardKey, reset])
 
   const fieldRefs = useRef<Record<TripFormField, HTMLInputElement | HTMLTextAreaElement | null>>({
     region: null,
@@ -238,6 +262,8 @@ export function TripPlanner({ generate, renderTrip = defaultRenderTrip }: TripPl
             onRemove={removeFixedStop}
             onChange={updateFixedStop}
           />
+
+          {renderLearningPicker?.(values.region)}
 
           <button
             type="submit"

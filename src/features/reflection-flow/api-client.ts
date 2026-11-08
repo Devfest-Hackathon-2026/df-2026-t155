@@ -24,6 +24,7 @@ import {
 } from '@/lib/auth/session-scope'
 import {
   ApproveLearningBodySchema,
+  CreateTripBodySchema,
   LearningListResponseSchema,
   VersionedLearningSchema,
   type VersionedLearning,
@@ -328,6 +329,45 @@ export async function loadSavedTrips(
   options: LoadOptions = {},
 ): Promise<TripList> {
   return authorizedJson(scope, '/api/trips', TripListSchema, options)
+}
+
+// 旅程を本人の保存先へ新規保存する（POST /api/trips）。本人が保存を選んだときだけ呼ぶ。
+// 保存先が受け付ける形（版0・3〜4地点・適用記録なし）に合わない旅程は、送らずに理由を返す。
+// 送信後に応答を失った場合は outcome: 'unknown' の例外になる（保存済みかもしれないので、自動では再送しない）。
+export const TRIP_NOT_SAVABLE_CODE = 'trip_not_savable'
+export async function saveTrip(
+  scope: SessionScope,
+  trip: Trip,
+  options: LoadOptions = {},
+): Promise<Trip> {
+  if (trip.learningApplications.length > 0) {
+    throw new ReflectionApiError(
+      '学びを使って作った旅程は、まだ保存できません。学びの適用記録を保存先で再確認する仕組みが未接続のためです。',
+      undefined,
+      TRIP_NOT_SAVABLE_CODE,
+      'not_sent',
+    )
+  }
+  const body = CreateTripBodySchema.safeParse(trip)
+  if (!body.success) {
+    throw new ReflectionApiError(
+      trip.version !== 0
+        ? '現地での変更を反映した旅程は、まだ保存できません。保存できるのは、作成した時点の旅程です。'
+        : 'この旅程は保存の条件（3〜4地点など）を満たしていません。',
+      undefined,
+      TRIP_NOT_SAVABLE_CODE,
+      'not_sent',
+    )
+  }
+  const saved = await authorizedJson(scope, '/api/trips', TripResponseSchema, {
+    ...options,
+    method: 'POST',
+    body: body.data,
+  })
+  if (saved.trip.id !== body.data.id) {
+    throw new ReflectionApiError(INVALID_RESPONSE_MESSAGE, undefined, undefined, 'unknown')
+  }
+  return saved.trip
 }
 
 export async function loadReflectionHistory(

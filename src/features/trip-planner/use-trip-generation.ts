@@ -2,14 +2,14 @@
 
 import { useCallback, useEffect, useReducer, useRef } from 'react'
 
-import type { GenerateTripRequest } from '@/domain'
+import type { GenerateTripConditions } from '@/server/trip-generation/http-request'
 
 import type { GenerationOptions, GenerationResult } from './api-client'
 import { requestTripGeneration } from './api-client'
 import { generationReducer, initialGenerationState } from './generation-state'
 
 export type GenerateTrip = (
-  request: GenerateTripRequest,
+  request: GenerateTripConditions,
   options?: GenerationOptions,
 ) => Promise<GenerationResult>
 
@@ -20,8 +20,15 @@ export function useTripGeneration(generate: GenerateTrip = requestTripGeneration
 
   useEffect(() => () => controllerRef.current?.abort(), [])
 
+  // 認証セッションが変わったときに使う。進行中の通信を中止し、結果と失敗の表示を捨てる。
+  const reset = useCallback(() => {
+    controllerRef.current?.abort()
+    controllerRef.current = null
+    dispatch({ type: 'reset' })
+  }, [])
+
   const run = useCallback(
-    async (request: GenerateTripRequest) => {
+    async (request: GenerateTripConditions) => {
       // stateの更新は非同期のため、二重送信はrefで確実に止める。
       if (controllerRef.current) return
       const controller = new AbortController()
@@ -38,7 +45,8 @@ export function useTripGeneration(generate: GenerateTrip = requestTripGeneration
           failure: { kind: 'unexpected', message: '予期しないエラーが発生しました。' },
         }
       } finally {
-        controllerRef.current = null
+        // reset後に開始した新しい生成のcontrollerは、古い処理から消さない。
+        if (controllerRef.current === controller) controllerRef.current = null
       }
 
       // 画面を離れて中止された通信の結果は反映しない。
@@ -52,5 +60,5 @@ export function useTripGeneration(generate: GenerateTrip = requestTripGeneration
     [generate],
   )
 
-  return { state, run }
+  return { state, run, reset }
 }

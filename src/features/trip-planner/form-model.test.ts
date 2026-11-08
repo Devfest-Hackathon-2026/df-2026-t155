@@ -32,7 +32,7 @@ describe('parsePreferences', () => {
 })
 
 describe('buildGenerateTripRequest: 正常系', () => {
-  it('入力を共通契約のGenerateTripRequestに変換する（固定予定・学びは空）', () => {
+  it('入力を旅行条件に変換する（学びの選択は含めない）', () => {
     const result = buildGenerateTripRequest(valid)
 
     expect(result).toEqual({
@@ -43,10 +43,14 @@ describe('buildGenerateTripRequest: 正常系', () => {
         timeZone: DEFAULT_TIME_ZONE,
         preferences: ['ゆっくり歩きたい'],
         fixedStops: [],
-        learnings: [],
       },
     })
-    if (result.ok) expect(GenerateTripRequestSchema.safeParse(result.request).success).toBe(true)
+    // 検証には内部の契約（学びは空）を使う。
+    if (result.ok) {
+      expect(
+        GenerateTripRequestSchema.safeParse({ ...result.request, learnings: [] }).success,
+      ).toBe(true)
+    }
   })
 
   it('希望条件は任意で、空でも作成できる', () => {

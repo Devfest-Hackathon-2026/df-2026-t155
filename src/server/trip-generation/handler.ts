@@ -1,6 +1,7 @@
 import {
   GenerateTripRequestSchema,
   GenerateTripResponseSchema,
+  type ApprovedLearning,
   type GenerateTripRequest,
   type GenerateTripResponse,
 } from '../../domain'
@@ -12,6 +13,9 @@ import {
   type CostlyOperation,
 } from '../costly-api'
 import { errorResponse, noStoreHeaders, readBodyWithLimit } from '../http'
+import { LearningSelectionError } from '../learning-reuse/selection'
+import type { LearningSelection } from '../persistence/contracts'
+import { GenerateTripHttpRequestSchema } from './http-request'
 
 export type { ApiErrorBody, ApiErrorStatus } from '../http'
 
@@ -29,11 +33,33 @@ export const isTripGenerationEnabled = (env: Record<string, string | undefined>)
 export interface GenerateTripHandlerDeps {
   // 旅程生成を受け付けるか（機能フラグ）。リクエストごとに評価する。
   isEnabled: () => boolean
+  // 利用者が選んだ学び（{ id, version }）を、本人の保存済みデータと照合して確定する。
+  // 本文のlearningsは受け付けないため、Geminiへ渡る学びはここで検証されたものだけになる。
+  // 選択が空のときは呼ばれない。失敗は LearningSelectionError で表す。
+  resolveLearnings: (
+    ownerUid: string,
+    region: string,
+    selections: readonly LearningSelection[],
+  ) => Promise<ApprovedLearning[]>
+  // 検証済みの学びを含む内部の要求を受け取る（HTTPで再構築しないため、本文の32KB上限の影響を受けない）。
   generate: (
     request: GenerateTripRequest,
     operation: CostlyOperation,
   ) => Promise<GenerateTripResponse>
 }
+
+// 学びの選択の失敗を、HTTP応答に変換する。内部の詳細は含めない。
+// 503は機能停止（service_unavailable）と区別するため、別のstatusにする。
+const selectionErrorResponse = (error: LearningSelectionError): Response =>
+  errorResponse(error.status, {
+    status:
+      error.code === 'invalid_selection'
+        ? 'invalid_request'
+        : error.code === 'selection_changed'
+          ? 'selection_changed'
+          : 'learnings_unavailable',
+    message: error.message,
+  })
 
 const HTTP_STATUS_BY_FAILURE = {
   no_candidates: 422,
@@ -93,7 +119,7 @@ export async function handleGenerateTripRequest(
     })
   }
 
-  const parsedRequest = GenerateTripRequestSchema.safeParse(json)
+  const parsedRequest = GenerateTripHttpRequestSchema.safeParse(json)
   if (!parsedRequest.success) {
     return errorResponse(400, {
       status: 'invalid_request',
@@ -107,8 +133,32 @@ export async function handleGenerateTripRequest(
 
   let result: GenerateTripResponse
   try {
-    const outcome = await runCostlyOperation(actor, COSTS.generate, (operation) =>
-      deps.generate(parsedRequest.data, operation),
+    const { learningSelections, ...conditions } = parsedRequest.data
+    // 選択があるときだけ、保存済みの学びを読む分の枠を予約する。
+    const cost = learningSelections.length > 0 ? COSTS.generateWithLearnings : COSTS.generate
+    const outcome = await runCostlyOperation(
+      actor,
+      cost,
+      async (operation): Promise<GenerateTripResponse | Response> => {
+        let learnings: ApprovedLearning[] = []
+        if (learningSelections.length > 0) {
+          operation.assertActive()
+          try {
+            learnings = await deps.resolveLearnings(
+              actor.uid,
+              conditions.region,
+              learningSelections,
+            )
+          } catch (error) {
+            // 選び直し（409）や、学びを使わずに作る案内（503）は、Geminiを呼ばずに返す。
+            if (error instanceof LearningSelectionError) return selectionErrorResponse(error)
+            throw error
+          }
+        }
+        // サーバーが確定した学びだけを内部の要求に入れる。契約に反すれば想定外の失敗として扱う。
+        const internal = GenerateTripRequestSchema.parse({ ...conditions, learnings })
+        return deps.generate(internal, operation)
+      },
     )
     if (outcome instanceof Response) return outcome
     result = outcome

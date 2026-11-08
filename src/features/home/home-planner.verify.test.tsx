@@ -9,7 +9,15 @@ import type { GenerateTrip } from '@/features/trip-planner/use-trip-generation'
 import type { VerificationResult } from '@/features/trip-verification/api-client'
 import type { VerifyTrip } from '@/features/trip-verification/use-trip-verification'
 
+import { noSavedLearnings } from '../../../tests/helpers/home-session'
+
 import { HomePlanner } from './home-planner'
+
+// 認証済みの利用者として扱う（認証SDKは使わない）。
+vi.mock(
+  '@/lib/auth/use-session-scope',
+  async () => (await import('../../../tests/helpers/home-session')).sessionScopeModule,
+)
 
 // 保護APIのヘッダー（Bearer＋App Check）はモックし、送信までの経路は実物を通す。
 const protectedApi = vi.hoisted(() => ({ getProtectedApiHeaders: vi.fn() }))
@@ -93,7 +101,7 @@ async function showGeneratedTrip(
     .fn<GenerateTrip>()
     .mockResolvedValue({ ok: true, trip: generatedTrip }),
 ) {
-  render(<HomePlanner generate={generate} verify={verify} />)
+  render(<HomePlanner generate={generate} verify={verify} loadLearnings={noSavedLearnings} />)
   await user.type(screen.getByLabelText(/旅行先/), '京都市東山エリア')
   fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-14' } })
   await user.click(screen.getByRole('button', { name: '旅程を作成する' }))

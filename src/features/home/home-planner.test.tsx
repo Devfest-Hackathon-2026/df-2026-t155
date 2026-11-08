@@ -7,7 +7,15 @@ import { TripSchema } from '@/domain'
 import { sampleTrip } from '@/domain/samples'
 import type { GenerateTrip } from '@/features/trip-planner/use-trip-generation'
 
+import { noSavedLearnings } from '../../../tests/helpers/home-session'
+
 import { HomePlanner } from './home-planner'
+
+// 認証済みの利用者として扱う（認証SDKは使わない）。
+vi.mock(
+  '@/lib/auth/use-session-scope',
+  async () => (await import('../../../tests/helpers/home-session')).sessionScopeModule,
+)
 
 afterEach(() => {
   cleanup()
@@ -23,7 +31,7 @@ describe('HomePlanner: 入力から路線図まで', () => {
   it('生成された旅程を路線図で表示し、未照合であることを示す', async () => {
     const generate = vi.fn<GenerateTrip>().mockResolvedValue({ ok: true, trip: generatedTrip })
     const user = userEvent.setup()
-    render(<HomePlanner generate={generate} />)
+    render(<HomePlanner generate={generate} loadLearnings={noSavedLearnings} />)
 
     await user.type(screen.getByLabelText(/旅行先/), '京都市東山エリア')
     fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-14' } })
@@ -39,7 +47,7 @@ describe('HomePlanner: 入力から路線図まで', () => {
   it('生成された旅程では、候補生成APIが未接続の間は部分修正の導線を出さない', async () => {
     const generate = vi.fn<GenerateTrip>().mockResolvedValue({ ok: true, trip: generatedTrip })
     const user = userEvent.setup()
-    render(<HomePlanner generate={generate} />)
+    render(<HomePlanner generate={generate} loadLearnings={noSavedLearnings} />)
 
     await user.type(screen.getByLabelText(/旅行先/), '京都')
     fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-14' } })
@@ -61,7 +69,7 @@ describe('HomePlanner: 入力から路線図まで', () => {
         failure: { kind: 'external_service_error', message: '接続できませんでした' },
       })
     const user = userEvent.setup()
-    render(<HomePlanner generate={generate} />)
+    render(<HomePlanner generate={generate} loadLearnings={noSavedLearnings} />)
 
     await user.type(screen.getByLabelText(/旅行先/), '京都市東山エリア')
     fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-14' } })

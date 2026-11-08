@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import '../../../../../tests/helpers/mock-cost-control'
 
-import { sampleGenerateTripRequest } from '../../../../domain/samples'
+import { sampleGenerateTripBody } from '../../../../../tests/helpers/generate-request'
 import { POST } from './route'
 
 vi.mock('@/lib/firebase/admin', () => ({
@@ -19,7 +19,7 @@ const post = () =>
   new Request('http://localhost/api/trips/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test.id.token' },
-    body: JSON.stringify(sampleGenerateTripRequest),
+    body: JSON.stringify(sampleGenerateTripBody()),
   })
 
 // ネットワークへ出る呼び出しがあれば失敗させる（Geminiへ到達しないことの確認）。

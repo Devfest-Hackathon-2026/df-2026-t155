@@ -46,8 +46,10 @@ describe('固定予定の入力：リクエストへの変換', () => {
     ])
     // 入力は申告で、施設は特定しない。種別・根拠・Place IDを、勝手に付けない。
     expect(result.request.fixedStops[0]).not.toHaveProperty('kind')
-    expect(GenerateTripRequestSchema.safeParse(result.request).success).toBe(true)
-    expect(result.request.learnings).toEqual([])
+    expect(GenerateTripRequestSchema.safeParse({ ...result.request, learnings: [] }).success).toBe(
+      true,
+    )
+    expect(result.request).not.toHaveProperty('learnings')
   })
 
   it('複数の固定予定は、入力の並び順でIDを付ける（時刻順にはしない）', () => {

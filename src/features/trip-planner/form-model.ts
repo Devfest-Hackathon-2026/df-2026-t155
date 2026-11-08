@@ -1,9 +1,11 @@
-import { GenerateTripRequestSchema, type GenerateTripRequest } from '@/domain'
+import { GenerateTripRequestSchema } from '@/domain'
+import type { GenerateTripConditions } from '@/server/trip-generation/http-request'
 
 // 旅程作成フォームの入力値と、生成リクエスト（共通契約）への変換・検証。
 // 固定予定（時刻が決まっている予定）は、利用者の申告として`fixedStops`（`isFixed: true`）で送る。
 // 固定は、予約・購入を意味しない。施設の照合は、生成後に別の機能（照合）で行う。
-// 承認済みの学びは、このフォームでは扱わないため、空配列で契約に整合させる。
+// 承認済みの学びは、このフォームでは扱わない。選んだ学び（{ id, version }）は、送信の直前に
+// 認証セッションと照合して加える（api-client.ts）。ここで作るのは旅行条件だけ。
 
 // 固定予定の入力1件分（入力途中の文字列のまま保持し、作成時に検証する）。
 export interface FixedStopRow {
@@ -49,7 +51,7 @@ export type TripFormErrors = Partial<Record<TripFormField, string>>
 export const formFieldOrder: readonly TripFormField[] = ['region', 'date', 'preferences']
 
 export type BuildRequestResult =
-  | { ok: true; request: GenerateTripRequest }
+  | { ok: true; request: GenerateTripConditions }
   // fixedStopErrorsは、固定予定に不備があるときだけ持つ。
   | { ok: false; errors: TripFormErrors; fixedStopErrors?: FixedStopErrorMap }
 
@@ -183,7 +185,9 @@ export function buildGenerateTripRequest(values: TripFormValues): BuildRequestRe
     // どの項目にも結び付かない契約違反。通常は起きないが、黙って送らない。
     return { ok: false, errors: { region: '入力内容を確認してください' } }
   }
-  return { ok: true, request: parsed.data }
+  // 検証には内部の契約（学びは空）を使い、返すのは旅行条件だけ。
+  const { date, region, timeZone, preferences, fixedStops } = parsed.data
+  return { ok: true, request: { date, region, timeZone, preferences, fixedStops } }
 }
 
 // 最初に不備がある固定予定の入力欄（行の並び順、行の中は名前・開始時刻・滞在時間の順）。なければundefined。

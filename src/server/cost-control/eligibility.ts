@@ -16,25 +16,30 @@ function errorCode(error: unknown): unknown {
   return error && typeof error === 'object' && 'code' in error ? error.code : undefined
 }
 
-export async function checkEligibility(
-  request: Request,
+export function checkInviteEligibility(
   uid: string,
-): Promise<EligibilityFailure | null> {
+): Extract<EligibilityFailure, 'invite_required' | 'protection_unavailable'> | null {
   let invited: string[]
   try {
     invited = inviteList.parse(JSON.parse(process.env.COSTLY_API_INVITED_UIDS ?? '[]'))
   } catch {
     return 'protection_unavailable'
   }
-  if (!invited.includes(uid)) return 'invite_required'
+  return invited.includes(uid) ? null : 'invite_required'
+}
 
+export async function checkAppCheck(
+  request: Request,
+  timeoutMs: number | null = 3000,
+): Promise<Exclude<EligibilityFailure, 'invite_required'> | null> {
   const appId = process.env.NEXT_PUBLIC_FIREBASE_APP_ID?.trim()
   if (!appId) return 'protection_unavailable'
   const token = request.headers.get('X-Firebase-AppCheck')
   if (!token || token.length > 8192 || !jwt.test(token)) return 'app_check_invalid'
 
   try {
-    const verified = await withinDeadline(3000, () => getAdminAppCheck().verifyToken(token))
+    const verify = () => getAdminAppCheck().verifyToken(token)
+    const verified = timeoutMs === null ? await verify() : await withinDeadline(timeoutMs, verify)
     return verified.appId === appId ? null : 'app_check_invalid'
   } catch (error) {
     const cause = error && typeof error === 'object' && 'cause' in error ? error.cause : undefined
@@ -44,4 +49,11 @@ export async function checkEligibility(
       ? 'app_check_invalid'
       : 'app_check_unavailable'
   }
+}
+
+export async function checkEligibility(
+  request: Request,
+  uid: string,
+): Promise<EligibilityFailure | null> {
+  return checkInviteEligibility(uid) ?? (await checkAppCheck(request))
 }

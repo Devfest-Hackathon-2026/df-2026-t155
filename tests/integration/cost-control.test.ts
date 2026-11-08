@@ -18,7 +18,8 @@ import {
 import { GET as getTrip, PATCH as patchTrip } from '@/app/api/trips/[tripId]/route'
 import { POST as generate } from '@/app/api/trips/generate/route'
 import { GET as listTrips, POST as createTrip } from '@/app/api/trips/route'
-import { sampleGenerateTripRequest, sampleRevision, sampleTrip } from '@/domain/samples'
+import { sampleRevision, sampleTrip } from '@/domain/samples'
+import { sampleGenerateTripBody } from '../helpers/generate-request'
 import { getAdminFirestore } from '@/lib/firebase/admin'
 import { DEFAULT_LIMITS, type Policy } from '@/server/cost-control/policy'
 import {
@@ -556,7 +557,7 @@ describe('保存書き込みとリース交代', () => {
 describe('認証＋App Check＋分散枠を通る実Route', () => {
   it('認証済みの招待ユーザーだけが予約後にGeminiと業務Firestoreへ進む', async () => {
     await seed()
-    const result = await generate(request('/api/trips/generate', sampleGenerateTripRequest))
+    const result = await generate(request('/api/trips/generate', sampleGenerateTripBody()))
     expect(result.status).toBe(422)
     expect(generateJson).toHaveBeenCalledTimes(1)
     expect(verifyAppCheck).toHaveBeenCalledBefore(generateJson)
@@ -574,10 +575,10 @@ describe('認証＋App Check＋分散枠を通る実Route', () => {
     await seed(settings)
     const read = vi.spyOn(FirestoreTripStore.prototype, 'listTrips')
     verifyAppCheck.mockResolvedValueOnce({ appId: 'wrong-app' })
-    const forbidden = await generate(request('/api/trips/generate', sampleGenerateTripRequest))
+    const forbidden = await generate(request('/api/trips/generate', sampleGenerateTripBody()))
     expect(forbidden.status).toBe(403)
 
-    const denied = await generate(request('/api/trips/generate', sampleGenerateTripRequest))
+    const denied = await generate(request('/api/trips/generate', sampleGenerateTripBody()))
     expect(denied.status).toBe(429)
     expect(await denied.json()).toMatchObject({ error: { code: 'global_limit' } })
     expect((await listTrips(request('/api/trips'))).status).toBe(429)
@@ -593,7 +594,7 @@ describe('認証＋App Check＋分散枠を通る実Route', () => {
       await gate.update({ 'policy.enabled': false })
       return run(callback, options)
     })
-    const response = await generate(request('/api/trips/generate', sampleGenerateTripRequest))
+    const response = await generate(request('/api/trips/generate', sampleGenerateTripBody()))
 
     expect(response.status).toBe(503)
     expect(generateJson).not.toHaveBeenCalled()
@@ -603,7 +604,7 @@ describe('認証＋App Check＋分散枠を通る実Route', () => {
 
   it('制御文書未設定とストア例外では両ルートが503を返し下流を呼ばない', async () => {
     const read = vi.spyOn(FirestoreTripStore.prototype, 'listTrips')
-    expect((await generate(request('/api/trips/generate', sampleGenerateTripRequest))).status).toBe(
+    expect((await generate(request('/api/trips/generate', sampleGenerateTripBody()))).status).toBe(
       503,
     )
     await seed()

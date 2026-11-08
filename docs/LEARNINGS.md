@@ -196,20 +196,27 @@ const headers = await getAuthHeadersForScope(scope) // 送信側のトークン�
    不一致は 409 `learning_changed` とする（生成時の `selection_changed` と区別する）。
 3. 生成Routeは、結果に検証した `{ id, version }` を添える。画面はそれを保存リクエストへそのまま渡す。
 
-### 生成APIとの接続方針（統合PR #54で実施。このPRでは変更しない）
+### 生成APIとの接続（統合ブランチで実施済み）
 
-- 現行の `POST /api/trips/generate` の `GenerateTripRequestSchema` は `strictObject` で、選択IDを運ぶ欄がない。
-  代わりに承認済みの学びの本文そのもの（`learnings`）を、認証なしの本文（最大32KB）から信用して受け取る旧経路がある。
-  この経路は、統合PRで塞ぐ。
-- 統合PRは、次のどちらかで接続する。いずれも、サーバーが `resolveSelectedLearnings` で確定した学びだけをGeminiへ渡す。
-  1. 認証必須で、選択 `{ id, version }[]` だけを受ける専用ルートを設ける。
-  2. 既存ルートに選択の欄を追加し、本文由来の `learnings` は受け付けない（または無視する）。
-- 画面は `409 selection_changed` を受けたら一覧を取得し直して選び直しを求め、`503 unavailable` を受けたら
-  「学びを使わずに旅程を作る」を案内する。選択を黙って外して生成を続けない。
+- 旧 `POST /api/trips/generate` は、承認済みの学びの本文そのもの（`learnings`）を、認証なしの本文（最大32KB）から信用して受け取っていた。
+  **この経路は閉じた。** 選択肢のうち「2. 既存ルートに選択の欄を追加し、本文由来の `learnings` は受け付けない」を採った。
+  - HTTP契約は `GenerateTripHttpRequestSchema`（`src/server/trip-generation/http-request.ts`）。旅行条件に加え、
+    `learningSelections: { id, version }[]`（最大40件・ID重複なし）だけを持つ。`strictObject` なので、旧形式の `learnings` が付いた本文は **400 `invalid_request`**。
+  - 内部の `GenerateTripRequest`（`learnings` を持つ）は、サーバーが `resolveSelectedLearnings` で確定した学びから組み立てる。HTTPの本文としては受け付けない。
+    HTTPで再構築しないため、解決された学びの大きさが32KB制限の影響を受けない。
+  - 学びの選択があるときだけ、費用の予約に `COSTS.generateWithLearnings`（Gemini 1・業務Firestore読取 `LEARNING_LIMIT + 1`）を使う。空選択は `COSTS.generate`（Geminiのみ）。
+- 応答：選択の不一致は **409 `selection_changed`**、保存済みの学びを確認できない場合は **503 `learnings_unavailable`**。
+  後者は機能停止の `service_unavailable`（503）とはstatus文字列で区別する。
+  画面（`TripPlanner` / `HomePlanner`）は、409では学びの一覧を取得し直して選び直しを求め、
+  503（`learnings_unavailable`）では「学びの選択を外して旅程を作る」を案内する。選択を黙って外して生成を続けない。
+- 画面の送信側（`requestTripGeneration`）は、選択を選んだ時点の認証セッションと組（`ScopedLearningSelection`）で受け取り、
+  送信の直前に `resolveSelectionForRequest` で現在のセッションと照合する。違えば送らず `session_changed` で失敗する。
+  ヘッダーも `getProtectedApiHeadersForScope(scope)` で作り、通信を `beginSessionScopeOperation` に登録して、応答の採用前にも再確認する。
+  本文は既知の項目だけで組み立て、呼び出し側が余分な項目（旧 `learnings` など）を渡しても載せない。
 - 生成後のTripの `learningApplications` を保存する際は、参照した学びの存在・所有者・現行の版を、
   保存トランザクション内で検証する（上記の提案、および[保存API](FIRESTORE_PERSISTENCE.md)の#13の項）。
 
-**#54で必ず対応する統合条件**
+**#54で必ず対応する統合条件（1〜4・6は実装済み。5もHTTPの再構築をやめたことで解消。画面側の接続はトップ画面 `HomePlanner`）**
 
 1. Picker → 親 → APIクライアント → 生成Route → resolver を、`{ id, version }` に統一する（IDだけの選択へ戻さない）。
 2. UID・認証世代・地域が変わったとき、親に保持した古い選択も無効にする（`scopeEpoch` / `scope.uid` の変化、`onSelectionChange(null)`）。

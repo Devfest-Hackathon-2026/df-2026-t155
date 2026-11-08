@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
 
-import type { Learning, Revision, Trip } from '../../src/domain'
+import { TripSchema, type Learning, type Revision, type Trip } from '../../src/domain'
 import {
   ApproveLearningBodySchema,
   type VersionedLearning,
@@ -99,6 +99,22 @@ export function createFakeBackend(
     const ok = (body: unknown) => ({ status: 200, body })
     if (call.method === 'GET' && call.path === '/api/trips') {
       return ok({ trips: data.trips, listInfo: { returned: data.trips.length, ...emptyInfo } })
+    }
+    if (call.method === 'POST' && call.path === '/api/trips') {
+      const incoming = TripSchema.parse(call.body)
+      if (data.trips.some((trip) => trip.id === incoming.id)) {
+        return {
+          status: 409,
+          body: { error: { code: 'already_exists', message: '同じIDの保存データが存在します' } },
+        }
+      }
+      // 保存先は、Google由来の根拠を保存しない（Place IDだけを残す）。
+      const stored: Trip = {
+        ...incoming,
+        stops: incoming.stops.map((stop) => ({ ...stop, evidence: [] })),
+      }
+      data.trips.push(stored)
+      return { status: 201, body: { trip: stored } }
     }
     const tripMatch = /^\/api\/trips\/([^/]+)(\/revisions)?$/.exec(call.path)
     if (call.method === 'GET' && tripMatch) {

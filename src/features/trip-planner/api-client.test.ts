@@ -1,8 +1,30 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { sampleGenerateTripRequest, sampleTrip } from '@/domain/samples'
+import { sampleApprovedLearning, sampleGenerateTripRequest, sampleTrip } from '@/domain/samples'
+import {
+  createSessionScope,
+  SessionChangedError,
+  type SessionScope,
+} from '@/lib/auth/session-scope'
+import type { ScopedLearningSelection } from '@/features/learning-reuse/selection-scope'
+import type { GenerateTripConditions } from '@/server/trip-generation/http-request'
 
 import { GENERATE_TRIP_ENDPOINT, requestTripGeneration } from './api-client'
+
+// 画面が組み立てる旅行条件（学びの選択は含まない）。
+const { date, region, timeZone, preferences, fixedStops } = sampleGenerateTripRequest
+const conditions: GenerateTripConditions = { date, region, timeZone, preferences, fixedStops }
+
+// 認証SDKは使わない。応答の採用前に確認する「現在のセッション」だけを差し替える（user-a・世代1）。
+const authState = vi.hoisted(() => ({
+  snapshot: { uid: 'user-a', token: 'test.token', generation: 1 },
+}))
+vi.mock('@/lib/auth/client', () => ({
+  getAuthSnapshot: async () => authState.snapshot,
+  isAuthSessionCurrent: (uid: string, generation: number) =>
+    uid === authState.snapshot.uid && generation === authState.snapshot.generation,
+  registerAuthSessionOperation: () => () => undefined,
+}))
 
 const protectedHeaders = async () =>
   new Headers({ Authorization: 'Bearer test.id.token', 'X-Firebase-AppCheck': 'test.app.check' })
@@ -16,7 +38,7 @@ const respond = (body: unknown, status: number) =>
   )
 
 const call = (fetchFn: typeof fetch) =>
-  requestTripGeneration(sampleGenerateTripRequest, { fetchFn, getHeaders: protectedHeaders })
+  requestTripGeneration(conditions, { fetchFn, getHeaders: protectedHeaders })
 
 const failureOf = async (fetchFn: typeof fetch) => {
   const result = await call(fetchFn)
@@ -34,7 +56,7 @@ describe('requestTripGeneration: 正常系', () => {
   it('JSONでPOSTし、入力をそのまま本文に載せ、中止用のsignalを渡す', async () => {
     const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
     const controller = new AbortController()
-    await requestTripGeneration(sampleGenerateTripRequest, {
+    await requestTripGeneration(conditions, {
       fetchFn,
       getHeaders: protectedHeaders,
       signal: controller.signal,
@@ -45,9 +67,18 @@ describe('requestTripGeneration: 正常系', () => {
     expect(url).toBe(GENERATE_TRIP_ENDPOINT)
     expect(init?.method).toBe('POST')
     expect(new Headers(init?.headers).get('Content-Type')).toBe('application/json')
-    expect(JSON.parse(String(init?.body))).toEqual(sampleGenerateTripRequest)
+    // 本文は旅行条件と、選択（なければ空）だけ。承認済みの学びの本文は載らない。
+    expect(JSON.parse(String(init?.body))).toEqual({ ...conditions, learningSelections: [] })
     expect(init?.signal).toBe(controller.signal)
   })
+})
+
+it.each([
+  [401, 'unauthorized'],
+  [403, 'unauthorized'],
+  [429, 'rate_limited'],
+])('保護APIのHTTP %sを専用の案内へ分ける', async (status, kind) => {
+  expect(await failureOf(respond('not JSON', status))).toMatchObject({ kind })
 })
 
 describe('requestTripGeneration: 契約上の失敗', () => {
@@ -86,7 +117,7 @@ describe('requestTripGeneration: 通信・想定外の応答', () => {
     const fetchFn = vi
       .fn<typeof fetch>()
       .mockRejectedValue(new DOMException('aborted', 'AbortError'))
-    const result = await requestTripGeneration(sampleGenerateTripRequest, {
+    const result = await requestTripGeneration(conditions, {
       fetchFn,
       getHeaders: protectedHeaders,
       signal: controller.signal,
@@ -253,7 +284,7 @@ describe('requestTripGeneration: 本文の受信中の中断', () => {
         { status: 200 },
       ),
     )
-    const pending = requestTripGeneration(sampleGenerateTripRequest, {
+    const pending = requestTripGeneration(conditions, {
       fetchFn,
       getHeaders: protectedHeaders,
       signal: controller.signal,
@@ -281,7 +312,7 @@ describe('requestTripGeneration: 保護API（Bearer＋App Check）', () => {
   ] as const)('%s場合は送信せず（fail-closed）、%s として返す', async (_label, name, kind) => {
     const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
     const getHeaders = vi.fn().mockRejectedValue(Object.assign(new Error('生の詳細'), { name }))
-    const result = await requestTripGeneration(sampleGenerateTripRequest, { fetchFn, getHeaders })
+    const result = await requestTripGeneration(conditions, { fetchFn, getHeaders })
 
     expect(result).toMatchObject({ ok: false, failure: { kind } })
     expect(JSON.stringify(result)).not.toContain('生の詳細')
@@ -308,5 +339,164 @@ describe('requestTripGeneration: 保護API（Bearer＋App Check）', () => {
   it('503は従来どおり service_unavailable（保護・機能停止）で、401・429とは別の種類', async () => {
     const fetchFn = respond({ status: 'service_unavailable', message: '停止中' }, 503)
     expect((await failureOf(fetchFn)).kind).toBe('service_unavailable')
+  })
+})
+
+describe('requestTripGeneration: 学びの選択（{ id, version } だけを、認証セッションと照合して送る）', () => {
+  const sessionA: SessionScope = createSessionScope('user-a', 1)
+  const sessionB: SessionScope = createSessionScope('user-b', 2)
+  const selection = (scope: SessionScope): ScopedLearningSelection => ({
+    scope,
+    value: [{ id: sampleApprovedLearning.id, version: 3 }],
+  })
+  const scopedHeaders = vi.fn(async () => new Headers({ Authorization: 'Bearer scope.token' }))
+  const operation = () => ({
+    signal: new AbortController().signal,
+    assertCurrent: vi.fn(),
+    dispose: vi.fn(),
+  })
+  const send = (
+    fetchFn: typeof fetch,
+    learningSelection: ScopedLearningSelection | null,
+    current: SessionScope = sessionA,
+  ) =>
+    requestTripGeneration(conditions, {
+      fetchFn,
+      getHeaders: protectedHeaders,
+      learningSelection,
+      captureScope: async () => current,
+      getHeadersForScope: scopedHeaders,
+      beginOperation: () => operation(),
+    })
+
+  it('本文には選択の { id, version } だけを載せ、学びの本文・承認状態は載せない', async () => {
+    const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+    const result = await send(fetchFn, selection(sessionA))
+
+    expect(result.ok).toBe(true)
+    const body = JSON.parse(String(fetchFn.mock.calls[0][1]?.body))
+    expect(body.learningSelections).toEqual([{ id: sampleApprovedLearning.id, version: 3 }])
+    expect(body).not.toHaveProperty('learnings')
+    expect(JSON.stringify(body)).not.toContain(sampleApprovedLearning.content)
+    // 選んだ時点のセッションのヘッダーで送る（現在のUIDで作り直さない）。
+    expect(scopedHeaders).toHaveBeenCalledWith(sessionA)
+    expect(new Headers(fetchFn.mock.calls[0][1]?.headers).get('Authorization')).toBe(
+      'Bearer scope.token',
+    )
+  })
+
+  it('旅行条件に旧形式の learnings が混ざっていても、本文には載せない', async () => {
+    const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+    await requestTripGeneration(
+      { ...conditions, learnings: [sampleApprovedLearning] } as GenerateTripConditions,
+      { fetchFn, getHeaders: protectedHeaders },
+    )
+
+    const body = JSON.parse(String(fetchFn.mock.calls[0][1]?.body))
+    expect(body).not.toHaveProperty('learnings')
+    expect(body.learningSelections).toEqual([])
+  })
+
+  it('選択がなければ（null・空）、通常のヘッダーで空の選択を送る', async () => {
+    for (const none of [null, { scope: sessionA, value: [] }]) {
+      const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+      await send(fetchFn, none)
+      expect(JSON.parse(String(fetchFn.mock.calls[0][1]?.body)).learningSelections).toEqual([])
+    }
+    expect(scopedHeaders).not.toHaveBeenCalled()
+  })
+
+  it('選んだ後に認証セッションが変わっていたら、何も送らず session_changed（学びを外して続けない）', async () => {
+    const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+    const result = await send(fetchFn, selection(sessionA), sessionB)
+
+    expect(result).toMatchObject({ ok: false, failure: { kind: 'session_changed' } })
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('同じUIDでも認証世代が違えば別のセッションとして、送らない', async () => {
+    const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+    const result = await send(fetchFn, selection(createSessionScope('user-a', 2)), sessionA)
+
+    expect(result).toMatchObject({ ok: false, failure: { kind: 'session_changed' } })
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('ヘッダー取得時にセッションが変わっていたら送らない', async () => {
+    const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+    const result = await requestTripGeneration(conditions, {
+      fetchFn,
+      learningSelection: selection(sessionA),
+      captureScope: async () => sessionA,
+      getHeadersForScope: async () => {
+        throw new SessionChangedError()
+      },
+    })
+
+    expect(result).toMatchObject({ ok: false, failure: { kind: 'session_changed' } })
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('応答を採用する直前にセッションが変わっていたら、生成された旅程を捨てる', async () => {
+    const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+    const changing = {
+      signal: new AbortController().signal,
+      dispose: vi.fn(),
+      assertCurrent: vi
+        .fn()
+        .mockImplementationOnce(() => undefined)
+        .mockImplementation(() => {
+          throw new SessionChangedError()
+        }),
+    }
+    const result = await requestTripGeneration(conditions, {
+      fetchFn,
+      learningSelection: selection(sessionA),
+      captureScope: async () => sessionA,
+      getHeadersForScope: scopedHeaders,
+      beginOperation: () => changing,
+    })
+
+    expect(fetchFn).toHaveBeenCalledTimes(1)
+    expect(result).toMatchObject({ ok: false, failure: { kind: 'session_changed' } })
+    expect(changing.dispose).toHaveBeenCalled()
+  })
+
+  it('選択の形式が不正（重複ID）なら送らず、入力内容の問題として知らせる', async () => {
+    const fetchFn = respond({ status: 'proposed', trip: sampleTrip }, 200)
+    const duplicated: ScopedLearningSelection = {
+      scope: sessionA,
+      value: [
+        { id: 'learning-a', version: 1 },
+        { id: 'learning-a', version: 2 },
+      ],
+    }
+    const result = await send(fetchFn, duplicated)
+
+    expect(result).toMatchObject({ ok: false, failure: { kind: 'invalid_request' } })
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('409 selection_changed は選び直しの案内として、旅程なしで返す', async () => {
+    const failure = await failureOf(
+      respond({ status: 'selection_changed', message: '選んだ学びが変更されました' }, 409),
+    )
+    expect(failure.kind).toBe('selection_changed')
+  })
+
+  it('503 learnings_unavailable は、機能停止（service_unavailable）とは別の失敗として扱う', async () => {
+    const unavailable = await failureOf(
+      respond({ status: 'learnings_unavailable', message: '学びを確認できません' }, 503),
+    )
+    const stopped = await failureOf(
+      respond({ status: 'service_unavailable', message: '停止中' }, 503),
+    )
+    expect(unavailable.kind).toBe('learnings_unavailable')
+    expect(stopped.kind).toBe('service_unavailable')
+  })
+
+  it('ステータスが食い違う selection_changed（200など）は信用しない', async () => {
+    const failure = await failureOf(respond({ status: 'selection_changed', message: 'x' }, 500))
+    expect(failure.kind).toBe('unexpected')
   })
 })

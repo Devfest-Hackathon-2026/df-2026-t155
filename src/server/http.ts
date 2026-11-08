@@ -7,6 +7,10 @@ export type ApiErrorStatus =
   | 'unsupported_media_type'
   | 'payload_too_large'
   | 'internal_error'
+  // 選んだ学びが変更・撤回された（409）。選び直しを案内する。
+  | 'selection_changed'
+  // 保存済みの学びを確認できない（503）。機能停止（service_unavailable）とは区別し、学びを使わずに作る道を案内する。
+  | 'learnings_unavailable'
 
 export interface ApiErrorBody {
   status: ApiErrorStatus
@@ -27,9 +31,13 @@ export type BodyReadResult =
 export async function readBodyWithLimit(
   request: Request,
   maxBytes: number,
+  signal?: AbortSignal,
 ): Promise<BodyReadResult> {
   if (!request.body) return { ok: true, text: '' }
   const reader = request.body.getReader()
+  const cancel = () => void reader.cancel().catch(() => undefined)
+  if (signal?.aborted) cancel()
+  else signal?.addEventListener('abort', cancel, { once: true })
   const chunks: Uint8Array[] = []
   let total = 0
   try {
@@ -46,7 +54,10 @@ export async function readBodyWithLimit(
   } catch {
     // 接続の切断など、ストリームの読み取り失敗。
     return { ok: false, reason: 'unreadable' }
+  } finally {
+    signal?.removeEventListener('abort', cancel)
   }
+  if (signal?.aborted) return { ok: false, reason: 'unreadable' }
 
   const merged = new Uint8Array(total)
   let offset = 0
