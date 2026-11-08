@@ -32,8 +32,11 @@ const after = {
     explanation: '説明文にだけ含まれる例示値：徒歩999分',
   })),
 }
+// サーバーは依頼の理由と文脈をそのままRevisionへ写す。画面の入力（店が休み・旅行前）と揃えておく。
 const first = {
   ...sampleRevision,
+  reason: '店が休み',
+  context: { phase: 'planning' },
   diff: { before: target, after },
   constraintCheck: { status: 'satisfied', explanation: '固定展示に間に合う' },
 } satisfies RevisionProposal['revisions'][number]
@@ -97,7 +100,11 @@ const approvalDisabled = () => approve().getAttribute('aria-disabled') === 'true
 describe('部分修正の候補比較', () => {
   it('選択したStopだけを徒歩で生成し、分岐、固定予定、構造化比較を切り替える', async () => {
     const user = userEvent.setup()
-    const generate = vi.fn<GenerateRevisions>().mockResolvedValue(proposal)
+    // 希望条件を足すと理由が変わるため、応答も送られた理由に合わせる。
+    const generate = vi.fn<GenerateRevisions>(async ({ reason }) => ({
+      ...proposal,
+      revisions: proposal.revisions.map((revision) => ({ ...revision, reason })),
+    }))
     const apply = vi.fn<ApplyRevision>()
     const original = structuredClone(trip)
     render(<RevisionRouteView trip={trip} meta={meta} generate={generate} apply={apply} />)
@@ -166,6 +173,30 @@ describe('部分修正の候補比較', () => {
     expect(route().queryByText('別の食堂')).toBeNull()
     expect(document.activeElement?.id).toBe('stop-button-stop-lunch')
     expect(trip).toEqual(original)
+  })
+
+  it('修正理由と希望条件を合わせて保存契約の上限を超えるときは、送らずに案内する', async () => {
+    const user = userEvent.setup()
+    const generate = vi.fn<GenerateRevisions>().mockResolvedValue(proposal)
+    render(<RevisionRouteView trip={trip} generate={generate} />)
+    await open(user)
+    const reasonField = screen.getByLabelText('修正理由（必須）')
+    const preferences = screen.getByLabelText('希望条件（任意）')
+    await user.click(reasonField)
+    await user.paste('あ'.repeat(500))
+    await user.click(preferences)
+    await user.paste('い'.repeat(500))
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+
+    expect(generate).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert').textContent).toContain('1000文字以内')
+    expect(document.activeElement).toBe(preferences)
+    // 上限ちょうど（理由500＋改行1＋「希望条件：」5＋希望条件494）は送れる。
+    await user.clear(preferences)
+    await user.paste('い'.repeat(494))
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    expect(generate).toHaveBeenCalledOnce()
+    expect(generate.mock.calls[0][0].reason).toHaveLength(1000)
   })
 
   it('移動手段や照合時刻が異なる区間は、所要時間を表示しても時間差を算出しない', async () => {

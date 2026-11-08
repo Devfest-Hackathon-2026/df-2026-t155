@@ -53,15 +53,33 @@ function ProgressMark() {
   )
 }
 
+// 依頼の理由（修正理由＋希望条件）の上限。保存契約（Revision.reason）に合わせる。
+const MAX_REASON_LENGTH = 1000
+
+// 修正理由と希望条件を、サーバーへ送る一つの理由にまとめる。
+const composeReason = (reason: string, preferences: string) =>
+  [reason.trim(), preferences.trim() && `希望条件：${preferences.trim()}`]
+    .filter(Boolean)
+    .join('\n')
+
 interface RevisionReviewProps {
   trip: Trip
   target: Stop
   meta?: RouteMeta
   generate: GenerateRevisions
+  generationAvailable?: boolean
   apply?: ApplyRevision
+  applyUnresolved?: boolean
+  // 適用できない理由。applyが無いときの承認ボタンの説明に使う（省略時は「未接続」）。
+  applyUnavailableReason?: string
   onCancel: () => void
   onApplied: (trip: Trip) => void
   onApplyUnresolvedChange: (unresolved: boolean) => void
+  // 現地報告は修正理由と文脈をまとめて受け取り、旅行前と同じ修正エンジンで扱う。
+  onSiteReport?: {
+    reason: string
+    context: Extract<RevisionRequest['context'], { phase: 'on_site' }>
+  }
 }
 
 type Review = { request: RevisionRequest; proposal: RevisionProposal; selected: number }
@@ -74,15 +92,21 @@ export function RevisionReview({
   target,
   meta,
   generate,
+  generationAvailable = true,
   apply,
+  applyUnresolved = false,
+  applyUnavailableReason,
   onCancel,
   onApplied,
   onApplyUnresolvedChange,
+  onSiteReport,
 }: RevisionReviewProps) {
-  const [reason, setReason] = useState('')
+  const [reason, setReason] = useState(onSiteReport?.reason ?? '')
   const [preferences, setPreferences] = useState('')
   const [canDrive, setCanDrive] = useState(false)
   const [invalidReason, setInvalidReason] = useState(false)
+  // 理由と希望条件の合計が上限を超えたときの、結合後の文字数。
+  const [reasonLength, setReasonLength] = useState<number | null>(null)
   const [generationFailure, setGenerationFailure] = useState<Exclude<
     RevisionResult,
     RevisionProposal
@@ -98,6 +122,7 @@ export function RevisionReview({
   const activeApply = useRef<object | null>(null)
   const heading = useRef<HTMLHeadingElement>(null)
   const reasonField = useRef<HTMLTextAreaElement>(null)
+  const preferencesField = useRef<HTMLTextAreaElement>(null)
   const submitButton = useRef<HTMLButtonElement>(null)
   const cancelButton = useRef<HTMLButtonElement>(null)
   const hasReview = review !== null
@@ -127,22 +152,53 @@ export function RevisionReview({
     [],
   )
 
+  // 候補生成が外れたら、未適用の比較を破棄する。適用中または結果未確認の状態は
+  // 子の再マウントで失われないよう保持し、サーバー確認なしに再操作を解禁しない。
+  useEffect(() => {
+    if (generationAvailable) {
+      setGenerationFailure((current) => (current?.status === 'unavailable' ? null : current))
+      return
+    }
+    activeGeneration.current?.abort()
+    activeGeneration.current = null
+    setIsGenerating(false)
+    if (
+      activeApply.current ||
+      applyUnresolved ||
+      applyFailure?.status === 'conflict' ||
+      applyFailure?.status === 'uncertain'
+    ) {
+      return
+    }
+    setReview(null)
+    setGenerationFailure({ status: 'unavailable' })
+  }, [generationAvailable, applyUnresolved, applyFailure?.status])
+
   const generateCandidates = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (!generationAvailable) {
+      setGenerationFailure({ status: 'unavailable' })
+      return
+    }
     if (activeGeneration.current || generationFailure?.status === 'conflict') return
     if (!reason.trim()) {
       setInvalidReason(true)
       reasonField.current?.focus()
       return
     }
+    // PR #28のリクエストでは、理由と希望条件を一つのフィールドで渡す。
+    const requestReason = composeReason(reason, preferences)
+    if (requestReason.length > MAX_REASON_LENGTH) {
+      // 保存契約の上限を超える依頼は作らない。送信は止めず、短くする欄を示して移る。
+      setReasonLength(requestReason.length)
+      preferencesField.current?.focus()
+      return
+    }
     const request: RevisionRequest = {
       trip: structuredClone(trip),
       targetStopId: target.id,
-      // PR #28のリクエストでは、理由と希望条件を一つのフィールドで渡す。
-      reason: [reason.trim(), preferences.trim() && `希望条件：${preferences.trim()}`]
-        .filter(Boolean)
-        .join('\n'),
-      context: { phase: 'planning' },
+      reason: requestReason,
+      context: onSiteReport?.context ?? { phase: 'planning' },
       travelModes: canDrive ? ['walk', 'drive'] : ['walk'],
     }
     const controller = new AbortController()
@@ -177,21 +233,30 @@ export function RevisionReview({
     ({ revisionId }) => revisionId === candidate?.id,
   )
   const requiresLatestTrip =
-    applyFailure?.status === 'conflict' || applyFailure?.status === 'uncertain'
+    applyUnresolved || applyFailure?.status === 'conflict' || applyFailure?.status === 'uncertain'
   const constraintSatisfied = candidate?.constraintCheck.status === 'satisfied'
-  const canApprove = constraintSatisfied && !requiresLatestTrip
-  const approvalNote = !constraintSatisfied
-    ? candidate?.constraintCheck.status === 'violated'
+  const canApprove = generationAvailable && constraintSatisfied && !requiresLatestTrip
+  const unapprovableNote =
+    candidate?.constraintCheck.status === 'violated'
       ? '旅程の条件に合わないため、この候補は選べません。'
       : '旅程に組み込めるか確認できていないため、この候補は選べません。'
-    : requiresLatestTrip
-      ? '再操作する前に最新の旅程を確認してください。'
-      : !apply
-        ? '承認・適用サービスは未接続です。'
-        : null
+  // 現地報告では、承認できない具体的な理由を承認欄にも添える（比較欄が画面の外にあっても理由が分かる）。
+  const unapprovableReason =
+    onSiteReport && candidate ? `理由：${candidate.constraintCheck.explanation}` : ''
+  const approvalNote = !constraintSatisfied
+    ? `${unapprovableNote}${unapprovableReason}`
+    : isApplying
+      ? null
+      : requiresLatestTrip
+        ? '再操作する前に最新の旅程を確認してください。'
+        : !apply
+          ? (applyUnavailableReason ?? '承認・適用サービスは未接続です。')
+          : null
+  // 現地報告から開いたときの「キャンセル」は、旅程ではなく報告画面に戻る操作になる。
+  const cancelLabel = onSiteReport ? '報告を見直す' : 'キャンセル'
   const approvalStatus = isApplying
     ? '承認操作済み・適用結果を確認中'
-    : applyFailure?.status === 'uncertain'
+    : applyFailure?.status === 'uncertain' || applyUnresolved
       ? '適用結果未確認'
       : applyFailure
         ? '適用されていません'
@@ -284,7 +349,7 @@ export function RevisionReview({
           >
             <legend className="sr-only">部分修正の条件</legend>
             <label className="block space-y-1 text-sm font-semibold">
-              <span>修正理由（必須）</span>
+              <span>{onSiteReport ? '現地の報告内容' : '修正理由（必須）'}</span>
               <textarea
                 ref={reasonField}
                 required
@@ -292,14 +357,19 @@ export function RevisionReview({
                 maxLength={500}
                 className={inputClass}
                 value={reason}
+                readOnly={onSiteReport !== undefined}
                 aria-invalid={invalidReason}
                 aria-describedby={invalidReason ? 'revision-reason-error' : undefined}
                 onChange={(event) => {
                   setReason(event.target.value)
                   setInvalidReason(false)
+                  setReasonLength(null)
                 }}
               />
             </label>
+            {onSiteReport && (
+              <p className="text-sm text-gt-muted">報告を直す場合は、前の画面に戻ってください。</p>
+            )}
             {invalidReason && (
               <p id="revision-reason-error" role="alert" className="text-sm text-gt-warn">
                 修正理由を入力してください。
@@ -308,13 +378,24 @@ export function RevisionReview({
             <label className="block space-y-1 text-sm font-semibold">
               <span>希望条件（任意）</span>
               <textarea
+                ref={preferencesField}
                 rows={2}
                 maxLength={500}
                 className={inputClass}
                 value={preferences}
-                onChange={(event) => setPreferences(event.target.value)}
+                aria-invalid={reasonLength !== null}
+                aria-describedby={reasonLength !== null ? 'revision-length-error' : undefined}
+                onChange={(event) => {
+                  setPreferences(event.target.value)
+                  setReasonLength(null)
+                }}
               />
             </label>
+            {reasonLength !== null && (
+              <p id="revision-length-error" role="alert" className="text-sm text-gt-warn">
+                {`${onSiteReport ? '現地の報告内容' : '修正理由'}と希望条件を合わせて${MAX_REASON_LENGTH}文字以内にしてください（現在${reasonLength}文字）。${onSiteReport ? '希望条件' : '修正理由か希望条件'}を短くしてから、もう一度送ってください。`}
+              </p>
+            )}
             <label className="flex min-h-11 items-center gap-2 text-sm">
               <input
                 className="size-5"
@@ -327,13 +408,15 @@ export function RevisionReview({
           </fieldset>
           <div className="flex flex-wrap gap-2">
             <button ref={cancelButton} type="button" className={secondaryClass} onClick={onCancel}>
-              キャンセル
+              {cancelLabel}
             </button>
             <button
               ref={submitButton}
               type="submit"
               className={`flex-1 ${primaryClass}`}
-              disabled={isGenerating || generationFailure?.status === 'conflict'}
+              disabled={
+                !generationAvailable || isGenerating || generationFailure?.status === 'conflict'
+              }
             >
               {isGenerating ? '候補を生成中…' : '変更候補を探す'}
             </button>
@@ -447,7 +530,9 @@ export function RevisionReview({
                 disabled={isApplying}
                 onClick={onCancel}
               >
-                {applyFailure?.status === 'uncertain' ? '旅程を確認' : 'キャンセル'}
+                {applyFailure?.status === 'uncertain' || (applyUnresolved && !isApplying)
+                  ? '旅程を確認'
+                  : cancelLabel}
               </button>
               <button
                 type="button"

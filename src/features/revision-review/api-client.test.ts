@@ -91,6 +91,48 @@ describe('候補生成 API の表示境界', () => {
     ).toBeNull()
   })
 
+  it('依頼の理由や文脈と異なるRevisionは、別の依頼の応答として拒否する', () => {
+    const proposal = { status: 'proposed', revisions: [sampleRevision] }
+    expect(readRevisionProposal(proposal, input)).not.toBeNull()
+    // 前後の空白だけの違いでは、不一致にしない（サーバーは契約で整えた値を返す）。
+    expect(
+      readRevisionProposal(proposal, { ...input, reason: `  ${input.reason}\n` }),
+    ).not.toBeNull()
+
+    // 理由の取り違え。
+    expect(readRevisionProposal(proposal, { ...input, reason: '別の依頼の理由' })).toBeNull()
+    // 文脈の取り違え：旅行前、報告の種類（模擬／実際）、報告内容。
+    expect(readRevisionProposal(proposal, { ...input, context: { phase: 'planning' } })).toBeNull()
+    expect(
+      readRevisionProposal(proposal, {
+        ...input,
+        context: {
+          phase: 'on_site',
+          report: { kind: 'actual', description: '昼食店Aの臨時休業（模擬報告）' },
+        },
+      }),
+    ).toBeNull()
+    expect(
+      readRevisionProposal(proposal, {
+        ...input,
+        context: { phase: 'on_site', report: { kind: 'simulated', description: '別の出来事' } },
+      }),
+    ).toBeNull()
+    // 候補が複数あっても、1件でも食い違えば全体を拒否する。
+    expect(
+      readRevisionProposal(
+        {
+          status: 'proposed',
+          revisions: [
+            sampleRevision,
+            { ...sampleRevision, id: 'revision-other', reason: '別の理由' },
+          ],
+        },
+        input,
+      ),
+    ).toBeNull()
+  })
+
   it.each([
     ['not_queried', '2026-11-08T11:46:00+09:00'],
     ['transit_unsupported', '2026-11-08T11:46:00+09:00'],

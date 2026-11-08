@@ -3,6 +3,7 @@ import { z } from 'zod'
 import {
   KnownTravelModeSchema,
   ProposalFailureSchema,
+  RevisionContextSchema,
   ReviseTripRequestSchema,
   ReviseTripResponseSchema,
   StopSchema,
@@ -15,7 +16,7 @@ import {
   type Stop,
   type Trip,
 } from '@/domain'
-import { IdSchema } from '@/domain/primitives'
+import { IdSchema, TextSchema } from '@/domain/primitives'
 
 import { checkCandidate, retainsApprovedEvidence } from './proposal-checks'
 
@@ -154,6 +155,20 @@ export function readRevisionProposal(
     !target ||
     !modes.success ||
     !revisions.every((revision) => matchesRevisionTarget(revision, trip, target))
+  )
+    return null
+  // サーバーは依頼の理由と文脈をそのままRevisionへ写す。別の依頼の応答を取り違えていないか確かめる。
+  const reason = TextSchema.safeParse(request.reason)
+  const context = RevisionContextSchema.safeParse(request.context)
+  if (
+    !reason.success ||
+    !context.success ||
+    !revisions.every(
+      (revision) =>
+        revision.reason === reason.data &&
+        // 共通スキーマを通した値どうしを比べ、キーの順序の違いで不一致にしない。
+        JSON.stringify(revision.context) === JSON.stringify(context.data),
+    )
   )
     return null
 

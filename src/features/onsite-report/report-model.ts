@@ -15,6 +15,10 @@ export const REPORT_PRESETS = [
 
 export type PresetId = (typeof REPORT_PRESETS)[number]['id']
 
+// 報告の説明文は「プリセットの文言」か「プリセットの文言＋この区切り＋補足」。
+// 契約（RevisionContext）には種類の欄が無いため、説明文の先頭から何が起きたかを読み取れるように、形をここで固定する。
+export const NOTE_SEPARATOR = '。補足：'
+
 // 実際の現地報告と、デモ用の模擬報告。共通契約（RevisionContext）の kind とそのまま対応する。
 export type ReportKind = 'actual' | 'simulated'
 
@@ -52,19 +56,29 @@ export function fixedStops(trip: Trip): Stop[] {
 
 // 選択中の対象。選べる予定が1件だけなら最初から選択する。
 // 旅程が更新されて、選択中の予定が選べなくなった（固定された・無くなった）場合は、未選択に戻す。
-export function resolveTargetId(trip: Trip, selectedId: string): string {
+// autoSelectSingle が false のときは、選べる予定が1件だけでも選ばない（対象の選び直しを求める場合）。
+export function resolveTargetId(trip: Trip, selectedId: string, autoSelectSingle = true): string {
   const selectable = selectableStops(trip)
   if (selectable.some((stop) => stop.id === selectedId)) return selectedId
-  return selectable.length === 1 ? selectable[0].id : ''
+  return autoSelectSingle && selectable.length === 1 ? selectable[0].id : ''
 }
 
-export function initialValues(trip: Trip, initialTargetStopId?: string): ReportFormValues {
+export function initialValues(
+  trip: Trip,
+  initialTargetStopId?: string,
+  autoSelectSingle = true,
+): ReportFormValues {
   const requested =
     initialTargetStopId !== undefined &&
     selectableStops(trip).some((stop) => stop.id === initialTargetStopId)
       ? initialTargetStopId
       : ''
-  return { targetStopId: resolveTargetId(trip, requested), preset: '', note: '', kind: '' }
+  return {
+    targetStopId: resolveTargetId(trip, requested, autoSelectSingle),
+    preset: '',
+    note: '',
+    kind: '',
+  }
 }
 
 export function presetLabel(id: PresetId): string {
@@ -118,7 +132,7 @@ export function buildSubmission(trip: Trip, values: ReportFormValues): BuildResu
   }
 
   const label = presetLabel(values.preset)
-  const description = note === '' ? label : `${label}。補足：${note}`
+  const description = note === '' ? label : `${label}${NOTE_SEPARATOR}${note}`
   const reason = `現地の状況：${description}`
 
   // 送信するデータは、共通契約を通ったものだけにする（通らない場合は送らない）。

@@ -42,6 +42,9 @@ interface OnSiteReportFormProps {
   status: OnSiteReportStatus
   // 最初に選んでおく予定（固定されていない予定のときだけ使う）。
   initialTargetStopId?: string
+  // 選べる予定が1件だけのとき、それを自動で選ぶか（既定は選ぶ）。
+  // 対象の予定が変わって入力を作り直したときは false にして、利用者に対象を選び直してもらう。
+  autoSelectSingleTarget?: boolean
 }
 
 // 色はこのコンポーネントの中で完結させる（グローバルのテーマに依存しない）。
@@ -101,10 +104,11 @@ export function OnSiteReportForm({
   onSubmit,
   status,
   initialTargetStopId,
+  autoSelectSingleTarget = true,
 }: OnSiteReportFormProps) {
   const baseId = useId()
   const [values, setValues] = useState<ReportFormValues>(() =>
-    initialValues(trip, initialTargetStopId),
+    initialValues(trip, initialTargetStopId, autoSelectSingleTarget),
   )
   const [errors, setErrors] = useState<ReportFormErrors>({})
   const [lastTripId, setLastTripId] = useState(trip.id)
@@ -120,7 +124,7 @@ export function OnSiteReportForm({
   // 別の旅程になったら、前の旅程への入力と案内を消す（描画中の状態調整）。
   if (trip.id !== lastTripId) {
     setLastTripId(trip.id)
-    setValues(initialValues(trip, initialTargetStopId))
+    setValues(initialValues(trip, initialTargetStopId, autoSelectSingleTarget))
     setErrors({})
   }
 
@@ -134,7 +138,7 @@ export function OnSiteReportForm({
   const selectable = selectableStops(trip)
   const fixed = fixedStops(trip)
   // 選べる予定が1件だけなら最初から選択する。選べなくなった予定は未選択に戻す。
-  const targetStopId = resolveTargetId(trip, values.targetStopId)
+  const targetStopId = resolveTargetId(trip, values.targetStopId, autoSelectSingleTarget)
   const current: ReportFormValues = { ...values, targetStopId }
   const count = errorCount(errors)
 

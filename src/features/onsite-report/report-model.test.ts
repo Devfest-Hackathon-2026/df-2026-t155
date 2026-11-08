@@ -57,6 +57,14 @@ describe('対象にできる予定', () => {
     expect(resolveTargetId(sampleTrip, 'stop-morning')).toBe(LUNCH)
     expect(resolveTargetId(allFixedTrip, LUNCH)).toBe('')
   })
+
+  it('自動選択を止めると、選べる予定が1件だけでも未選択のまま（対象の選び直しを求める）', () => {
+    expect(initialValues(sampleTrip, undefined, false).targetStopId).toBe('')
+    expect(resolveTargetId(sampleTrip, 'stop-morning', false)).toBe('')
+    // 利用者が選んだ（選べる）予定は、そのまま使う。
+    expect(resolveTargetId(sampleTrip, LUNCH, false)).toBe(LUNCH)
+    expect(initialValues(sampleTrip, LUNCH, false).targetStopId).toBe(LUNCH)
+  })
 })
 
 describe('送信データの作成', () => {
