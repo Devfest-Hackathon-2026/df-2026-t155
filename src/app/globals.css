@@ -293,6 +293,208 @@ body:has(main [data-flow-header]:not([hidden] *)) main {
     radial-gradient(circle at left 26%, transparent 5px, #000 5.5px),
     radial-gradient(circle at left 74%, transparent 5px, #000 5.5px);
   mask-composite: intersect;
+  flex-wrap: wrap;
+}
+
+/* Base structure remains available to RouteMap recovery views outside the ticket paper. */
+.gt-itinerary-stop-card {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: stretch;
+  border: 1px solid var(--gt-rule);
+  border-radius: 8px;
+  background-color: var(--gt-paper);
+  color: var(--gt-ink);
+}
+
+.gt-itinerary-stop-content {
+  min-width: 0;
+  flex: 1 1 0%;
+  padding: 12px 14px;
+}
+
+.gt-itinerary-stub {
+  display: none;
+}
+
+/* Ticket styling is confined to the real itinerary route, not shared route previews. */
+.gt-itinerary-route {
+  --gt-itinerary-paper: #fbf8f1;
+  --gt-itinerary-rule: #6b6152;
+  --gt-itinerary-pattern: rgb(107 97 82 / 7%);
+  --gt-itinerary-perforation: rgb(107 97 82 / 45%);
+}
+
+.gt-itinerary-route .gt-itinerary-stop-card {
+  border-color: var(--gt-itinerary-rule);
+  background-color: var(--gt-itinerary-paper);
+  background-image:
+    repeating-linear-gradient(135deg, var(--gt-itinerary-pattern) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(45deg, var(--gt-itinerary-pattern) 0 1px, transparent 1px 7px);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 14%),
+    0 5px 12px rgb(0 0 0 / 6%);
+}
+
+.gt-itinerary-route .gt-itinerary-stop-card[data-kind='meal'] {
+  --gt-itinerary-paper: #f6ece4;
+  --gt-itinerary-rule: #9a5f45;
+  --gt-itinerary-pattern: rgb(154 95 69 / 8%);
+  --gt-itinerary-perforation: rgb(154 95 69 / 45%);
+  border-left: 6px solid var(--gt-line-strong);
+}
+
+.gt-itinerary-route .gt-food-ticket {
+  mask-image: none;
+}
+
+.gt-itinerary-route .gt-itinerary-stop-card:focus-visible {
+  outline: 2px solid var(--gt-preview);
+  outline-offset: 2px;
+}
+
+.gt-itinerary-route .gt-itinerary-stub {
+  display: flex;
+  width: 56px;
+  flex: 0 0 56px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border-left: 1.5px dashed var(--gt-itinerary-perforation);
+  padding: 8px 4px;
+  color: var(--gt-muted);
+  text-align: center;
+}
+
+.gt-itinerary-route .gt-itinerary-stub-number {
+  color: var(--gt-ink);
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.gt-itinerary-route .gt-itinerary-ticket-action {
+  width: calc(100% - 28px);
+  flex: 0 0 calc(100% - 28px);
+  margin-inline: 14px;
+  border-top: 1.5px dashed var(--gt-itinerary-perforation);
+}
+
+/* The route view is the scope marker so Home and revision previews keep their own chrome. */
+body:has(main .gt-itinerary-route:not([hidden] *)) > header {
+  background: #202823;
+  color: #fff;
+}
+
+body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand {
+  min-height: 74px;
+}
+
+body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand a {
+  position: relative;
+  width: 164px;
+  height: 58px;
+  overflow: hidden;
+  color: #fff;
+}
+
+body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand a > span {
+  display: none;
+}
+
+body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand a::before {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 56px;
+  height: 52px;
+  background-image: url('/brand/groundtrip-logo.png');
+  background-repeat: no-repeat;
+  background-position: -21px -3px;
+  background-size: 96px 77px;
+  content: '';
+}
+
+body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand a::after {
+  position: absolute;
+  top: 50%;
+  left: 60px;
+  color: #fff;
+  content: 'GroundTrip';
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.1;
+  transform: translateY(-50%);
+}
+
+body:has(main .gt-itinerary-route:not([hidden] *)) > header > div {
+  border-bottom: 3px solid #c94e31;
+}
+
+body:has(main .gt-itinerary-route:not([hidden] *)) .gt-journey--before {
+  gap: 0.75rem;
+}
+
+.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) [data-flow-header='journey'],
+.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-itinerary-title {
+  background: #202823;
+  border-image: conic-gradient(#202823 0 0) fill 0 / 0 / 0 100vw;
+  color: #fff;
+}
+
+.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) [data-flow-header='journey'] {
+  min-height: 48px;
+  padding-block: 6px;
+}
+
+.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-itinerary-title {
+  margin-top: -0.75rem;
+  padding: 0 0 12px;
+}
+
+.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-itinerary-title > p {
+  color: rgb(255 255 255 / 76%);
+}
+
+.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-mode-switch::before {
+  border-color: rgb(255 255 255 / 75%);
+}
+
+.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-mode-switch button {
+  color: #fff;
+}
+
+.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-mode-switch button span {
+  color: #fff;
+}
+
+.gt-journey--before:has(.gt-itinerary-route:not([hidden] *))
+  .gt-mode-switch
+  button[aria-pressed='true']
+  span {
+  background: #fff;
+  color: #202823;
+}
+
+.gt-itinerary-route .gt-sheet {
+  border-color: var(--gt-itinerary-rule);
+  background-color: var(--gt-itinerary-paper);
+  background-image:
+    repeating-linear-gradient(135deg, var(--gt-itinerary-pattern) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(45deg, var(--gt-itinerary-pattern) 0 1px, transparent 1px 7px);
+}
+
+.gt-itinerary-route .gt-sheet [data-sheet-handle] > span {
+  background: var(--gt-itinerary-rule);
+  opacity: 0.48;
+}
+
+.gt-itinerary-route .gt-sheet [data-sheet-scroll] > div:first-child {
+  border-bottom: 1px dashed var(--gt-itinerary-perforation);
+  padding-bottom: 0.5rem;
 }
 
 .gt-mode-switch::before {

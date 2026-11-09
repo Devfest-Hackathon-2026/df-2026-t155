@@ -191,6 +191,7 @@ function StopDetailsCue() {
 
 function StopCard({
   stop,
+  index,
   meta,
   kind,
   selected,
@@ -198,6 +199,7 @@ function StopCard({
   onRevise,
 }: {
   stop: Stop
+  index: number
   meta: RouteStopMeta
   kind: StopKind
   selected?: boolean
@@ -223,43 +225,50 @@ function StopCard({
     : {}
   // チケットにするかは、予定の「種類」だけで決める（食事・要予約）。固定かどうかでは変えない。
   const isTicket = kind === 'meal' || kind === 'reserved'
+  const number = index + 1
 
   if (!isTicket) {
     return (
       <Card
         {...buttonProps}
         data-variant="station"
-        className={`block min-h-11 w-full rounded-lg text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview ${selectedRing}`}
+        data-kind={kind}
+        className={`gt-itinerary-stop-card gt-itinerary-stop-card--station min-h-11 text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview ${selectedRing}`}
       >
-        <span aria-hidden="true" className="block text-xs font-semibold text-gt-muted">
-          {stop.plannedStartTime}
+        <span className="gt-itinerary-stop-content">
+          <span aria-hidden="true" className="block text-lg font-semibold text-gt-muted">
+            {stop.plannedStartTime}
+          </span>
+          <span className="sr-only">
+            {stop.plannedStartTime}〜{endTime(stop)}・{stop.durationMinutes}分
+          </span>
+          <span className="block text-xl leading-tight font-bold wrap-anywhere">{stop.name}</span>
+          <span className="mt-1.5 flex flex-wrap items-center gap-2">
+            {stop.isFixed && <FixedChip />}
+            <Evidence stop={stop} />
+          </span>
+          {onSelect && <StopDetailsCue />}
         </span>
-        <span className="sr-only">
-          {stop.plannedStartTime}〜{endTime(stop)}・{stop.durationMinutes}分
-        </span>
-        <span className="block text-xl leading-tight font-bold wrap-anywhere">{stop.name}</span>
-        <span className="mt-1.5 flex flex-wrap items-center gap-2">
-          {stop.isFixed && <FixedChip />}
-          <Evidence stop={stop} />
-        </span>
-        {onSelect && <StopDetailsCue />}
+        <TicketStub index={number} isFixed={stop.isFixed} />
       </Card>
     )
   }
 
   return (
     <div
-      className={`gt-food-ticket relative rounded-[14px] border border-gt-rule border-l-[6px] border-l-gt-line bg-gt-paper text-left ${selectedRing}`}
+      data-variant="ticket"
+      data-kind={kind}
+      className={`gt-food-ticket gt-itinerary-stop-card ${selectedRing}`}
     >
       <Card
         {...buttonProps}
         data-variant="ticket"
-        className="block w-full rounded-[13px] px-3.5 py-2.5 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gt-preview"
+        className="gt-itinerary-stop-content block w-full rounded-[13px] text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gt-preview"
       >
         <span className="flex flex-wrap items-center justify-between gap-x-2">
           <span className="text-lg leading-tight font-bold">{stop.plannedStartTime}</span>
-          <span className="text-[10px] font-bold tracking-wide text-gt-line-strong">
-            {kind === 'meal' ? 'FOOD TICKET' : 'RESERVATION'}
+          <span className="rounded-sm border border-current bg-white px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-gt-line-strong">
+            {stopKindLabels[kind]}
           </span>
         </span>
         <span className="mt-1.5 block text-base leading-snug font-bold wrap-anywhere">
@@ -278,8 +287,9 @@ function StopCard({
         </span>
         {onSelect && <StopDetailsCue />}
       </Card>
+      <TicketStub index={number} isFixed={stop.isFixed} />
       {onRevise && (
-        <div className="mx-3.5 border-t border-gt-rule">
+        <div className="gt-itinerary-ticket-action">
           <button
             id={reviseButtonId(stop.id)}
             type="button"
@@ -291,6 +301,16 @@ function StopCard({
         </div>
       )}
     </div>
+  )
+}
+
+function TicketStub({ index, isFixed }: { index: number; isFixed: boolean }) {
+  return (
+    <span aria-hidden="true" className="gt-itinerary-stub">
+      <span className="text-[10px] font-semibold">予定</span>
+      <span className="gt-itinerary-stub-number">{index}</span>
+      {isFixed && <span className="text-[10px] font-semibold">固定</span>}
+    </span>
   )
 }
 
@@ -394,6 +414,7 @@ export function RouteMap({
               ) : (
                 <StopCard
                   stop={stop}
+                  index={index}
                   meta={stopMeta}
                   kind={kind}
                   selected={selectedStopId === stop.id}

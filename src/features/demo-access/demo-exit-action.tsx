@@ -46,7 +46,7 @@ export function DemoExitAction() {
       <button
         type="button"
         aria-disabled={phase === 'pending'}
-        className="col-start-2 row-start-1 my-3 min-h-11 self-start rounded-lg border border-gt-muted bg-gt-paper px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview aria-disabled:opacity-60"
+        className="col-start-2 row-start-1 my-3 min-h-11 self-start rounded-lg border border-gt-muted bg-gt-paper px-3 py-2 text-sm font-medium text-gt-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview aria-disabled:opacity-60"
         onClick={handleExit}
       >
         デモを終了する

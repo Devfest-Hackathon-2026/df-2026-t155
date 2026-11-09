@@ -141,7 +141,7 @@ test('写真テーマから下書きを続け、Back／Forwardと3つのホー�
 test('利用規約からホームへ進み、旅程とホームをBack／Forwardで往復して再開できる', async ({
   context,
   page,
-}) => {
+}, testInfo) => {
   const saveAttempts = await mockJourney(context, [], undefined, true)
   await page.goto('/access#ticket=' + 'a'.repeat(43))
   await page.waitForURL('/welcome')
@@ -172,6 +172,7 @@ test('利用規約からホームへ進み、旅程とホームをBack／Forward
   await expect(sessionStatus.getByRole('note')).toContainText(
     'デモの旅程・学び・利用枠は共有されます',
   )
+  await page.screenshot({ path: testInfo.outputPath('itinerary.png'), fullPage: true })
   const historyMarker = await page.evaluate(() => JSON.stringify(history.state.groundTripJourney))
   expect(historyMarker).not.toContain(trip.id)
   expect(historyMarker).not.toContain('京都市')
@@ -228,4 +229,61 @@ test('保存済み旅程の最終予定と振り返りを往復し、入力と�
   await expect(feedback).toHaveValue('展示が印象に残った')
   expect(saveAttempts()).toBe(0)
   await expect(page).toHaveURL('/')
+})
+
+test('候補API失敗後も元の予定カードを紙面表示し、適用しない', async ({ context, page }) => {
+  const saveAttempts = await mockJourney(context, [trip])
+  let revisionRequests = 0
+  let applyRequests = 0
+  await context.route('**/api/trips/revise', (route) => {
+    revisionRequests += 1
+    return route.fulfill({ status: 503, json: {} })
+  })
+  await context.route('**/api/trips/*/revisions/*/apply', (route) => {
+    applyRequests += 1
+    return route.fulfill({ status: 500, json: {} })
+  })
+
+  await page.goto('/access#ticket=' + 'a'.repeat(43))
+  await page.waitForURL('/welcome')
+  await page.getByRole('button', { name: '旅をはじめる' }).click()
+  await page.waitForURL('/')
+  await page.getByRole('button', { name: 'しおり' }).click()
+  await page.getByRole('button', { name: '保存した旅程で旅行を続ける' }).click()
+  await page.getByRole('button').filter({ hasText: trip.region }).click()
+
+  const target = trip.stops[1]
+  await page
+    .getByRole('button', {
+      name: new RegExp(`${target.plannedStartTime}から${target.durationMinutes}分 ${target.name}`),
+    })
+    .click()
+  const sheet = page.getByRole('dialog')
+  await sheet.getByRole('button', { name: 'この予定だけ変更' }).click()
+  await page.getByRole('button', { name: 'こだわらない（おまかせで探す）' }).click()
+
+  const alert = page.getByRole('alert').filter({ hasText: '元の旅程を表示しています。' })
+  await expect(alert).toContainText('元の旅程を表示しています。')
+  expect(revisionRequests).toBe(1)
+  expect(applyRequests).toBe(0)
+  expect(saveAttempts()).toBe(0)
+
+  const route = page.locator('ol[aria-label="旅程の路線図"]:visible')
+  await expect(route).toHaveCount(1)
+  const cards = route.locator('.gt-itinerary-stop-card')
+  await expect(cards).toHaveCount(trip.stops.length)
+  await expect(cards.nth(0)).toContainText(trip.stops[0].name)
+  await expect(cards.nth(0)).toContainText('固定予定')
+  await expect(cards.nth(1)).toContainText(target.name)
+  const visualStyle = await cards.nth(0).evaluate((element) => {
+    const style = getComputedStyle(element)
+    return {
+      display: style.display,
+      borderStyle: style.borderStyle,
+      backgroundColor: style.backgroundColor,
+    }
+  })
+  expect(visualStyle.display).toBe('flex')
+  expect(visualStyle.borderStyle).not.toBe('none')
+  expect(visualStyle.backgroundColor).not.toBe('rgba(0, 0, 0, 0)')
 })

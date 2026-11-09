@@ -121,7 +121,7 @@ export function TripRouteView({
 
   return (
     <div
-      className="text-gt-ink"
+      className="gt-itinerary-route text-gt-ink"
       style={{ paddingBottom: selected ? 'min(60dvh, 30rem)' : undefined }}
     >
       {mock && (

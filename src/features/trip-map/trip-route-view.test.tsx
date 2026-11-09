@@ -22,6 +22,28 @@ const sheet = () => screen.getByRole('dialog')
 const routeText = () => screen.getByRole('list', { name: '旅程の路線図' }).textContent ?? ''
 
 describe('旅程の路線図: 表示', () => {
+  it('長い予定名を紙面内で折り返し、切符意匠は予定種別と固定・未照合を正確に示す', () => {
+    const longName = '歴史資料と庭園をゆっくり巡るための長い予定名'.repeat(3)
+    const longTrip = TripSchema.parse({
+      ...sampleTrip,
+      stops: sampleTrip.stops.map((stop, index) =>
+        index === 0 ? { ...stop, name: longName, isFixed: true, evidence: [] } : stop,
+      ),
+    })
+    render(<TripRouteView trip={longTrip} meta={sampleRouteMeta} />)
+
+    const route = screen.getByRole('list', { name: '旅程の路線図' })
+    const longStop = screen.getByRole('button', { name: new RegExp(longName) })
+    expect(longStop.querySelector('.wrap-anywhere')?.textContent).toContain(longName)
+    expect(route.textContent).toContain(longName)
+    expect(longStop.textContent).toContain('固定予定')
+    expect(longStop.textContent).toContain('未照合')
+    expect(screen.queryByText('FOOD TICKET')).toBeNull()
+    expect(screen.queryByText('RESERVATION')).toBeNull()
+    expect(screen.getByRole('button', { name: /昼食店A/ }).textContent).toContain('食事')
+    expect(screen.getByRole('button', { name: /14時の予約展示/ }).textContent).toContain('要予約')
+  })
+
   it('地点を順番に、予定時刻・終了時刻・滞在時間とともに表示する', () => {
     renderView()
     const items = within(screen.getByRole('list', { name: '旅程の路線図' })).getAllByRole(

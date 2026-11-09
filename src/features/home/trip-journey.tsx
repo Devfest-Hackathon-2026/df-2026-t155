@@ -258,7 +258,9 @@ export function TripJourney({
   )
 
   return (
-    <div className="gt-journey flex flex-col gap-4">
+    <div
+      className={`gt-journey ${screen === 'before' ? 'gt-journey--before' : ''} flex flex-col gap-4`}
+    >
       {!reflectionOpen && (
         <header
           data-flow-header="journey"
@@ -289,7 +291,9 @@ export function TripJourney({
         </header>
       )}
 
-      <div className="gt-journey-title">
+      <div
+        className={`gt-journey-title ${screen === 'before' ? 'gt-itinerary-title gt-header-bleed' : ''}`}
+      >
         <h1 ref={heading} tabIndex={-1} className={reflectionOpen ? 'gt-screen-title' : 'sr-only'}>
           {reflectionOpen
             ? '振り返り'
