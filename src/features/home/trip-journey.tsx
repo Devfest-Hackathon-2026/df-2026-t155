@@ -11,6 +11,8 @@ import {
 } from '@/features/onsite-flow/onsite-persistence'
 import { sameSavedTrip } from '@/features/onsite-flow/saved-snapshot'
 import { ReflectionFlow } from '@/features/reflection-flow/reflection-flow'
+import { RevisionRouteView } from '@/features/revision-review/revision-route-view'
+import { readUnresolvedApply } from '@/features/revision-review/unresolved-apply'
 import {
   requestRevisions,
   type ApplyRevision,
@@ -27,6 +29,8 @@ import {
 interface TripJourneyProps {
   // いま画面に出している旅程（固定の切り替えや部分修正を反映済み）。
   trip: Trip
+  routeTrip?: Trip
+  adoptRouteChange?: (changed: Trip) => Trip
   // 旅程が変わったとき、画面へ採用する旅程を決める（前回の照合結果の取り下げを含む）。
   adoptTripChange: (changed: Trip) => Trip
   // この旅程を作った認証セッション。認証を確認できない間は null。
@@ -100,6 +104,8 @@ export function createScopedRevisions(
 // 認証セッションが変わると、親（HomePlanner）がこの部分ごと作り直す（進行中の報告・保存・振り返りは残らない）。
 export function TripJourney({
   trip,
+  routeTrip,
+  adoptRouteChange,
   adoptTripChange,
   scope,
   generateRevisions,
@@ -126,13 +132,32 @@ export function TripJourney({
   const [reflectionOpen, setReflectionOpen] = useState(Boolean(initialSavedTrip))
 
   // 候補生成の処理は、認証確認中に現在の別UIDのBearerへフォールバックしない。
-  const revisions = useMemo(
-    () => createScopedRevisions(scope, generateRevisions),
-    [generateRevisions, scope],
-  )
+  const revisions = useMemo(() => {
+    const generate = createScopedRevisions(scope, generateRevisions)
+    return ((request, signal) => {
+      if (readUnresolvedApply(scope?.uid, request.trip.id).status !== 'clear') {
+        return Promise.resolve({ status: 'unavailable' as const })
+      }
+      return generate(request, signal)
+    }) satisfies GenerateRevisions
+  }, [generateRevisions, scope])
 
   return (
     <div className="space-y-8">
+      <RevisionRouteView
+        trip={routeTrip ?? trip}
+        ownerUid={scope?.uid}
+        generate={isSavedCurrent ? revisions : undefined}
+        apply={isSavedCurrent ? (applyRevision ?? persistence?.apply) : undefined}
+        lockManagedByApply={!applyRevision}
+        loadLatestTrip={persistence?.loadLatestTrip}
+        loadAppliedRevision={persistence?.loadAppliedRevision}
+        adoptTripChange={(changed) => {
+          const adopted = (adoptRouteChange ?? adoptTripChange)(changed)
+          if (changed.version !== trip.version) setSavedTrip(adopted)
+          return adopted
+        }}
+      />
       <TripSavePanel
         key={`${trip.id}:${savedTrip?.version ?? 'new'}`}
         initialSavedTrip={isSavedCurrent ? (savedTrip ?? undefined) : undefined}

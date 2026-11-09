@@ -7,6 +7,10 @@ import { LearningSchema, TripSchema, type Learning, type Stop, type Trip } from 
 import { sampleApprovedLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 import type { ApplyRevision, GenerateRevisions } from '@/features/revision-review/api-client'
 import {
+  markApplyUnresolved,
+  readUnresolvedApply,
+} from '@/features/revision-review/unresolved-apply'
+import {
   SaveRevisionBodySchema,
   SavedRevisionSchema,
   type VersionedLearning,
@@ -286,6 +290,62 @@ afterEach(() => {
 })
 
 describe('トップ画面の通し導線：生成→照合→保存→現地報告→修正の採用', () => {
+  it('保存後は旅行前の予定を部分修正できる', async () => {
+    setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await saveTripFromScreen(user)
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
+    await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    await screen.findByRole('table')
+    expect(generateRevisions.mock.calls[0][0].context).toEqual({ phase: 'planning' })
+    await user.click(approve())
+    await waitFor(() => expect(applyRevision).toHaveBeenCalledTimes(1))
+    expect(
+      within(await screen.findByRole('list', { name: '旅程の路線図' })).getByText(after.name),
+    ).toBeTruthy()
+  })
+  it('旅行前の候補保存が失敗したら適用せず、ロックを残さない', async () => {
+    const { backend } = setup()
+    const path = `/api/trips/${generatedTrip.id}/revisions`
+    backend.intercept(
+      (call) => call.method === 'POST' && call.path === path,
+      () => json({ message: 'unavailable' }, 503),
+    )
+    const user = userEvent.setup()
+    render(<HomePlanner generateRevisions={generateRevisions} learningPickerDelayMs={0} />)
+    await generate(user)
+    await saveTripFromScreen(user)
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
+    await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    await screen.findByRole('table')
+    await user.click(approve())
+    await screen.findByText(/候補の保存結果を確認できません/)
+    expect(readUnresolvedApply(A, generatedTrip.id)).toEqual({ status: 'clear' })
+    expect(backend.calls.some((call) => call.path.endsWith('/apply'))).toBe(false)
+  })
+  it('同じタブで未確定の適用が生じたら旅行前と現地の両方を開始しない', async () => {
+    setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await saveTripFromScreen(user)
+    markApplyUnresolved(A, generatedTrip.id, generatedTrip.version, sampleRevision.id)
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
+    expect(screen.queryByLabelText('修正理由（必須）')).toBeNull()
+    await user.click(screen.getByRole('button', { name: '閉じる' }))
+    await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
+    await user.click(screen.getByRole('button', { name: '予定が変わった？この予定だけ変更する' }))
+    expect(screen.queryByRole('heading', { name: '現地の状況を報告する' })).toBeNull()
+    expect(generateRevisions).not.toHaveBeenCalled()
+    window.localStorage.clear()
+  })
   it('採用した部分修正は旅程を変え、前回の照合結果を取り下げて「変更後は未確認」に戻す', async () => {
     const { backend, state } = setup()
     const user = userEvent.setup()
@@ -331,118 +391,131 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     expect(state.verifyCalls).toBe(1)
   })
 
-  it('既定の保存・適用APIで承認し、サーバー確定の旅程と振り返りを表示する', async () => {
-    const { backend, fetchFn } = setup()
-    const revisionPath = `/api/trips/${generatedTrip.id}/revisions`
-    const applyPath = `${revisionPath}/${sampleRevision.id}/apply`
-    backend.intercept(
-      (call) => call.method === 'POST' && call.path === revisionPath,
-      ({ call }) => {
-        const candidate = SaveRevisionBodySchema.parse(call.body)
-        delete candidate.travelModes
-        delete candidate.proposalToken
-        return json(
-          {
-            revision: {
+  it.each(['planning', 'on_site'] as const)(
+    '%s: 既定の保存・適用APIで承認し、サーバー確定の旅程と振り返りを表示する',
+    async (phase) => {
+      const { backend, fetchFn } = setup()
+      const revisionPath = `/api/trips/${generatedTrip.id}/revisions`
+      const applyPath = `${revisionPath}/${sampleRevision.id}/apply`
+      backend.intercept(
+        (call) => call.method === 'POST' && call.path === revisionPath,
+        ({ call }) => {
+          const candidate = SaveRevisionBodySchema.parse(call.body)
+          delete candidate.travelModes
+          delete candidate.proposalToken
+          return json(
+            {
+              revision: {
+                ...candidate,
+                impactSummary: '保存した候補です。現在の影響は再確認が必要です。',
+                constraintCheck: { status: 'not_checked', explanation: '制約は再確認が必要です。' },
+                diff: {
+                  before: { ...candidate.diff.before, evidence: [] },
+                  after: { ...candidate.diff.after, evidence: [] },
+                },
+              },
+            },
+            201,
+          )
+        },
+      )
+      backend.intercept(
+        (call) => call.method === 'POST' && call.path === applyPath,
+        ({ call }) => {
+          expect(call.body).toEqual({ expectedVersion: 0, confirm: true })
+          const proposal = generateRevisions.mock.results.at(-1)?.value
+          return Promise.resolve(proposal).then((result) => {
+            if (!result || result.status !== 'proposed') throw new Error('missing candidate')
+            const candidate = result.revisions[0]
+            const original = backend.account(A).trips[0]
+            const next = {
+              ...original,
+              version: 1,
+              stops: original.stops.map((stop) =>
+                stop.id === candidate.targetStopId ? candidate.diff.after : stop,
+              ),
+            }
+            const approved = {
               ...candidate,
-              impactSummary: '保存した候補です。現在の影響は再確認が必要です。',
+              impactSummary: '適用済みの変更です。現在の影響は再確認が必要です。',
               constraintCheck: { status: 'not_checked', explanation: '制約は再確認が必要です。' },
+              approval: { status: 'approved', decidedAt: '2026-11-08T12:00:00+09:00' },
               diff: {
                 before: { ...candidate.diff.before, evidence: [] },
                 after: { ...candidate.diff.after, evidence: [] },
               },
-            },
-          },
-          201,
-        )
-      },
-    )
-    backend.intercept(
-      (call) => call.method === 'POST' && call.path === applyPath,
-      ({ call }) => {
-        expect(call.body).toEqual({ expectedVersion: 0, confirm: true })
-        const proposal = generateRevisions.mock.results.at(-1)?.value
-        return Promise.resolve(proposal).then((result) => {
-          if (!result || result.status !== 'proposed') throw new Error('missing candidate')
-          const candidate = result.revisions[0]
-          const original = backend.account(A).trips[0]
-          const next = {
-            ...original,
-            version: 1,
-            stops: original.stops.map((stop) =>
-              stop.id === candidate.targetStopId ? candidate.diff.after : stop,
-            ),
-          }
-          const approved = {
-            ...candidate,
-            impactSummary: '適用済みの変更です。現在の影響は再確認が必要です。',
-            constraintCheck: { status: 'not_checked', explanation: '制約は再確認が必要です。' },
-            approval: { status: 'approved', decidedAt: '2026-11-08T12:00:00+09:00' },
-            diff: {
-              before: { ...candidate.diff.before, evidence: [] },
-              after: { ...candidate.diff.after, evidence: [] },
-            },
-          }
-          backend.account(A).trips[0] = {
-            ...next,
-            stops: next.stops.map((stop) => ({ ...stop, evidence: [] })),
-          }
-          backend.account(A).revisions.push(SavedRevisionSchema.parse(approved))
-          return json({
-            status: 'applied',
-            appliedTripVersion: 1,
-            trip: next,
-            revision: approved,
-            verification: 'fresh',
+            }
+            backend.account(A).trips[0] = {
+              ...next,
+              stops: next.stops.map((stop) => ({ ...stop, evidence: [] })),
+            }
+            backend.account(A).revisions.push(SavedRevisionSchema.parse(approved))
+            return json({
+              status: 'applied',
+              appliedTripVersion: 1,
+              trip: next,
+              revision: approved,
+              verification: 'fresh',
+            })
           })
-        })
-      },
-    )
-    const user = userEvent.setup()
-    render(<HomePlanner generateRevisions={generateRevisions} learningPickerDelayMs={0} />)
-    await generate(user)
-    await verify(user)
-    await saveTripFromScreen(user)
-    await reportAndOpenCandidates(user, 'actual')
-    expect(backend.calls.filter((call) => call.path === applyPath)).toHaveLength(0)
-    await user.click(approve())
-    await waitFor(() =>
-      expect(backend.calls.filter((call) => call.path === applyPath)).toHaveLength(1),
-    )
-    await waitFor(() =>
-      expect(
-        within(screen.getAllByRole('list', { name: '旅程の路線図' })[0]).getByText(after.name),
-      ).toBeTruthy(),
-    )
-    const candidateCall = backend.calls.find(
-      (call) => call.path === revisionPath && call.method === 'POST',
-    )!
-    expect(SaveRevisionBodySchema.parse(candidateCall.body)).toMatchObject({
-      travelModes: ['walk'],
-      proposalToken: expect.any(String),
-    })
-    expect(candidateCall.uid).toBe(A)
-    expect(backend.calls.find((call) => call.path === applyPath)?.uid).toBe(A)
-    for (const path of [revisionPath, applyPath]) {
-      const call = fetchFn.mock.calls.find(
-        ([url, init]) => String(url) === path && init?.method === 'POST',
+        },
+      )
+      const user = userEvent.setup()
+      render(<HomePlanner generateRevisions={generateRevisions} learningPickerDelayMs={0} />)
+      await generate(user)
+      await verify(user)
+      await saveTripFromScreen(user)
+      if (phase === 'planning') {
+        await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+        await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
+        await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
+        await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+        await screen.findByRole('table')
+        expect(generateRevisions.mock.calls[0][0].context).toEqual({ phase: 'planning' })
+      } else {
+        await reportAndOpenCandidates(user, 'actual')
+      }
+      expect(backend.calls.filter((call) => call.path === applyPath)).toHaveLength(0)
+      await user.click(approve())
+      await waitFor(() =>
+        expect(backend.calls.filter((call) => call.path === applyPath)).toHaveLength(1),
+      )
+      await waitFor(() =>
+        expect(
+          within(screen.getAllByRole('list', { name: '旅程の路線図' })[0]).getByText(after.name),
+        ).toBeTruthy(),
+      )
+      const candidateCall = backend.calls.find(
+        (call) => call.path === revisionPath && call.method === 'POST',
       )!
-      const headers = new Headers(call[1]?.headers)
-      expect(headers.get('Authorization')).toContain(A)
-      expect(headers.get('X-Firebase-AppCheck')).toBeTruthy()
-    }
-    expect(backend.account(A).trips[0].stops[0]).toEqual(
-      expect.objectContaining({ id: morning.id, isFixed: true }),
-    )
-    expect(backend.account(A).trips[0].stops[2]).toEqual(
-      expect.objectContaining({ id: exhibition.id, isFixed: true }),
-    )
-    await waitFor(() =>
-      expect(
-        backend.calls.filter((call) => call.path === revisionPath && call.method === 'GET').length,
-      ).toBeGreaterThan(1),
-    )
-  })
+      expect(SaveRevisionBodySchema.parse(candidateCall.body)).toMatchObject({
+        travelModes: ['walk'],
+        proposalToken: expect.any(String),
+      })
+      expect(candidateCall.uid).toBe(A)
+      expect(backend.calls.find((call) => call.path === applyPath)?.uid).toBe(A)
+      for (const path of [revisionPath, applyPath]) {
+        const call = fetchFn.mock.calls.find(
+          ([url, init]) => String(url) === path && init?.method === 'POST',
+        )!
+        const headers = new Headers(call[1]?.headers)
+        expect(headers.get('Authorization')).toContain(A)
+        expect(headers.get('X-Firebase-AppCheck')).toBeTruthy()
+      }
+      expect(backend.account(A).trips[0].stops[0]).toEqual(
+        expect.objectContaining({ id: morning.id, isFixed: true }),
+      )
+      expect(backend.account(A).trips[0].stops[2]).toEqual(
+        expect.objectContaining({ id: exhibition.id, isFixed: true }),
+      )
+      await waitFor(() =>
+        expect(
+          backend.calls.filter((call) => call.path === revisionPath && call.method === 'GET')
+            .length,
+        ).toBeGreaterThan(1),
+      )
+    },
+  )
   it('デモ用の模擬報告は、候補を比べられても旅程に適用せず、照合も取り下げない', async () => {
     setup()
     const user = userEvent.setup()
@@ -471,6 +544,9 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     render(<HomePlanner generateRevisions={generateRevisions} learningPickerDelayMs={0} />)
     await generate(user)
     await verify(user)
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    expect(screen.queryByRole('button', { name: 'この予定だけ変更' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: '閉じる' }))
     await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
     expect(
       screen.queryByRole('button', { name: '予定が変わった？この予定だけ変更する' }),

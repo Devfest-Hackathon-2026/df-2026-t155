@@ -139,9 +139,16 @@ export function HomePlanner({
               key={`${trip.id}:${generationSeq}`}
               trip={trip}
               verify={verify ?? verifyTripWithProtectedApi}
-              renderAfter={({ trip: current, adoptExternalChange }) => (
+              renderContent={({
+                trip: current,
+                adoptExternalChange,
+                routeTrip,
+                adoptRouteChange,
+              }) => (
                 <TripJourney
                   trip={current}
+                  routeTrip={routeTrip}
+                  adoptRouteChange={adoptRouteChange}
                   adoptTripChange={adoptExternalChange}
                   scope={authScope}
                   generateRevisions={generateRevisions}
@@ -159,9 +166,11 @@ export function HomePlanner({
           key={`saved:${selected.id}:${choiceSeq}`}
           trip={selected}
           verify={verify ?? verifyTripWithProtectedApi}
-          renderAfter={({ trip: current, adoptExternalChange }) => (
+          renderContent={({ trip: current, adoptExternalChange, routeTrip, adoptRouteChange }) => (
             <TripJourney
               trip={current}
+              routeTrip={routeTrip}
+              adoptRouteChange={adoptRouteChange}
               adoptTripChange={adoptExternalChange}
               scope={authScope}
               initialSavedTrip={selected}

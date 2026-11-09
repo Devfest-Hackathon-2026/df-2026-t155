@@ -53,16 +53,20 @@ export interface VerifiableTripAfterContext {
   // 路線図の中の変更と同じく、変更後の旅程に対して前回の照合結果の一部を取り下げ（変更後は未確認）、
   // 確認中の通信を止める。路線図にも採用した旅程を反映する。
   adoptExternalChange: (changed: Trip) => Trip
+  routeTrip: Trip
+  adoptRouteChange: (changed: Trip) => Trip
 }
 
 export function VerifiableTrip({
   trip: source,
   verify,
   renderAfter,
+  renderContent,
 }: {
   trip: Trip
   verify?: VerifyTrip
   renderAfter?: (context: VerifiableTripAfterContext) => ReactNode
+  renderContent?: (context: VerifiableTripAfterContext) => ReactNode
 }) {
   const [stored, setStored] = useState<View>(() => fresh(source))
   const view = stored.source === source ? stored : fresh(source)
@@ -141,8 +145,24 @@ export function VerifiableTrip({
         interrupted={view.interrupted}
         onVerify={() => void verifyNow()}
       />
-      <RevisionRouteView trip={view.prop} adoptTripChange={adoptChange} />
-      {renderAfter?.({ trip: view.current, adoptExternalChange })}
+      {renderContent ? (
+        renderContent({
+          trip: view.current,
+          adoptExternalChange,
+          routeTrip: view.prop,
+          adoptRouteChange: adoptChange,
+        })
+      ) : (
+        <>
+          <RevisionRouteView trip={view.prop} adoptTripChange={adoptChange} />
+          {renderAfter?.({
+            trip: view.current,
+            adoptExternalChange,
+            routeTrip: view.prop,
+            adoptRouteChange: adoptChange,
+          })}
+        </>
+      )}
     </div>
   )
 }

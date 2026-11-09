@@ -40,6 +40,7 @@ interface RevisionRouteViewProps {
   mock?: boolean
   generate?: GenerateRevisions
   apply?: ApplyRevision
+  lockManagedByApply?: boolean
   // 適用結果不明からの復旧には、最新の旅程と対象Revisionの承認記録の両方が必要。
   loadLatestTrip?: LoadLatestTrip
   loadAppliedRevision?: LoadAppliedRevision
@@ -55,6 +56,7 @@ export function RevisionRouteView({
   mock,
   generate,
   apply,
+  lockManagedByApply,
   loadLatestTrip,
   loadAppliedRevision,
   adoptTripChange,
@@ -317,9 +319,9 @@ export function RevisionRouteView({
             onApplyUnresolvedChange={(unresolved, revisionId) => {
               if (!ownerUid || !revisionId) throw new Error('認証状態を確認できません。')
               try {
-                if (unresolved) {
+                if (unresolved && !lockManagedByApply) {
                   markApplyUnresolved(ownerUid, session.trip.id, session.trip.version, revisionId)
-                } else {
+                } else if (!unresolved && !lockManagedByApply) {
                   clearApplyUnresolved(ownerUid, session.trip.id, revisionId)
                 }
               } finally {
@@ -328,6 +330,7 @@ export function RevisionRouteView({
               setSession((active) => active && { ...active, applyUnresolved: unresolved })
             }}
             onCancel={() => {
+              updateStoredLock()
               if (operationBlocked || session.applyUnresolved) {
                 setInterruption({ stopId: session.stopId, applyUnresolved: true })
                 setSession(null)
@@ -380,6 +383,10 @@ export function RevisionRouteView({
             onStartRevision={
               generate && !operationBlocked
                 ? (stopId) => {
+                    if (apply && readUnresolvedApply(ownerUid, sourceTrip.id).status !== 'clear') {
+                      updateStoredLock()
+                      return
+                    }
                     if (current.trip.stops.some((stop) => stop.id === stopId && !stop.isFixed)) {
                       setNotice(null)
                       setInterruption(null)
