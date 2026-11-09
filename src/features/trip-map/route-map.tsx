@@ -31,6 +31,12 @@ interface RouteMapProps {
 
 // 予定のボタンのid。詳細シートを閉じたあとのフォーカスの復帰先に使う。
 export const stopButtonId = (stopId: string) => `stop-button-${stopId}`
+export function focusRouteStop(stopId: string) {
+  const button = document.getElementById(stopButtonId(stopId))
+  button?.focus({ preventScroll: true })
+  button?.scrollIntoView?.({ block: 'center' })
+}
+
 export const reviseButtonId = (stopId: string) => `revise-button-${stopId}`
 
 // 路線図の一覧のid。選択中の予定が（親のTripの更新で）無くなったとき、フォーカスの退避先に使う。
@@ -159,6 +165,30 @@ function SegmentLabel({
   )
 }
 
+const stopDetailsLabel = '根拠・詳細を見る'
+
+function StopDetailsCue() {
+  return (
+    <span
+      aria-hidden="true"
+      className="mt-2 inline-flex items-center gap-1 text-sm font-semibold text-gt-line-strong underline underline-offset-2"
+    >
+      {stopDetailsLabel}
+      <svg
+        className="size-4 shrink-0"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <path d="m9 6 6 6-6 6" />
+      </svg>
+    </span>
+  )
+}
+
 function StopCard({
   stop,
   meta,
@@ -179,7 +209,7 @@ function StopCard({
   const evidenceLabel = worst
     ? `${evidenceSubjectLabels[worst.subject]}：${evidenceStatusLabels[worst.status]}`
     : '未照合'
-  const label = `${stop.plannedStartTime}から${stop.durationMinutes}分 ${stop.name}${stop.isFixed ? '（固定予定）' : ''}、${evidenceLabel}。詳細を開く`
+  const label = `${stop.plannedStartTime}から${stop.durationMinutes}分 ${stop.name}${stop.isFixed ? '（固定予定）' : ''}、${evidenceLabel}。${stopDetailsLabel}`
   const selectedRing = selected ? 'outline outline-[3px] outline-offset-2 outline-gt-muted' : ''
   const Card = onSelect ? 'button' : 'div'
   const buttonProps = onSelect
@@ -199,7 +229,7 @@ function StopCard({
       <Card
         {...buttonProps}
         data-variant="station"
-        className={`block min-h-11 w-full rounded-lg text-left ${selectedRing}`}
+        className={`block min-h-11 w-full rounded-lg text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview ${selectedRing}`}
       >
         <span aria-hidden="true" className="block text-xs font-semibold text-gt-muted">
           {stop.plannedStartTime}
@@ -212,6 +242,7 @@ function StopCard({
           {stop.isFixed && <FixedChip />}
           <Evidence stop={stop} />
         </span>
+        {onSelect && <StopDetailsCue />}
       </Card>
     )
   }
@@ -245,6 +276,7 @@ function StopCard({
           {stop.isFixed && <FixedChip />}
           <Evidence stop={stop} />
         </span>
+        {onSelect && <StopDetailsCue />}
       </Card>
       {onRevise && (
         <div className="mx-3.5 border-t border-gt-rule">

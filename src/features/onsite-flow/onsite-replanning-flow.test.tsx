@@ -576,7 +576,7 @@ describe('旅程が変わったあとの古い報告・比較は、元の内容�
 })
 
 describe('適用結果が不明なときは、利用者の操作では再操作を解除しない', () => {
-  it('適用の応答が届かないあいだは、承認を重ねて送れず、報告画面にも戻れない', async () => {
+  it('適用の応答待ちに進行画面へ戻れても、承認や報告を重ねて送れない', async () => {
     const user = userEvent.setup()
     const apply = vi.fn<ApplyRevision>().mockReturnValue(new Promise(() => {}))
     render(<OnSiteReplanningFlow trip={sampleTrip} generate={propose} apply={apply} />)
@@ -588,13 +588,16 @@ describe('適用結果が不明なときは、利用者の操作では再操作�
     await user.click(waiting)
     await user.click(waiting)
     expect(apply).toHaveBeenCalledTimes(1)
-    // 画面を離れて別の操作へ進む手段も、確認が終わるまでは無効。
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: '報告を見直す' }).disabled).toBe(
-      true,
-    )
+    expect(screen.queryByRole('button', { name: '報告を見直す' })).toBeNull()
     expect(screen.getByRole<HTMLButtonElement>('button', { name: '条件を見直す' }).disabled).toBe(
       true,
     )
+    await user.click(screen.getByRole('button', { name: '旅程へ戻る（適用の確認を続ける）' }))
+    expect(document.activeElement).toBe(currentHeading())
+    expect(currentStop()).toContain(sampleTrip.stops[1].name)
+    expect(screen.queryByRole('button', { name: /予定が変わった？/ })).toBeNull()
+    expect(apply.mock.calls[0][1]?.aborted).toBe(false)
+    expect(apply).toHaveBeenCalledTimes(1)
   })
 
   it('応答が失われたまま親が旅程を差し替えたら、結果不明として再計画を止め、確認する操作を出さない', async () => {

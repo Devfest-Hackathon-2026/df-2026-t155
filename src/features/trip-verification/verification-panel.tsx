@@ -35,6 +35,7 @@ interface VerificationPanelProps {
   // 確認の最中に旅程の内容が変わり、確認を中止した。次に確認を始めるまで、理由を出し続ける。
   interrupted: boolean
   onVerify: () => void
+  reviewStop?: { name: string; onFocus: () => void }
 }
 
 const subjectLabel: Record<VerifiedSubject, string> = {
@@ -138,7 +139,6 @@ function GoogleResult({ google }: { google: VerificationSummary['google'] }) {
         </ul>
         <p className="text-sm">
           件数は、施設の存在・営業時間・移動の確認項目ごとの根拠の数です（予定の数ではありません）。
-          各予定の詳細で、確認項目ごとの内訳・情報源・照合日時・理由を見られます。
         </p>
       </div>
     </GoogleMapsSourceBox>
@@ -221,6 +221,7 @@ export function VerificationPanel({
   phase,
   interrupted,
   onVerify,
+  reviewStop,
 }: VerificationPanelProps) {
   const headingId = useId()
   const verifying = phase.phase === 'verifying'
@@ -249,6 +250,36 @@ export function VerificationPanel({
       <div role="status" aria-live="polite" aria-atomic="true">
         <StatusLine status={status} verifying={verifying} failed={failure !== null} />
       </div>
+      {/* 実行中も同じ位置に残し（フォーカスを失わない）、押下は受け付けない。 */}
+      <button
+        type="button"
+        aria-disabled={verifying}
+        onClick={() => {
+          if (!verifying) onVerify()
+        }}
+        className={`min-h-12 w-full aria-disabled:cursor-progress aria-disabled:opacity-60 ${
+          reviewStop && !failure
+            ? 'gt-button-secondary'
+            : 'rounded-xl bg-gt-ink px-4 py-3 text-base font-semibold text-white'
+        }`}
+      >
+        {label}
+      </button>
+      {!verifying && reviewStop && (
+        <div className="space-y-2 rounded-xl border border-gt-rule bg-gt-bg p-3 text-sm">
+          <p className="font-semibold">予定ごとの根拠を確認</p>
+          <p>
+            「矛盾あり」や「確認できない」があれば、その予定から確認しましょう。予定の「根拠・詳細を見る」で情報源・照合日時・理由を確認できます。
+          </p>
+          <button
+            type="button"
+            className="gt-button-primary max-w-full wrap-anywhere"
+            onClick={reviewStop.onFocus}
+          >
+            「{reviewStop.name}」の予定へ
+          </button>
+        </div>
+      )}
       {verifying ? (
         <p className="text-sm">確認中も、旅程を見たり、予定を固定したりできます。</p>
       ) : status.kind === 'verified' || status.kind === 'partial' ? (
@@ -272,17 +303,6 @@ export function VerificationPanel({
         </Alert>
       )}
       <div className="space-y-1">
-        {/* 実行中も同じ位置に残し（フォーカスを失わない）、押下は受け付けない。 */}
-        <button
-          type="button"
-          aria-disabled={verifying}
-          onClick={() => {
-            if (!verifying) onVerify()
-          }}
-          className="min-h-12 w-full rounded-xl bg-gt-ink px-4 py-3 text-base font-semibold text-white aria-disabled:cursor-progress aria-disabled:opacity-60"
-        >
-          {label}
-        </button>
         <p className="text-xs text-gt-muted">
           予定の施設・営業時間・移動時間を外部の情報源で確認します。確認はボタンを押したときに行います。
         </p>

@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
-import type { Trip } from '@/domain'
+import { revisionTargetRestriction, type Trip } from '@/domain'
 import { OnSiteReplanningFlow } from '@/features/onsite-flow/onsite-replanning-flow'
 import {
   scopedOnSiteApply,
@@ -19,6 +19,7 @@ import {
   type GenerateRevisions,
 } from '@/features/revision-review/api-client'
 import type { LearningSaveUnavailable } from '@/features/trip-save/learning-save-availability'
+import { focusRouteStop } from '@/features/trip-map/route-map'
 import { TripSavePanel, type SaveTrip } from '@/features/trip-save/trip-save-panel'
 import type { FinishTripAction } from '@/features/trip-progress/trip-progress-view'
 import { getProtectedApiHeadersForScope } from '@/lib/auth/protected-api'
@@ -152,9 +153,10 @@ export function TripJourney({
   )
   // 旅行前と旅行中の比較画面を保持していても、同じ旅程の適用要求は一つずつ扱う。
   const applying = useRef(false)
+  const [applyInFlight, setApplyInFlight] = useState(false)
   const apply = useMemo<ApplyRevision | undefined>(() => {
     const run = applyRevision ?? persistence?.apply
-    if (!run) return undefined
+    if (!run || !scope) return undefined
     return async (decision, signal) => {
       if (applying.current) {
         return {
@@ -162,14 +164,27 @@ export function TripJourney({
           message: '別の変更の適用を確認中です。確認後に操作してください。',
         }
       }
-      applying.current = true
+      let operation: ReturnType<typeof beginSessionScopeOperation>
       try {
-        return await run(decision, signal)
+        signal?.throwIfAborted()
+        operation = beginSessionScopeOperation(scope, signal)
+      } catch {
+        return { status: 'failed', message: '認証を確認できないため、適用を開始しませんでした。' }
+      }
+      applying.current = true
+      setApplyInFlight(true)
+      try {
+        const result = await run(decision, operation.signal)
+        operation.assertCurrent('unknown')
+        operation.signal.throwIfAborted()
+        return result
       } finally {
+        operation.dispose()
         applying.current = false
+        setApplyInFlight(false)
       }
     }
-  }, [applyRevision, persistence?.apply])
+  }, [applyRevision, persistence?.apply, scope])
   const reflectionOpen = screen === 'reflection' || screen === 'check-saved'
   const [reflectionView, setReflectionView] = useState<'reflection' | 'check-saved' | null>(null)
   if (visible && reflectionOpen && reflectionView !== screen) {
@@ -177,6 +192,11 @@ export function TripJourney({
   }
   const heading = useRef<HTMLHeadingElement>(null)
   const savePanel = useRef<HTMLElement>(null)
+  const focusSaveResult = useRef(false)
+  useLayoutEffect(() => {
+    if (focusSaveResult.current) savePanel.current?.focus()
+    focusSaveResult.current = false
+  }, [savedTrip])
   const reflectionOrigin = useRef<
     Partial<Record<'before' | 'during', { control: HTMLButtonElement; top: number }>>
   >({})
@@ -217,16 +237,25 @@ export function TripJourney({
     }) satisfies GenerateRevisions
   }, [generateRevisions, scope])
 
-  const finishAction: FinishTripAction =
-    savedTrip && isSavedCurrent && scope
-      ? { onFinish: (event) => openReflection(event.currentTarget) }
-      : {
-          unavailableReason: !savedTrip
-            ? '振り返りには旅程の保存が必要です。「旅行前の旅程へ戻る」から保存してください。'
-            : !isSavedCurrent
-              ? '現在の旅程は保存時点と異なります。「保存済みの旅程へ戻す」を選ぶと振り返れます。'
-              : '認証の状態を確認できません。認証の確認が済んでから操作してください。',
-        }
+  const reflectionUnavailable = !savedTrip
+    ? '振り返りには旅程の保存が必要です。「旅行前の旅程へ戻る」から保存してください。'
+    : !isSavedCurrent
+      ? '現在の旅程は保存時点と異なります。「保存済みの旅程へ戻す」を選ぶと振り返れます。'
+      : !scope
+        ? '認証の状態を確認できません。認証の確認が済んでから操作してください。'
+        : null
+  const finishAction: FinishTripAction = reflectionUnavailable
+    ? { unavailableReason: reflectionUnavailable }
+    : { onFinish: (event) => openReflection(event.currentTarget) }
+  const showReflectionView =
+    screen === reflectionView && (screen === 'check-saved' || !reflectionUnavailable)
+
+  const firstEditableStop = trip.stops.find((stop) => revisionTargetRestriction(stop) === null)
+  const editTripInputs = (
+    <button type="button" className="gt-button-secondary" onClick={onEditInput}>
+      旅行条件・保存済みの旅程
+    </button>
+  )
 
   return (
     <div className="gt-journey flex flex-col gap-4">
@@ -295,7 +324,7 @@ export function TripJourney({
       <div hidden={screen !== 'before'} className="space-y-4">
         {!savedTrip && (
           <div className="gt-journey-chrome gt-card space-y-2 text-sm">
-            <p>旅程を保存すると、部分修正・現地での再計画・旅行後の振り返りが使えます。</p>
+            <p>旅程を保存すると、予定の部分修正や現地での再計画ができます。</p>
             <button
               type="button"
               className="gt-button-secondary"
@@ -311,6 +340,7 @@ export function TripJourney({
           ownerUid={scope?.uid}
           generate={isSavedCurrent ? revisions : undefined}
           apply={isSavedCurrent ? apply : undefined}
+          applyInFlight={applyInFlight}
           lockManagedByApply={!applyRevision}
           loadLatestTrip={persistence?.loadLatestTrip}
           loadAppliedRevision={persistence?.loadAppliedRevision}
@@ -321,7 +351,7 @@ export function TripJourney({
               ? '画面の旅程が保存時点と異なります。部分修正を始めるには、保存済みの旅程へ戻してください。'
               : '部分修正を始めるには、旅程を保存してください。'
           }
-          routeActions={
+          routeActions={(revisionBlocked) => (
             <>
               {verificationPanel}
               {learningSummary}
@@ -336,15 +366,63 @@ export function TripJourney({
                 placeSaveProof={placeSaveProof}
                 onEditInput={onEditInput}
                 panelRef={savePanel}
-                onSaved={setSavedTrip}
+                onSaved={(saved) => {
+                  const panel = savePanel.current
+                  focusSaveResult.current = Boolean(
+                    panel?.contains(document.activeElement) && !panel.closest('[hidden]'),
+                  )
+                  setSavedTrip(saved)
+                }}
                 onRestore={
                   savedTrip && !isSavedCurrent ? () => adoptTripChange(savedTrip) : undefined
                 }
-                onReflect={savedTrip ? openReflection : undefined}
+                savedActions={
+                  isSavedCurrent && scope ? (
+                    <div className="space-y-2 text-sm">
+                      {firstEditableStop && !revisionBlocked && (
+                        <p>予定を開くと、変更できる予定には「この予定だけ変更」が表示されます。</p>
+                      )}
+                      <p>
+                        出発したら、旅行中の画面で今の予定を確認できます。
+                        {firstEditableStop &&
+                          !revisionBlocked &&
+                          '現地で予定が変わったら、再計画できます。'}
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        {firstEditableStop && !revisionBlocked && (
+                          <button
+                            type="button"
+                            className="gt-button-secondary"
+                            onClick={() => focusRouteStop(firstEditableStop.id)}
+                          >
+                            変更する予定を探す
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="gt-button-primary"
+                          onClick={() => onNavigate('during')}
+                        >
+                          旅行中の画面へ
+                        </button>
+                      </div>
+                    </div>
+                  ) : undefined
+                }
                 onCheckSaved={(control) => openReflection(control, 'check-saved')}
               />
+              {initialSavedTrip && !reflectionUnavailable && (
+                <button
+                  type="button"
+                  className="gt-button-secondary"
+                  onClick={(event) => openReflection(event.currentTarget)}
+                >
+                  保存した旅行を振り返る
+                </button>
+              )}
+              {editTripInputs}
             </>
-          }
+          )}
         />
       </div>
 
@@ -385,9 +463,11 @@ export function TripJourney({
           generate={isSavedCurrent ? revisions : undefined}
           generationUnavailableReason="保存済みの現在の旅程を確認してから再計画を始めてください。"
           apply={isSavedCurrent ? apply : undefined}
+          applyInFlight={applyInFlight}
           ownerUid={scope?.uid}
           reportControl={persistence?.reportControl}
           finishAction={finishAction}
+          progressActions={editTripInputs}
           lockManagedByApply={!applyRevision}
           loadLatestTrip={persistence?.loadLatestTrip}
           loadAppliedRevision={persistence?.loadAppliedRevision}
@@ -398,20 +478,17 @@ export function TripJourney({
         />
       </section>
 
-      {!reflectionOpen && (
-        <div>
-          <button type="button" className="gt-button-secondary" onClick={onEditInput}>
-            旅行条件・保存済みの旅程
-          </button>
-        </div>
+      {screen === 'reflection' && reflectionUnavailable && (
+        <p role="note" className="gt-notice">
+          {reflectionUnavailable}
+        </p>
       )}
-
       {reflectionView && (
-        <div hidden={screen !== reflectionView}>
+        <div hidden={!showReflectionView}>
           <ReflectionFlow
             key={`${reflectionView}:${reflectionView === 'reflection' ? savedTrip?.version : ''}`}
             initialTripId={reflectionView === 'reflection' ? savedTrip?.id : undefined}
-            active={visible && screen === reflectionView}
+            active={visible && showReflectionView}
             embedded
             onLearningsChanged={onLearningsChanged}
           />

@@ -235,7 +235,7 @@ describe('一覧の読み上げ名と根拠の表示（推奨）', () => {
 
     expect(
       stopButton(
-        /10:00から60分 朝の庭園（架空）（固定予定）、施設の存在：情報源と整合。詳細を開く/,
+        /10:00から60分 朝の庭園（架空）（固定予定）、施設の存在：情報源と整合。根拠・詳細を見る/,
       ),
     ).toBeTruthy()
     expect(stopButton(/12:00から75分 昼食店A（架空）、営業時間：矛盾あり/)).toBeTruthy()
@@ -251,7 +251,7 @@ describe('一覧の読み上げ名と根拠の表示（推奨）', () => {
     })
     render(<TripRouteView trip={unverified} />)
 
-    expect(stopButton(/朝の庭園.*未照合。詳細を開く/)).toBeTruthy()
+    expect(stopButton(/朝の庭園.*未照合。根拠・詳細を見る/)).toBeTruthy()
   })
 
   it('根拠の日時は「照合日時」と表示する', async () => {

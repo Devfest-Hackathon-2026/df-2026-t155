@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, type Ref } from 'react'
+import { useRef, useState, type ReactNode, type Ref } from 'react'
 
 import type { Trip } from '@/domain'
 import { sameSavedTrip } from '@/features/onsite-flow/saved-snapshot'
@@ -36,7 +36,7 @@ type SaveState =
 
 const AUTH_MESSAGE = '認証の状態を確認できないため、保存を始めませんでした。旅程はそのままです。'
 
-// 旅程を保存して振り返りに進むための、本人の操作。保存は利用者が押したときだけ行う。
+// 旅程の保存は利用者が押したときだけ行う。
 // 証跡に問題があるときは、表示中の旅程を保持して回復方法を案内する。
 export function TripSavePanel({
   trip,
@@ -48,7 +48,7 @@ export function TripSavePanel({
   onEditInput,
   onSaved,
   onCheckSaved,
-  onReflect,
+  savedActions,
   onRestore,
   initialSavedTrip,
   panelRef,
@@ -64,7 +64,7 @@ export function TripSavePanel({
   onSaved: (saved: Trip) => void
   // 結果不明のとき、保存済みの旅行の一覧で確かめる操作。
   onCheckSaved: (control: HTMLButtonElement) => void
-  onReflect?: (control: HTMLButtonElement) => void
+  savedActions?: ReactNode
   onRestore?: () => void
   initialSavedTrip?: Trip
   panelRef?: Ref<HTMLElement>
@@ -163,14 +163,15 @@ export function TripSavePanel({
         </p>
       </div>
       {state.phase === 'saved' ? (
-        <div role="status" className="space-y-1 text-sm">
-          <p className="font-semibold text-gt-ok">保存を確認しました。</p>
-          {!sameSavedTrip(trip, state.trip) && (
-            <p role="note">
-              保存したあとに、画面の旅程が変わりました。振り返りに使われるのは、保存した時点の旅程です。
-            </p>
-          )}
-        </div>
+        <>
+          <div role="status" className="space-y-1 text-sm">
+            <p className="font-semibold text-gt-ok">保存を確認しました。</p>
+            {!sameSavedTrip(trip, state.trip) && (
+              <p role="note">保存したあとに、画面の旅程が変わりました。</p>
+            )}
+          </div>
+          {savedActions}
+        </>
       ) : (
         <>
           <button
@@ -233,15 +234,6 @@ export function TripSavePanel({
       {onRestore && (
         <button type="button" onClick={onRestore} className="gt-button-secondary">
           保存済みの旅程へ戻す
-        </button>
-      )}
-      {onReflect && (
-        <button
-          type="button"
-          onClick={(event) => onReflect(event.currentTarget)}
-          className="gt-button-secondary"
-        >
-          保存した旅行を振り返る
         </button>
       )}
     </section>

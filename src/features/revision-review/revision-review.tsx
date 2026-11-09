@@ -55,9 +55,17 @@ const applyMessages = {
   uncertain: '適用結果を確認できませんでした。再操作する前に最新の旅程を確認してください。',
 }
 
+type ApplyFailure = { status: keyof typeof applyMessages; message?: string }
+
 const inputClass = 'gt-field px-3 py-2'
 const primaryClass = 'gt-button-primary min-h-[52px] text-base font-bold'
 const secondaryClass = 'gt-button-secondary border-2 border-gt-ink text-sm font-bold'
+
+const mealPreferenceIcons = {
+  budget: 'm6 4 6 8 6-8M7 12h10M7 16h10M12 12v8',
+  time: 'M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0ZM12 6v6l4 2',
+  taste: 'M4 3v5a3 3 0 0 0 6 0V3M7 3v18M19 3c-2 1-4 4-4 9h4m0-9v18',
+}
 
 function ProgressMark() {
   return (
@@ -89,6 +97,8 @@ interface RevisionReviewProps {
   // 適用できない理由。applyが無いときの承認ボタンの説明に使う（省略時は「未接続」）。
   applyUnavailableReason?: string
   onCancel: () => void
+  onLeaveWhileApplying: () => void
+  onApplyFailureAfterLeave: (message?: string) => void
   onApplied: (trip: Trip, receipt?: ApplyRevisionResult, revisionId?: string) => void
   onApplyUnresolvedChange: (unresolved: boolean, revisionId?: string) => void
   // 現地報告は修正理由と文脈をまとめて受け取り、旅行前と同じ修正エンジンで扱う。
@@ -114,6 +124,8 @@ export function RevisionReview({
   applyUnresolved = false,
   applyUnavailableReason,
   onCancel,
+  onLeaveWhileApplying,
+  onApplyFailureAfterLeave,
   onApplied,
   onApplyUnresolvedChange,
   onSiteReport,
@@ -137,12 +149,10 @@ export function RevisionReview({
   const id = useId()
   const [isGenerating, setIsGenerating] = useState(false)
   const [isApplying, setIsApplying] = useState(false)
-  const [applyFailure, setApplyFailure] = useState<{
-    status: keyof typeof applyMessages
-    message?: string
-  } | null>(null)
+  const [applyFailure, setApplyFailure] = useState<ApplyFailure | null>(null)
   const activeGeneration = useRef<AbortController | null>(null)
   const activeApply = useRef<AbortController | null>(null)
+  const leftWhileApplying = useRef(false)
   const heading = useRef<HTMLHeadingElement>(null)
   const reasonField = useRef<HTMLTextAreaElement>(null)
   const preferencesField = useRef<HTMLTextAreaElement>(null)
@@ -399,6 +409,7 @@ export function RevisionReview({
     }
     const attempt = new AbortController()
     activeApply.current = attempt
+    leftWhileApplying.current = false
     setApplyFailure(null)
     setIsApplying(true)
     try {
@@ -413,6 +424,7 @@ export function RevisionReview({
       })
       return
     }
+    let failure: ApplyFailure | undefined
     try {
       const result = await apply(structuredClone(decision), attempt.signal)
       if (activeApply.current !== attempt) return
@@ -426,18 +438,29 @@ export function RevisionReview({
         if (nextTrip) {
           onApplied(nextTrip, result.receipt, decision.revision.id)
         } else {
-          setApplyFailure({ status: 'uncertain' })
+          failure = { status: 'uncertain' }
         }
       } else {
         if (result.status !== 'uncertain') onApplyUnresolvedChange(false, decision.revision.id)
-        setApplyFailure({ ...result })
+        failure = result
       }
     } catch {
-      if (activeApply.current === attempt) setApplyFailure({ status: 'uncertain' })
+      failure = { status: 'uncertain' }
     } finally {
       if (activeApply.current === attempt) {
         activeApply.current = null
         setIsApplying(false)
+        if (failure) {
+          if (leftWhileApplying.current) {
+            onApplyFailureAfterLeave(
+              failure.status === 'uncertain'
+                ? undefined
+                : `${applyMessages[failure.status]} ${failure.message ?? ''}`.trim(),
+            )
+          } else {
+            setApplyFailure(failure)
+          }
+        }
       }
     }
   }
@@ -488,9 +511,8 @@ export function RevisionReview({
               {target.plannedStartTime}　{target.name}
             </p>
           </div>
-          <p className="flex items-start gap-1.5 text-xs font-semibold">
-            <LockIcon size={14} />
-            <span>他の予定・固定時刻は変わりません。開始時刻と滞在時間を維持します。</span>
+          <p className="text-xs font-semibold">
+            他の予定・固定時刻は変わりません。開始時刻と滞在時間を維持します。
           </p>
         </div>
       )}
@@ -515,19 +537,19 @@ export function RevisionReview({
                 {[
                   {
                     label: '安い',
-                    icon: '¥',
+                    icon: mealPreferenceIcons.budget,
                     value: 'もっと安いお店にしたい',
                     hint: '予算を抑えたいという希望を候補探しに使います',
                   },
                   {
                     label: '早い',
-                    icon: '◷',
+                    icon: mealPreferenceIcons.time,
                     value: '移動時間を短くしたい',
                     hint: '確認できた移動時間で比べます',
                   },
                   {
                     label: 'うまい',
-                    icon: '♨',
+                    icon: mealPreferenceIcons.taste,
                     value: '料理の好みを重視したい',
                     hint: '料理の好みを重視します。おいしさを保証するものではありません',
                   },
@@ -545,9 +567,19 @@ export function RevisionReview({
                   >
                     <span
                       aria-hidden="true"
-                      className="grid size-10 shrink-0 place-items-center rounded-full border-2 border-gt-action bg-gt-line-tint text-xl font-bold text-gt-line-strong"
+                      className="grid size-10 shrink-0 place-items-center rounded-full border-2 border-gt-action bg-gt-line-tint text-gt-line-strong"
                     >
-                      {option.icon}
+                      <svg
+                        className="size-5"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
+                        <path d={option.icon} />
+                      </svg>
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-lg font-bold">{option.label}</span>
@@ -702,7 +734,6 @@ export function RevisionReview({
             />
           </div>
           <div className="gt-enter gt-preview-panel space-y-3 pt-2 pb-3">
-            <div aria-hidden="true" className="mx-auto h-1 w-11 rounded-full bg-gt-rule" />
             <h3 className="text-lg font-bold">変える前に、根拠を比較</h3>
             <p className="text-sm font-semibold" role="status">
               {approvableCount === 0
@@ -865,10 +896,7 @@ export function RevisionReview({
             </p>
           </section>
           <section className="gt-card space-y-2 rounded-[14px] border-2 border-gt-rail bg-[#ecebe5] p-3.5">
-            <h3 className="flex items-center gap-1.5 text-sm font-bold">
-              <LockIcon size={14} />
-              変更されないもの
-            </h3>
+            <h3 className="text-sm font-bold">変更されないもの</h3>
             <ul className="divide-y divide-gt-rule border-t border-gt-rule text-sm">
               {trip.stops
                 .filter((stop) => stop.id !== target.id)
@@ -881,7 +909,8 @@ export function RevisionReview({
                       {stop.plannedStartTime} {stop.name}
                     </span>
                     {stop.isFixed && (
-                      <span className="rounded-md border border-gt-ink bg-gt-paper px-1.5 text-[11px] font-bold">
+                      <span className="inline-flex items-center gap-1 rounded-md border border-gt-ink bg-gt-paper px-1.5 text-[11px] font-bold">
+                        <LockIcon size={11} />
                         固定・変更なし
                       </span>
                     )}
@@ -920,16 +949,29 @@ export function RevisionReview({
               >
                 {isApplying ? '適用を確認中…' : '承認して適用を依頼'}
               </button>
-              <button
-                type="button"
-                className={`${secondaryClass} min-h-[52px]`}
-                disabled={isApplying}
-                onClick={onCancel}
-              >
-                {applyFailure?.status === 'uncertain' || (applyUnresolved && !isApplying)
-                  ? '旅程を確認'
-                  : cancelLabel}
-              </button>
+              {isApplying ? (
+                <button
+                  type="button"
+                  className={`${secondaryClass} min-h-[52px]`}
+                  onClick={() => {
+                    if (!activeApply.current) return
+                    leftWhileApplying.current = true
+                    onLeaveWhileApplying()
+                  }}
+                >
+                  旅程へ戻る（適用の確認を続ける）
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className={`${secondaryClass} min-h-[52px]`}
+                  onClick={onCancel}
+                >
+                  {applyFailure?.status === 'uncertain' || applyUnresolved
+                    ? '旅程を確認'
+                    : cancelLabel}
+                </button>
+              )}
             </div>
             <p className="text-xs text-gt-muted">
               変更する前に、固定予定や時刻の条件をサーバーでもう一度確認します。

@@ -40,6 +40,7 @@ interface RevisionRouteViewProps {
   mock?: boolean
   generate?: GenerateRevisions
   apply?: ApplyRevision
+  applyInFlight?: boolean
   lockManagedByApply?: boolean
   // 適用結果不明からの復旧には、最新の旅程と対象Revisionの承認記録の両方が必要。
   loadLatestTrip?: LoadLatestTrip
@@ -49,7 +50,7 @@ interface RevisionRouteViewProps {
   adoptTripChange?: (changed: Trip) => Trip
   onRevisionApplied?: (saved: Trip) => void
   revisionUnavailableReason?: string
-  routeActions?: ReactNode
+  routeActions?: (revisionBlocked: boolean) => ReactNode
   active?: boolean
 }
 
@@ -60,6 +61,7 @@ export function RevisionRouteView({
   mock,
   generate,
   apply,
+  applyInFlight = false,
   lockManagedByApply,
   loadLatestTrip,
   loadAppliedRevision,
@@ -91,6 +93,7 @@ export function RevisionRouteView({
     stopId: string
     fromShortcut?: boolean
     applyUnresolved?: boolean
+    detached?: boolean
   } | null>(null)
   // 最初の描画では永続ロックの復元が未完了。確認前に操作を開始してはならない。
   // UIDとTripの組が変わった瞬間にも前の組の解除状態を使わない。
@@ -101,7 +104,10 @@ export function RevisionRouteView({
   } | null>(null)
   const lockState: UnresolvedApplyState =
     restored?.key === lockKey ? restored.state : { status: 'unavailable' }
-  const operationBlocked = Boolean(apply) && lockState.status !== 'clear'
+  const operationBlocked =
+    applyInFlight ||
+    lockState.status === 'pending' ||
+    (Boolean(apply) && lockState.status !== 'clear')
 
   const updateStoredLock = useCallback(
     () => setRestored({ key: lockKey, state: readUnresolvedApply(ownerUid, sourceTrip.id) }),
@@ -130,6 +136,7 @@ export function RevisionRouteView({
   } | null>(null)
   const updateNotice = useRef<HTMLDivElement>(null)
   const actions = useRef<HTMLDivElement>(null)
+  const reviewArea = useRef<HTMLDivElement>(null)
   const target = session && current.trip.stops.find((stop) => stop.id === session.stopId)
   const hasActiveSession =
     session &&
@@ -137,6 +144,8 @@ export function RevisionRouteView({
     revisionTargetRestriction(target) === null &&
     session.trip === current.trip &&
     generate
+  const showReview = hasActiveSession && !session.detached
+  const waitingForApply = applyInFlight || Boolean(hasActiveSession && session.detached)
 
   if (session && !hasActiveSession) {
     setInterruption({
@@ -167,7 +176,7 @@ export function RevisionRouteView({
 
   const leave = (message: string, tone: 'neutral' | 'success' = 'neutral') => {
     setNotice(message ? { source: sourceTrip, message, tone } : null)
-    setReturnTo(session ?? interruption)
+    if (!reviewArea.current?.hidden) setReturnTo(session ?? interruption)
     setInterruption(null)
     setSession(null)
   }
@@ -217,6 +226,7 @@ export function RevisionRouteView({
   const checkLatestTrip = async () => {
     const read = readUnresolvedApply(ownerUid, sourceTrip.id)
     if (
+      waitingForApply ||
       !loadLatestTrip ||
       !loadAppliedRevision ||
       read.status !== 'pending' ||
@@ -312,8 +322,8 @@ export function RevisionRouteView({
           </span>
         )}
       </p>
-      {hasActiveSession && generate ? (
-        <div className="space-y-2">
+      {hasActiveSession && generate && (
+        <div ref={reviewArea} hidden={!showReview} className="space-y-2">
           {mock && (
             <p role="note" className="text-sm">
               架空デモ・候補と照合結果は画面確認用です。
@@ -321,7 +331,7 @@ export function RevisionRouteView({
           )}
           <RevisionReview
             trip={session.trip}
-            active={active}
+            active={active && Boolean(showReview)}
             target={target}
             meta={current.meta}
             generate={generate}
@@ -349,12 +359,26 @@ export function RevisionRouteView({
                 leave('部分修正をキャンセルしました。')
               }
             }}
+            onLeaveWhileApplying={() => {
+              setSession((current) => current && { ...current, detached: true })
+              setReturnTo(session)
+            }}
+            onApplyFailureAfterLeave={(message) => {
+              setSession(null)
+              if (message) setNotice({ source: sourceTrip, message, tone: 'neutral' })
+            }}
             onApplied={onApplied}
           />
         </div>
-      ) : (
+      )}
+      {!showReview && (
         <div className="space-y-2">
-          {interruption && (
+          {waitingForApply && (
+            <p role="status" className="gt-notice">
+              適用結果を確認中です。確認が終わるまで、この旅程の部分修正はできません。
+            </p>
+          )}
+          {interruption && !waitingForApply && (
             <div
               ref={updateNotice}
               role="alert"
@@ -376,7 +400,7 @@ export function RevisionRouteView({
               </button>
             </div>
           )}
-          {operationBlocked && !interruption && (
+          {operationBlocked && !interruption && !waitingForApply && (
             <div role="alert" className="gt-notice" data-tone="error">
               {unresolvedGuide}
             </div>
@@ -406,7 +430,7 @@ export function RevisionRouteView({
               return trip
             }}
             onStartRevision={
-              generate && !operationBlocked
+              generate && !operationBlocked && !waitingForApply
                 ? (stopId, fromShortcut) => {
                     if (apply && readUnresolvedApply(ownerUid, sourceTrip.id).status !== 'clear') {
                       updateStoredLock()
@@ -433,10 +457,10 @@ export function RevisionRouteView({
           tabIndex={-1}
           role="region"
           aria-label="旅程の確認と保存"
-          hidden={Boolean(hasActiveSession)}
+          hidden={Boolean(showReview)}
           className="mt-4 space-y-4 scroll-mt-4 outline-none"
         >
-          {routeActions}
+          {routeActions(operationBlocked || waitingForApply)}
         </div>
       )}
     </div>

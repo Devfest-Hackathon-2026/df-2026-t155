@@ -4,6 +4,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 
 import type { Trip } from '@/domain'
 import { RevisionRouteView } from '@/features/revision-review/revision-route-view'
+import { isGoogleSource } from '@/features/trip-map/model'
+import { focusRouteStop } from '@/features/trip-map/route-map'
 
 import { isFixedOnlyChange, mergeVerification } from './merge-verification'
 import { useTripVerification, type VerifyTrip } from './use-trip-verification'
@@ -144,12 +146,31 @@ export function VerifiableTrip({
         ? { kind: 'partial', summary }
         : { kind: 'withdrawn' }
 
+  // 矛盾・確認できない項目を優先し、同じ状態の予定は旅程の順番で案内する。
+  const reviewStatus = summary.google.counts.conflicting
+    ? 'conflicting'
+    : summary.google.counts.unverifiable
+      ? 'unverifiable'
+      : 'consistent'
+  const reviewStop =
+    (status.kind === 'verified' || status.kind === 'partial') &&
+    view.current.stops.find((stop) =>
+      stop.evidence.some(
+        (item) => isGoogleSource(item.source.kind) && item.status === reviewStatus,
+      ),
+    )
+
   const verificationPanel = (
     <VerificationPanel
       status={status}
       phase={state}
       interrupted={view.interrupted}
       onVerify={() => void verifyNow()}
+      reviewStop={
+        reviewStop
+          ? { name: reviewStop.name, onFocus: () => focusRouteStop(reviewStop.id) }
+          : undefined
+      }
     />
   )
   const context = {

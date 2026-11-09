@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
 import { revisionTargetRestriction, TripSchema, type Trip } from '@/domain'
 import { OnSiteReportForm } from '@/features/onsite-report/onsite-report-form'
@@ -28,6 +28,7 @@ interface OnSiteReplanningFlowProps {
   generate?: GenerateRevisions
   generationUnavailableReason?: string
   apply?: ApplyRevision
+  applyInFlight?: boolean
   onTripChange?: (trip: Trip) => void
   lockManagedByApply?: boolean
   reportControl?: ReturnType<typeof scopedReportControl>
@@ -41,6 +42,7 @@ interface OnSiteReplanningFlowProps {
   initialIndex?: number
   active?: boolean
   finishAction?: FinishTripAction
+  progressActions?: ReactNode
 }
 
 type Step = 'progress' | 'report' | 'review'
@@ -76,10 +78,12 @@ export function OnSiteReplanningFlow({
   generate,
   generationUnavailableReason,
   apply,
+  applyInFlight = false,
   onTripChange,
   initialIndex,
   active = true,
   finishAction,
+  progressActions,
   ownerUid,
   reportControl,
   lockManagedByApply,
@@ -143,13 +147,13 @@ export function OnSiteReplanningFlow({
   const trip = local && local.epoch === epoch ? local.value : sourceTrip
 
   const target = session && trip.stops.find((stop) => stop.id === session.submission.targetStopId)
-  const activeReview =
-    step === 'review' &&
+  const reviewIsCurrent =
     session !== null &&
     session.epoch === epoch &&
     target != null &&
     revisionTargetRestriction(target) === null
-  const stale = step === 'review' && !activeReview
+  const stale = step === 'review' && !reviewIsCurrent
+  const waitingForApply = applyInFlight || (step === 'progress' && reviewIsCurrent)
 
   // 切り替えた先の見出しなどへフォーカスを移す。隠していた画面は、このコミットで表示される。
   useEffect(() => {
@@ -185,6 +189,7 @@ export function OnSiteReplanningFlow({
   const startReport = (stopId: string) => {
     if (!generate || !canReport(stopId)) return
     if (
+      waitingForApply ||
       applyUnresolved ||
       (ownerUid && readUnresolvedApply(ownerUid, trip.id).status !== 'clear')
     ) {
@@ -206,7 +211,7 @@ export function OnSiteReplanningFlow({
   }
 
   const submitReport = (submission: OnSiteReportSubmission) => {
-    if (!generate || !canReport(submission.targetStopId)) {
+    if (!generate || waitingForApply || applyUnresolved || !canReport(submission.targetStopId)) {
       announce('修正できる予定を確認してください。元の旅程は変更していません。')
       return
     }
@@ -244,12 +249,14 @@ export function OnSiteReplanningFlow({
     setApplyUnresolved(false)
     setStep('progress')
     announce('承認した1件の変更を旅程に反映しました。')
-    moveFocus('progress')
+    if (progressArea.current?.hidden || unresolvedNote.current?.contains(document.activeElement)) {
+      moveFocus('progress')
+    }
     onTripChange?.(next)
   }
 
   const recover = async () => {
-    if (!ownerUid || !loadLatestTrip || !loadAppliedRevision || checking) return
+    if (waitingForApply || !ownerUid || !loadLatestTrip || !loadAppliedRevision || checking) return
     const lock = readUnresolvedApply(ownerUid, sourceTrip.id)
     if (lock.status !== 'pending') return
     const controller = new AbortController()
@@ -303,7 +310,12 @@ export function OnSiteReplanningFlow({
 
       {/* 画面を隠してもマウントを維持することで、手動で進めた現在位置を保持する。 */}
       <div hidden={step !== 'progress'} ref={progressArea}>
-        {applyUnresolved && (
+        {waitingForApply && (
+          <p role="status" className="gt-notice">
+            適用結果を確認中です。確認が終わるまで、この旅程の部分修正はできません。
+          </p>
+        )}
+        {applyUnresolved && !waitingForApply && (
           // 結果不明は、利用者のボタン操作では解除しない。サーバーから取得した最新の旅程か、
           // 確定した結果と照合できるまで（確認手段が接続されるまで）、再計画を止めたままにする。
           <div
@@ -333,7 +345,7 @@ export function OnSiteReplanningFlow({
         <TripProgressView
           trip={trip}
           initialIndex={initialIndex}
-          onReplan={generate ? startReport : undefined}
+          onReplan={generate && !waitingForApply ? startReport : undefined}
           finishAction={finishAction}
         />
         {!generate && (
@@ -342,6 +354,7 @@ export function OnSiteReplanningFlow({
               '現地報告からの再計画は、候補生成サービスを接続すると利用できます。'}
           </p>
         )}
+        {progressActions && <div className="mt-4">{progressActions}</div>}
       </div>
 
       {/* 報告を修正するために戻っても入力内容を維持する。 */}
@@ -365,8 +378,8 @@ export function OnSiteReplanningFlow({
         </div>
       )}
 
-      {activeReview && session && target && (
-        <div className="space-y-3">
+      {reviewIsCurrent && session && target && (
+        <div hidden={step !== 'review'} className="space-y-3">
           {session.submission.context.report.kind === 'simulated' && (
             <p role="note" className="rounded-lg border-2 border-dashed border-gt-rule p-3 text-sm">
               デモ用の想定です。現地で実際に起きたことではありません。候補を比較できますが、旅程には適用しません。
@@ -379,7 +392,8 @@ export function OnSiteReplanningFlow({
           )}
           {session.submission.context.report.kind === 'actual' &&
             reportControl &&
-            !applyUnresolved && (
+            !applyUnresolved &&
+            !waitingForApply && (
               <ReportResolution
                 key={JSON.stringify([ownerUid, trip.id, trip.version, session.epoch, target.id])}
                 tripId={trip.id}
@@ -396,12 +410,12 @@ export function OnSiteReplanningFlow({
             )}{' '}
           <RevisionReview
             key={`${session.epoch}:${target.id}`}
-            active={active}
+            active={active && step === 'review'}
             trip={trip}
             target={target}
             generate={guardedGenerate}
             generationAvailable={generate !== undefined}
-            applyUnresolved={applyUnresolved}
+            applyUnresolved={applyUnresolved || applyInFlight}
             // 模擬報告では適用の経路そのものを渡さず、承認が旅程へ届かないようにする。
             apply={session.submission.context.report.kind === 'actual' ? apply : undefined}
             applyUnavailableReason={
@@ -414,6 +428,15 @@ export function OnSiteReplanningFlow({
               context: session.submission.context,
             }}
             onCancel={cancelReview}
+            onLeaveWhileApplying={() => {
+              setStep('progress')
+              moveFocus('progress')
+            }}
+            onApplyFailureAfterLeave={(message) => {
+              setSession(null)
+              if (!message) setDraft(null)
+              announce(message ?? unresolvedMessage)
+            }}
             onApplied={applied}
             onApplyUnresolvedChange={(unresolved, revisionId) => {
               if (ownerUid) {
