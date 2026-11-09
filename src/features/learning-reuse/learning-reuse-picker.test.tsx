@@ -87,6 +87,7 @@ describe('学びの選択UI', () => {
     expect(onSelectionChange).toHaveBeenLastCalledWith({
       scope: scopeA,
       value: [{ id: approvedRegional.id, version: 3 }],
+      learnings: [approvedRegional],
     })
     await user.click(boxes[0])
     expect(onSelectionChange).toHaveBeenLastCalledWith({
@@ -95,11 +96,13 @@ describe('学びの選択UI', () => {
         { id: approvedRegional.id, version: 3 },
         { id: sampleApprovedLearning.id, version: 2 },
       ],
+      learnings: [sampleApprovedLearning, approvedRegional],
     })
     await user.click(boxes[1])
     expect(onSelectionChange).toHaveBeenLastCalledWith({
       scope: scopeA,
       value: [{ id: sampleApprovedLearning.id, version: 2 }],
+      learnings: [sampleApprovedLearning],
     })
   })
 
@@ -163,6 +166,7 @@ describe('学びの選択UI', () => {
     expect(onSelectionChange).toHaveBeenLastCalledWith({
       scope: scopeA,
       value: [{ id: sampleApprovedLearning.id, version: 2 }],
+      learnings: [sampleApprovedLearning],
     })
     const callsBeforeFailure = onSelectionChange.mock.calls.length
 
@@ -519,6 +523,7 @@ describe('読み直しで版が進んだ・撤回された学び', () => {
     expect(onSelectionChange).toHaveBeenLastCalledWith({
       scope: scopeA,
       value: [{ id: sampleApprovedLearning.id, version: 2 }],
+      learnings: [sampleApprovedLearning],
     })
 
     // 地域を変えて戻すと読み直す。古い版の選択は戻らない。
@@ -530,6 +535,7 @@ describe('読み直しで版が進んだ・撤回された学び', () => {
     expect(onSelectionChange).toHaveBeenLastCalledWith({
       scope: scopeA,
       value: [{ id: sampleApprovedLearning.id, version: 3 }],
+      learnings: [{ ...sampleApprovedLearning, content: '再承認後の本文' }],
     })
   })
 
@@ -708,6 +714,7 @@ describe('地域の正規化', () => {
     expect(onSelectionChange).toHaveBeenLastCalledWith({
       scope: scopeA,
       value: [{ id: approvedRegional.id, version: 3 }],
+      learnings: [approvedRegional],
     })
   })
 

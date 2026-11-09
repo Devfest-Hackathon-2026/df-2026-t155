@@ -267,12 +267,12 @@ const flush = () =>
     await new Promise((resolve) => setTimeout(resolve, 20))
   })
 
-const renderHome = () =>
+const renderHome = (learningPickerDelayMs = 0) =>
   render(
     <HomePlanner
       generateRevisions={generateRevisions}
       applyRevision={applyRevision}
-      learningPickerDelayMs={0}
+      learningPickerDelayMs={learningPickerDelayMs}
     />,
   )
 
@@ -739,6 +739,75 @@ describe('トップ画面：前の旅の学びを選んで、次の旅程の生�
     await generate(user)
 
     expect(generateCalls[0].body.learningSelections).toEqual([])
+    expect(screen.queryByRole('region', { name: '生成時の学びの適用記録' })).toBeNull()
+  })
+
+  it('生成時の学びと対象を表示し、未報告の学びと区別する。適用記録つき旅程の保存は送信しない', async () => {
+    const unreported = saved('learning-b', '混雑時は屋外で休憩する')
+    const { state, fetchFn } = setup({ [A]: { learnings: [learningA, unreported] } })
+    state.generate = () =>
+      json({
+        status: 'proposed',
+        trip: {
+          ...generatedTrip,
+          learningApplications: [
+            {
+              learningId: learningA.learning.id,
+              targetStopIds: [lunch.id],
+              explanation: '昼食後の休憩時間に余裕を持たせた。',
+            },
+          ],
+        },
+      })
+    const user = userEvent.setup()
+    renderHome()
+    await user.type(screen.getByLabelText(/旅行先/), REGION)
+    await chooseLearning(user)
+    await user.click(screen.getByRole('checkbox', { name: /混雑時は屋外で休憩する/ }))
+    await generate(user)
+
+    const summary = within(screen.getByRole('region', { name: '生成時の学びの適用記録' }))
+    const [recorded, omitted] = summary.getAllByRole('listitem')
+    expect(recorded.textContent).toContain(learningA.learning.content)
+    expect(recorded.textContent).toContain(`生成時の対象：${lunch.name}`)
+    expect(recorded.textContent).toContain(
+      'AIによる説明（未検証）：昼食後の休憩時間に余裕を持たせた。',
+    )
+    expect(omitted.textContent).toBe(unreported.learning.content)
+    expect(summary.getByText(/AIから反映先の報告がなかった/)).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: '本人の操作で旅程を保存する' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('まだ保存できません')
+    expect(
+      fetchFn.mock.calls.some(([url, init]) => url === '/api/trips' && init?.method === 'POST'),
+    ).toBe(false)
+
+    // 次の操作で選択を外しても、生成結果には当時の内容を表示し続ける。
+    await user.click(screen.getByRole('checkbox', { name: /昼食後は休憩を長めに取る/ }))
+    expect(summary.getByText(learningA.learning.content)).toBeTruthy()
+
+    act(() => fakeAuth.signInAs(B))
+    await waitFor(() =>
+      expect(screen.queryByRole('region', { name: '生成時の学びの適用記録' })).toBeNull(),
+    )
+  })
+
+  it('地域を変えて一覧の更新前に生成しても、前の地域の選択を送らない', async () => {
+    const { generateCalls } = setup({ [A]: { learnings: [learningA] } })
+    const user = userEvent.setup()
+    renderHome(500)
+
+    const regionInput = screen.getByLabelText(/旅行先/)
+    fireEvent.change(regionInput, { target: { value: REGION } })
+    await chooseLearning(user)
+    fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-14' } })
+    fireEvent.change(regionInput, { target: { value: '奈良市' } })
+
+    expect(screen.getByText(/新しい一覧が表示されてから選んでください/)).toBeTruthy()
+    expect(screen.queryByRole('checkbox', { name: /昼食後は休憩を長めに取る/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '旅程を作成する' }))
+    await waitFor(() => expect(generateCalls).toHaveLength(1))
+    expect(generateCalls[0].body).toMatchObject({ region: '奈良市', learningSelections: [] })
   })
 
   it('選んだあとにUIDが変わったら、選択は解除され、前のセッションの学びは送られない', async () => {
@@ -854,8 +923,8 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
     approval: { status: 'pending' },
   })
 
-  it('学びを承認して保存すると、次の生成で選べる一覧に反映される（その版で選べる）', async () => {
-    const { generateCalls } = setup({ [A]: {} }, [candidate])
+  it('保存した学びを次の生成で使い、元の保存済み旅程を開いて旅行前に部分修正できる', async () => {
+    const { generateCalls, state } = setup({ [A]: {} }, [candidate])
     const user = userEvent.setup()
     renderHome()
 
@@ -870,6 +939,7 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
     await user.click(screen.getByRole('button', { name: /保存する|保存しています/ }))
 
     // 次の旅程のための一覧に、保存した学びが現れる。選んで、もう一度生成する。
+    state.generate = () => json({ status: 'proposed', trip: { ...generatedTrip, id: 'next-trip' } })
     const checkbox = await screen.findByRole('checkbox', { name: /朝の移動は短くする/ })
     await user.click(checkbox)
     await user.click(screen.getByRole('button', { name: '旅程を作成する' }))
@@ -878,5 +948,25 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
     expect(generateCalls[0].body.learningSelections).toEqual([])
     expect(generateCalls[1].body.learningSelections).toEqual([{ id: 'learning-new', version: 1 }])
     expect(JSON.stringify(generateCalls[1].body)).not.toContain('朝の移動は短くする')
+    const summary = within(await screen.findByRole('region', { name: '生成時の学びの適用記録' }))
+    expect(summary.getByText(/AIから反映先の報告がなかった/)).toBeTruthy()
+    expect(summary.getByRole('listitem').textContent).toBe(candidate.content)
+
+    await user.click(screen.getByRole('button', { name: '保存した旅程で旅行を続ける' }))
+    await user.click(await screen.findByRole('button', { name: new RegExp(generatedTrip.region) }))
+    expect(screen.queryByRole('region', { name: '生成時の学びの適用記録' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
+    await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    await screen.findByRole('table')
+    expect(generateRevisions.mock.calls[0][0]).toMatchObject({
+      context: { phase: 'planning' },
+      trip: { id: generatedTrip.id },
+    })
+    expect(applyRevision).not.toHaveBeenCalled()
+    await user.click(approve())
+    const route = within(screen.getByRole('list', { name: '旅程の路線図' }))
+    expect(await route.findByText(after.name)).toBeTruthy()
   })
 })

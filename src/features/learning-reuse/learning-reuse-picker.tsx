@@ -19,6 +19,11 @@ export type LoadLearningOptions = (
   signal: AbortSignal,
 ) => Promise<LearningLoadResult>
 
+// 本文は結果画面で選択時の内容を表示するために保持する。生成APIへは value のID・版だけを送る。
+export type LearningReuseSelection = ScopedLearningSelection & {
+  learnings: readonly ApprovedLearning[]
+}
+
 interface LearningReusePickerProps {
   region: string
   // 親が useSessionScope() で得た認証状態。一覧・選択・進行中の読み込みは、UIDと認証世代に
@@ -28,7 +33,7 @@ interface LearningReusePickerProps {
   // 地域・UID・認証世代が変わった、読み込み中、失敗、アンマウントのときは null（選択なし）を通知する。
   // 送信の直前に resolveSelectionForRequest で現在のセッションと照合してから使う。
   // サーバーは版が現行と一致するときだけ採用する。
-  onSelectionChange?: (selection: ScopedLearningSelection | null) => void
+  onSelectionChange?: (selection: LearningReuseSelection | null) => void
   // テスト・他の画面での依存性注入に使う。省略時は本人のFirestore保存APIを読む。
   // 読み込みは地域・認証世代・「再読み込み」のときだけ行い、この関数の差し替えでは再実行しない。
   load?: LoadLearningOptions
@@ -85,7 +90,7 @@ function statusMessage(view: PickerView): string {
   return `${view.list.value.length}件の学びから選べます。現在${view.selected.length}件を選択中です。`
 }
 
-// このUIは、選んだ学びのIDと表示した版だけを、選択時の認証セッションと組にして返す。
+// このUIは、選んだ学びのID・版と表示した本文を、選択時の認証セッションと組にして返す。
 // 画面で受け取った学びの内容・承認状態は次回生成APIの信頼できる入力とはしない
 // （サーバーで本人の保存データを再取得し、版を照合する）。
 export function LearningReusePicker({
@@ -204,7 +209,13 @@ export function LearningReusePicker({
     setNotice('')
     setState({ key: currentKey, view: { ...visible, selected: next } })
     // 選択は、一覧を取得したセッションと組で渡す。
-    changeRef.current?.({ scope: visible.list.scope, value: [...next] })
+    changeRef.current?.({
+      scope: visible.list.scope,
+      value: next,
+      learnings: visible.list.value
+        .filter(({ learning }) => next.some(({ id }) => id === learning.id))
+        .map(({ learning }) => learning),
+    })
   }
 
   const retry = () => {

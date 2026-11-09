@@ -1,10 +1,13 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
-import type { Trip } from '@/domain'
+import type { ApprovedLearning, Trip } from '@/domain'
 
-import type { LoadLearningOptions } from '@/features/learning-reuse/learning-reuse-picker'
-import type { ScopedLearningSelection } from '@/features/learning-reuse/selection-scope'
+import { LearningApplicationSummary } from '@/features/learning-reuse/learning-application-summary'
+import type {
+  LearningReuseSelection,
+  LoadLearningOptions,
+} from '@/features/learning-reuse/learning-reuse-picker'
 import type { ApplyRevision, GenerateRevisions } from '@/features/revision-review/api-client'
 import { requestTripGeneration } from '@/features/trip-planner/api-client'
 import { TripPlanner } from '@/features/trip-planner/trip-planner'
@@ -66,6 +69,12 @@ export function HomePlanner({
     scope: authScope,
     discard: 0,
   })
+  // 生成結果と、その送信時点で表示していた学びを組にする。再生成時は下の導線も作り直す。
+  const [generation, setGeneration] = useState<{
+    seq: number
+    trip: Trip
+    learnings: readonly ApprovedLearning[]
+  } | null>(null)
   const changed =
     auth.scopeEpoch !== view.epoch ||
     (authScope !== null && view.scope !== null && authScope.uid !== view.scope.uid)
@@ -73,20 +82,19 @@ export function HomePlanner({
   if (changed) {
     session = { epoch: auth.scopeEpoch, scope: authScope, discard: view.discard + 1 }
     setView(session)
+    setGeneration(null)
   } else if (authScope !== null && view.scope !== authScope) {
     session = { ...view, scope: authScope }
     setView(session)
   }
 
   // 利用者が選んだ学び（{ id, version } と、選んだ時点の認証セッション）。生成の送信直前に使う。
-  const selectionRef = useRef<ScopedLearningSelection | null>(null)
-  const onSelectionChange = useCallback((selection: ScopedLearningSelection | null) => {
+  const selectionRef = useRef<LearningReuseSelection | null>(null)
+  const onSelectionChange = useCallback((selection: LearningReuseSelection | null) => {
     selectionRef.current = selection
   }, [])
   // 学びの一覧を読み込み直すための札（選び直しが必要になったとき、学びを保存したとき）。
   const [pickerKey, setPickerKey] = useState(0)
-  // 生成のたびに増やし、旅程が変わるたびに下の導線（保存・報告・振り返り）を作り直す。
-  const [generationSeq, setGenerationSeq] = useState(0)
   const [choiceSeq, setChoiceSeq] = useState(0)
   const [chooserSeq, setChooserSeq] = useState(0)
   const [chosen, setChosen] = useState<{ trip: Trip; discard: number } | null>(null)
@@ -98,9 +106,15 @@ export function HomePlanner({
       // 選択は、ここで取り出した値をそのまま渡す。送信の直前に、クライアント側で現在のセッションと照合される。
       setChosen(null)
       setChooserSeq((count) => count + 1)
-      const result = await run(request, { ...options, learningSelection: selectionRef.current })
+      const selection = selectionRef.current
+      const result = await run(request, { ...options, learningSelection: selection })
+      if (options?.signal?.aborted) return result
       if (result.ok) {
-        setGenerationSeq((count) => count + 1)
+        setGeneration((previous) => ({
+          seq: (previous?.seq ?? 0) + 1,
+          trip: result.trip,
+          learnings: selection?.learnings ?? [],
+        }))
       } else if (result.failure.kind === 'selection_changed') {
         // 選んだ学びが変わっていた：最新の一覧を読み込み直して、選び直してもらう。
         setPickerKey((count) => count + 1)
@@ -136,7 +150,7 @@ export function HomePlanner({
         renderTrip={(trip) =>
           !selected && (
             <VerifiableTrip
-              key={`${trip.id}:${generationSeq}`}
+              key={`${trip.id}:${generation?.seq}`}
               trip={trip}
               verify={verify ?? verifyTripWithProtectedApi}
               renderContent={({
@@ -154,6 +168,11 @@ export function HomePlanner({
                   generateRevisions={generateRevisions}
                   applyRevision={applyRevision}
                   saveTrip={saveTrip}
+                  learningSummary={
+                    generation?.trip === trip && (
+                      <LearningApplicationSummary trip={trip} learnings={generation.learnings} />
+                    )
+                  }
                   onLearningsChanged={() => setPickerKey((count) => count + 1)}
                 />
               )}

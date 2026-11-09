@@ -203,17 +203,37 @@ describe('旅程生成のRoute：学びの選択', () => {
   it('選択を本人（認証済みUID）の保存済みデータで解決し、その学びだけをGeminiへ渡す', async () => {
     store.listVersionedApproved.mockResolvedValue([
       { version: 2, learning: sampleApprovedLearning },
+      {
+        version: 1,
+        learning: { ...sampleApprovedLearning, id: 'unselected', content: '選択していない学び' },
+      },
     ])
-    gemini.generateJson.mockResolvedValue(JSON.stringify(draft('11:30')))
+    const explanation = '昼食の後に休憩を設けた。'
+    gemini.generateJson.mockResolvedValue(
+      JSON.stringify({
+        ...draft('11:30'),
+        learningApplications: [{ learningId: selection.id, stopIndexes: [1], explanation }],
+      }),
+    )
 
     const response = await post({ ...base, learningSelections: [selection] })
 
     expect(response.status).toBe(200)
     // UIDは本文ではなく検証済みトークンから取る。
     expect(store.listVersionedApproved).toHaveBeenCalledWith('test-actor')
-    expect(JSON.stringify(gemini.generateJson.mock.calls[0][0])).toContain(
-      sampleApprovedLearning.content,
-    )
+    expect(gemini.generateJson).toHaveBeenCalledTimes(1)
+    const { prompt } = gemini.generateJson.mock.calls[0][0]
+    expect(JSON.parse(prompt.slice(prompt.indexOf('{'))).approvedLearnings).toEqual([
+      {
+        id: selection.id,
+        category: sampleApprovedLearning.category,
+        content: sampleApprovedLearning.content,
+      },
+    ])
+    const { trip } = await response.json()
+    expect(trip.learningApplications).toEqual([
+      { learningId: selection.id, targetStopIds: [trip.stops[1].id], explanation },
+    ])
   })
 
   it('本文に承認済みの学び（旧形式のlearnings）を付けても400。Geminiも保存先も呼ばない', async () => {
@@ -244,6 +264,21 @@ describe('旅程生成のRoute：学びの選択', () => {
 
     expect(response.status).toBe(409)
     expect(JSON.stringify(await response.json())).not.toContain(sampleApprovedLearning.content)
+    expect(gemini.generateJson).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['未承認', { approval: { status: 'pending' } }, 503, 'learnings_unavailable'],
+    ['適用範囲外', { scope: { kind: 'region', region: '奈良市' } }, 409, 'selection_changed'],
+  ])('%sの学びを渡されても、Geminiを呼ばず失敗する', async (_case, patch, status, error) => {
+    store.listVersionedApproved.mockResolvedValue([
+      { version: 2, learning: { ...sampleApprovedLearning, ...patch } },
+    ])
+
+    const response = await post({ ...base, learningSelections: [selection] })
+
+    expect(response.status).toBe(status)
+    expect(await response.json()).toMatchObject({ status: error })
     expect(gemini.generateJson).not.toHaveBeenCalled()
   })
 

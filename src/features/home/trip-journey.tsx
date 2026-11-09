@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 
 import type { Trip } from '@/domain'
 import { OnSiteReplanningFlow } from '@/features/onsite-flow/onsite-replanning-flow'
@@ -39,6 +39,7 @@ interface TripJourneyProps {
   applyRevision?: ApplyRevision
   saveTrip?: SaveTrip
   initialSavedTrip?: Trip
+  learningSummary?: ReactNode
   // 学びを保存したとき。次の旅に使う学びの一覧を読み込み直すために使う。
   onLearningsChanged: () => void
 }
@@ -112,6 +113,7 @@ export function TripJourney({
   applyRevision,
   saveTrip,
   initialSavedTrip,
+  learningSummary,
   onLearningsChanged,
 }: TripJourneyProps) {
   const [savedTripId, setSavedTripId] = useState<string | null>(initialSavedTrip?.id ?? null)
@@ -158,6 +160,7 @@ export function TripJourney({
           return adopted
         }}
       />
+      {learningSummary}
       <TripSavePanel
         key={`${trip.id}:${savedTrip?.version ?? 'new'}`}
         initialSavedTrip={isSavedCurrent ? (savedTrip ?? undefined) : undefined}

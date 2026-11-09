@@ -87,8 +87,8 @@ Aが見ていないBの本文が、黙って採用される。これを防ぐた
 - 親は `useSessionScope()` の状態をそのまま `LearningReusePicker` の `session` に渡す。
   Pickerは `loadApprovedLearningOptions({ scope })` で取得し、一覧を `ScopedValue<VersionedLearning[]>` で保持する。
   取得のトークンは `getAuthHeadersForScope(scope)` で作る。UIDまたは認証世代が変わっていればトークンを出さず、`session_changed` で失敗する。
-- 選択は `ScopedValue<{ id, version }[]>`（`ScopedLearningSelection`）で親へ通知する。
-  「どの認証セッションの利用者が、画面で見たどの版を選んだか」の対応を型で残す。
+- 選択は `ScopedValue<{ id, version }[]>`（`ScopedLearningSelection`）を含む `LearningReuseSelection` で親へ通知する。
+  「どの認証セッションの利用者が、画面で見たどの版を選んだか」の対応を型で残し、結果画面に表示する本文も保持する。
 - UID・認証世代（`scopeEpoch`）・地域が変わったとき、再読み込みしたとき、認証の復元中・失効・エラーのとき、
   Pickerがアンマウントされるときは、進行中の読み込みを `AbortController` で中止し、
   **親へ `null`（選択なし）を通知して**親が持つ古い選択を無効にする。
@@ -218,7 +218,7 @@ const headers = await getAuthHeadersForScope(scope) // 送信側のトークン�
 
 **#54で必ず対応する統合条件（1〜4・6は実装済み。5もHTTPの再構築をやめたことで解消。画面側の接続はトップ画面 `HomePlanner`）**
 
-1. Picker → 親 → APIクライアント → 生成Route → resolver を、`{ id, version }` に統一する（IDだけの選択へ戻さない）。
+1. Pickerで選んだ `{ id, version }` を、親・APIクライアント・生成Route経由でresolverへ渡す（IDだけの選択へ戻さない）。
 2. UID・認証世代・地域が変わったとき、親に保持した古い選択も無効にする（`scopeEpoch` / `scope.uid` の変化、`onSelectionChange(null)`）。
    送信の直前に `resolveSelectionForRequest` を通す。
 3. 既存の `POST /api/trips/generate` から、クライアントが申告した学びの本文を承認済みとして信用する経路を閉じる。
@@ -228,10 +228,9 @@ const headers = await getAuthHeadersForScope(scope) // 送信側のトークン�
 
 ### 適用記録の表示
 
-- 記録の中心は、旅程の `learningApplications`（学びID・対象Stop・説明）。学びの内容が取得できなくても記録は捨てず、
-  「内容を取得できません（撤回または変更された可能性があります）」と示す。「記録がありません」と誤って伝えない。
-- 説明文はAI（Gemini）の自由文で未検証。「AIによる説明（未検証）」と表示する。
-- 表示する学びの内容は**現在**保存されている内容で、生成した時点のスナップショットではない（旅程には本文を保存しない）。
-  「現在の内容」と表示する。
-- 現在の適用記録には、生成時に検証した学びの版がない。そのため、記録された学びが今も同じ版かは判別できない
-  （「撤回または変更された可能性があります」と示すにとどめる）。版の記録は上記の提案1で扱う。
+- 生成結果画面では、送信時の選択に対応する本文を、旅程の `learningApplications`（学びID・対象Stop・説明）と組にして表示する。
+  本文はPickerがその版で表示した内容を使用する。APIに送信する選択は `{ id, version }` で、旅程には本文を保存しない。
+- 適用先を記録した学びは生成時の対象予定と「AIによる説明（未検証）」を表示する。
+  生成条件に渡しても反映先が報告されなかった学びは、別に一覧表示する。
+- 生成結果同士の差分は提示しない。同じ条件で生成結果が変わる可能性があり、学びによる変化かどうかは確認できない。
+- 適用記録がある旅程はプレビューで確認できる。保存は上記の再検証が接続されるまで制限する。
