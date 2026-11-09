@@ -56,6 +56,70 @@ body {
   font-family: system-ui, 'Noto Sans JP', sans-serif;
 }
 
+/* Welcome is a focused, full-screen entry point; keep shared navigation out of tab order. */
+body:has(main [data-welcome-screen]) {
+  border-top: 0;
+  overflow: hidden;
+}
+
+body:has(main [data-welcome-screen]) > header,
+body:has(main [data-welcome-screen]) > footer,
+body:has(main [data-welcome-screen]) > main {
+  display: none;
+}
+
+body:has(main [data-welcome-screen]) > main:has([data-welcome-screen]) {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  width: 100%;
+  max-width: none;
+  padding: 0;
+}
+
+.gt-welcome-image {
+  transform: scale(1.025);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .gt-welcome-image {
+    animation: gt-welcome-arrive 220ms ease-out both;
+  }
+
+  .gt-welcome-exit .gt-welcome-image {
+    animation: gt-welcome-leave 220ms ease-in both;
+  }
+
+  .gt-welcome-exit > div {
+    animation: gt-welcome-fade 220ms ease-in both;
+  }
+}
+
+@keyframes gt-welcome-arrive {
+  from {
+    opacity: 0.72;
+    transform: scale(1.055);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.025);
+  }
+}
+
+@keyframes gt-welcome-leave {
+  to {
+    opacity: 0.75;
+    transform: scale(1.065);
+  }
+}
+
+@keyframes gt-welcome-fade {
+  to {
+    opacity: 0;
+  }
+}
+
 .gt-field {
   @apply box-border w-full min-w-0 max-w-full rounded-xl border border-gt-muted bg-gt-paper text-base text-gt-ink;
 }

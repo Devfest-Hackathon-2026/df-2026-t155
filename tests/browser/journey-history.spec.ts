@@ -96,6 +96,8 @@ test('利用規約からホームへ進み、生成後のロゴ操作をBack／F
 }) => {
   const saveAttempts = await mockJourney(context)
   await page.goto('/access#ticket=' + 'a'.repeat(43))
+  await page.waitForURL('/welcome')
+  await page.getByRole('button', { name: '旅をはじめる' }).click()
   await page.waitForURL('/')
   await page.getByRole('link', { name: /利用規約・プライバシー/ }).click()
   await page.waitForURL('/terms')
@@ -133,6 +135,8 @@ test('保存済み旅程の最終予定と振り返りを往復し、入力と�
 }) => {
   const saveAttempts = await mockJourney(context, [trip])
   await page.goto('/access#ticket=' + 'a'.repeat(43))
+  await page.waitForURL('/welcome')
+  await page.getByRole('button', { name: '旅をはじめる' }).click()
   await page.waitForURL('/')
   await page.getByRole('button', { name: '保存した旅程で旅行を続ける' }).click()
   await page.getByRole('button').filter({ hasText: trip.region }).click()

@@ -5,6 +5,7 @@ import { expect, test } from '@playwright/test'
 for (const width of [320, 375, 390]) {
   test(`${width}pxで日付・時刻の枠の左右端から入力できる`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
+    await page.addInitScript(() => localStorage.setItem('groundtrip:welcome-completed:v1', 'true'))
     await page.goto('/')
     await page.getByLabel('旅行先（必須）').fill('京都市')
     await page.getByRole('button', { name: '固定予定を追加' }).click()
