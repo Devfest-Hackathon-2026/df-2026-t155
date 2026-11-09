@@ -20,12 +20,11 @@ describe('次回旅程への学びの適用記録', () => {
     expect(screen.getByText(/学びが予定を変えたかは確認できません/)).toBeTruthy()
   })
 
-  it('AIの説明は未検証と明示し、適用記録がある旅程の保存制限を示す', () => {
+  it('AIの説明は未検証と明示する', () => {
     render(<LearningApplicationSummary trip={sampleTrip} learnings={[sampleApprovedLearning]} />)
 
     const item = screen.getByRole('listitem')
     expect(within(item).getByText('AIによる説明（未検証）：')).toBeTruthy()
-    expect(screen.getByText(/保存には対応していません/)).toBeTruthy()
   })
 
   it('対応する学びが取得できなくても、適用記録を捨てず、記録が無いとは表示しない', () => {

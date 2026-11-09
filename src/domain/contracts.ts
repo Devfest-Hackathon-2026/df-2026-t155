@@ -1,6 +1,13 @@
 import { z } from 'zod'
 
 import { ApprovedLearningSchema, StopSchema, TripSchema } from './models'
+import { LearningSaveProofSchema } from './learning-trip-protocol'
+import {
+  TripPreferencesSchema,
+  TripRecordIdSchema,
+  TripRegionSchema,
+  TripStopNameSchema,
+} from './trip-write-limits'
 import { DateSchema, IdSchema, TextSchema, TimeZoneSchema } from './primitives'
 import {
   matchesRevisionReportTarget,
@@ -19,10 +26,18 @@ export const ProposalFailureSchema = z.strictObject({
 export const GenerateTripRequestSchema = z
   .strictObject({
     date: DateSchema,
-    region: TextSchema,
+    region: TripRegionSchema,
     timeZone: TimeZoneSchema,
-    preferences: z.array(TextSchema),
-    fixedStops: z.array(StopSchema.safeExtend({ isFixed: z.literal(true) })).max(4),
+    preferences: TripPreferencesSchema,
+    fixedStops: z
+      .array(
+        StopSchema.safeExtend({
+          id: TripRecordIdSchema,
+          name: TripStopNameSchema,
+          isFixed: z.literal(true),
+        }),
+      )
+      .max(4),
     learnings: z.array(ApprovedLearningSchema),
   })
   .superRefine((request, ctx) => {
@@ -46,7 +61,12 @@ export const GenerateTripRequestSchema = z
   })
 
 export const GenerateTripResponseSchema = z.union([
-  z.strictObject({ status: z.literal('proposed'), trip: TripSchema }),
+  z.strictObject({
+    status: z.literal('proposed'),
+    trip: TripSchema,
+    learningSaveProof: LearningSaveProofSchema.optional(),
+    learningSaveUnavailable: z.enum(['disabled', 'signing_unavailable']).optional(),
+  }),
   ProposalFailureSchema,
 ])
 

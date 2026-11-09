@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import '../../../../../tests/helpers/mock-cost-control'
 
 import { requestTripGeneration } from '@/features/trip-planner/api-client'
+import { LEARNING_TRIP_HEADER, LEARNING_TRIP_PROTOCOL } from '@/domain/learning-trip-protocol'
 import { sampleApprovedLearning } from '@/domain/samples'
 import { GeminiCallError } from '@/server/gemini/client'
 import type { GenerateTripConditions } from '@/server/trip-generation/http-request'
@@ -185,7 +186,7 @@ describe('旅程生成のRoute：学びの選択', () => {
   const base = request
   const selection = { id: sampleApprovedLearning.id, version: 2 }
 
-  const post = (body: unknown) =>
+  const post = (body: unknown, capable = true) =>
     POST(
       new Request('http://localhost/api/trips/generate', {
         method: 'POST',
@@ -193,6 +194,7 @@ describe('旅程生成のRoute：学びの選択', () => {
           'Content-Type': 'application/json',
           Authorization: 'Bearer test.id.token',
           'X-Firebase-AppCheck': 'test.app.check',
+          ...(capable ? { [LEARNING_TRIP_HEADER]: LEARNING_TRIP_PROTOCOL } : {}),
         },
         body: JSON.stringify(body),
       }),
@@ -200,6 +202,8 @@ describe('旅程生成のRoute：学びの選択', () => {
 
   beforeEach(() => {
     vi.stubEnv('TRIP_GENERATION_ENABLED', 'true')
+    vi.stubEnv('LEARNING_TRIP_SAVE_ENABLED', 'true')
+    vi.stubEnv('REVISION_PROPOSAL_SIGNING_KEY', Buffer.alloc(32, 12).toString('base64url'))
     gemini.generateJson.mockReset()
     store.listVersionedApproved.mockReset()
   })
@@ -239,10 +243,75 @@ describe('旅程生成のRoute：学びの選択', () => {
         content: sampleApprovedLearning.content,
       },
     ])
-    const { trip } = await response.json()
+    const { trip, learningSaveProof } = await response.json()
+    expect(trip.id).toMatch(/^learning-trip-/)
+    expect(learningSaveProof).toMatch(/^v1\./)
     expect(trip.learningApplications).toEqual([
-      { learningId: selection.id, targetStopIds: [trip.stops[1].id], explanation },
+      {
+        learningId: selection.id,
+        learningVersion: 2,
+        targetStopIds: [trip.stops[1].id],
+        explanation,
+      },
     ])
+  })
+
+  it.each([
+    { patch: { preferences: ['x'.repeat(201)] }, path: 'preferences.0' },
+    { patch: { preferences: Array.from({ length: 17 }, () => '希望') }, path: 'preferences' },
+    { patch: { region: '京'.repeat(121) }, path: 'region' },
+    {
+      patch: { fixedStops: [{ ...base.fixedStops[0], name: '名'.repeat(201) }] },
+      path: 'fixedStops.0.name',
+    },
+  ])('保存条件に反する入力 $path をGeminiの前に拒否する', async ({ patch, path }) => {
+    for (const learningSelections of [[], [selection]]) {
+      const response = await post({ ...base, ...patch, learningSelections })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toMatchObject({
+        issues: expect.arrayContaining([expect.objectContaining({ path })]),
+      })
+    }
+    expect(gemini.generateJson).not.toHaveBeenCalled()
+    expect(store.listVersionedApproved).not.toHaveBeenCalled()
+  })
+
+  it('200文字を許可し、旧クライアントに旧形式の生成結果を返す', async () => {
+    store.listVersionedApproved.mockResolvedValue([
+      { version: 2, learning: sampleApprovedLearning },
+    ])
+    gemini.generateJson.mockResolvedValue(
+      JSON.stringify({
+        ...draft('11:30'),
+        learningApplications: [{ learningId: selection.id, stopIndexes: [1], explanation: '説明' }],
+      }),
+    )
+    const preferences = ['x'.repeat(200)]
+    const response = await post({ ...base, preferences, learningSelections: [selection] }, false)
+    expect(response.status).toBe(200)
+    const result = await response.json()
+    expect(Object.keys(result).sort()).toEqual(['status', 'trip'])
+    expect(result.trip.preferences).toEqual(preferences)
+    expect(result.trip.learningApplications[0]).not.toHaveProperty('learningVersion')
+  })
+
+  it('保存制約を超えるAI出力には証跡を発行しない', async () => {
+    store.listVersionedApproved.mockResolvedValue([
+      { version: 2, learning: sampleApprovedLearning },
+    ])
+    gemini.generateJson.mockResolvedValue(
+      JSON.stringify({
+        ...draft('11:30'),
+        learningApplications: [
+          { learningId: selection.id, stopIndexes: [1], explanation: '長'.repeat(241) },
+        ],
+      }),
+    )
+    const response = await post({ ...base, learningSelections: [selection] })
+    expect(response.status).toBe(422)
+    const result = await response.json()
+    expect(result.status).toBe('no_candidates')
+    expect(result).not.toHaveProperty('learningSaveProof')
   })
 
   it('本文に承認済みの学び（旧形式のlearnings）を付けても400。Geminiも保存先も呼ばない', async () => {

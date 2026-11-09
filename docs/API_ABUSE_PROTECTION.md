@@ -21,7 +21,11 @@ Geminiは `@google/genai` をVertex AIモードで使用し、認証はADC。既
 
 `checkRevisionConstraints` は内部からMapsを呼べる。Revision適用（`POST /api/trips/{tripId}/revisions/{revisionId}/apply`）の確定前の再検証がこれを呼ぶため、適用を新たな有料の入口として扱い、同じ操作の予約と計量済みclientに接続した（[統合の内訳](#並行開発との統合)）。現行のHTTP経路の点検では、Routeからの直接呼び出しに加えて、Geminiの `generateContent`、Placesの `searchText`、Routesの `computeRoutes` の利用箇所とアダプターの呼び出し元を確認した。
 
-Firestoreは `PERSISTENCE_ENABLED` で制御し、各Routeの `withDataActor` が本文・業務ストア操作の前にフラグ、認証、招待UID、App Check、分散利用枠を確認する。Admin SDKは全拒否Rulesを迂回するため、UIDで保存先を分け、保存済みデータで所有者を検証する。以下の操作数は既存の取得件数やトランザクションの構造から見た目安で、再試行やインデックス等の課金は別に見積もる。 [保存APIと保存枠](FIRESTORE_PERSISTENCE.md) · [Firestore課金](https://firebase.google.com/docs/firestore/pricing)
+Firestoreは `PERSISTENCE_ENABLED` で制御し、各Routeの `withDataActor` がフラグ、認証、招待UID、App Check、分散利用枠を確認してから業務ストアを操作する。
+Tripの新規保存では、認証とApp Checkの後、`X-GroundTrip-Learning-Count` の申告件数で適用記録の読取枠を加算する。
+分散枠の取得後に64 KiB・2秒を上限に本文を読み、件数の一致を確かめる。受信期限は操作期限と通信中断にも従い、
+2秒で打ち切った場合は408を返して同時枠を解放する。申告件数を少なくして読取枠を回避することはできない。
+Admin SDKは全拒否Rulesを迂回するため、UIDで保存先を分け、保存済みデータで所有者を検証する。以下の操作数は既存の取得件数やトランザクションの構造から見た目安で、再試行やインデックス等の課金は別に見積もる。 [保存APIと保存枠](FIRESTORE_PERSISTENCE.md) · [Firestore課金](https://firebase.google.com/docs/firestore/pricing)
 
 | Firestoreを使うHTTP                                                                   | 主な操作とコスト要因                                                                                                                 |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |

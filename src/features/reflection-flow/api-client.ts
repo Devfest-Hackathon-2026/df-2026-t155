@@ -7,6 +7,12 @@ import {
   type Revision,
   type Trip,
 } from '@/domain'
+import {
+  LEARNING_COUNT_HEADER,
+  LEARNING_TRIP_HEADER,
+  LEARNING_TRIP_PROTOCOL,
+} from '@/domain/learning-trip-protocol'
+import { TRIP_SAVE_MAX_BYTES } from '@/domain/trip-write-limits'
 import { ClientAuthError } from '@/lib/auth/client'
 import { getProtectedApiHeadersForScope } from '@/lib/auth/protected-api'
 import {
@@ -24,6 +30,7 @@ import {
 import {
   ApproveLearningBodySchema,
   CreateTripBodySchema,
+  requiresLearningSaveProof,
   LearningListResponseSchema,
   ReflectionRevisionSchema,
   VersionedLearningSchema,
@@ -31,6 +38,7 @@ import {
 } from '@/server/persistence/contracts'
 
 import type { LearningStore, SaveResult } from '@/features/learning-review/store'
+import { sameSavedTrip } from '@/features/onsite-flow/saved-snapshot'
 
 const ListInfoSchema = z.strictObject({
   returned: z.int().nonnegative(),
@@ -197,6 +205,57 @@ const KNOWN_FAILURES: Readonly<
     outcome: 'rejected',
   },
   learning_revoked: { status: 409, message: '撤回済みの学びです。', outcome: 'rejected' },
+  body_read_timeout: {
+    status: 408,
+    message: '保存内容の送信に時間がかかりました。通信環境を確認してください。',
+    outcome: 'rejected',
+  },
+  learning_trip_save_disabled: {
+    status: 503,
+    message: '学び付きの旅程保存は現在停止中です。時間をおいて確認してください。',
+    outcome: 'rejected',
+  },
+  learning_trip_upgrade_required: {
+    status: 409,
+    message: 'この旅程を開くにはページを再読み込みして更新してください。',
+    outcome: 'rejected',
+  },
+  learning_place_provenance_invalid: {
+    status: 422,
+    message: '場所の識別子を照合結果と確認できません。根拠を確認し直してください。',
+    outcome: 'rejected',
+  },
+  learning_changed: {
+    status: 409,
+    message: '学びが変更または撤回されました。学びを選び直して旅程を作り直してください。',
+    outcome: 'rejected',
+  },
+  learning_provenance_missing: {
+    status: 409,
+    message: '生成時の学びを確認できません。旅程を作り直してください。',
+    outcome: 'rejected',
+  },
+  learning_provenance_expired: {
+    status: 409,
+    message: '学びの適用記録を保存できる期限が切れました。旅程を作り直してください。',
+    outcome: 'rejected',
+  },
+  learning_provenance_invalid: {
+    status: 422,
+    message: '旅程または学びの適用記録が生成時の内容と一致しません。旅程を作り直してください。',
+    outcome: 'rejected',
+  },
+  learning_provenance_unavailable: {
+    status: 503,
+    message:
+      '生成時の学びを確認するサービスを利用できません。時間をおいて、もう一度お試しください。',
+    outcome: 'rejected',
+  },
+  write_result_unknown: {
+    status: 503,
+    message: '保存結果を確認できませんでした。再送する前に保存内容を取得してください。',
+    outcome: 'unknown',
+  },
   // 保存先の障害や内部エラーは、書き込みの後に起きた可能性がある。結果は確定しない。
   storage_unavailable: {
     status: 503,
@@ -297,6 +356,9 @@ export async function authorizedJson<T>(
     throw error
   }
   if (body !== undefined) headers.set('Content-Type', 'application/json')
+  if (path === '/api/trips' || path.startsWith('/api/trips/')) {
+    headers.set(LEARNING_TRIP_HEADER, LEARNING_TRIP_PROTOCOL)
+  }
 
   // ヘッダー取得後からfetchまでの境界も同期確認し、通信をセッション世代に登録する。
   const operation = beginSessionScopeOperation(scope, signal)
@@ -388,24 +450,34 @@ export async function loadSavedTrips(
 }
 
 // 旅程を本人の保存先へ新規保存する（POST /api/trips）。本人が保存を選んだときだけ呼ぶ。
-// 保存先が受け付ける形（版0・3〜4地点・適用記録なし）に合わない旅程は、送らずに理由を返す。
+// 生成時の学びの証跡は、旅程と別に受け取り保存リクエストにだけ載せる。
 // 送信後に応答を失った場合は outcome: 'unknown' の例外になる（保存済みかもしれないので、自動では再送しない）。
 export const TRIP_NOT_SAVABLE_CODE = 'trip_not_savable'
+export type TripSaveProofs = { learningSaveProof?: string; placeSaveProof?: string }
 export async function saveTrip(
   scope: SessionScope,
   trip: Trip,
-  options: LoadOptions = {},
+  { learningSaveProof, placeSaveProof, ...options }: LoadOptions & TripSaveProofs = {},
 ): Promise<Trip> {
-  if (trip.learningApplications.length > 0) {
+  const requiresProof = requiresLearningSaveProof(trip)
+  if (requiresProof && !learningSaveProof) {
     throw new ReflectionApiError(
-      '学びを使って作った旅程は、まだ保存できません。学びの適用記録を保存先で再確認する仕組みが未接続のためです。',
+      '生成時の学びを確認できないため、保存できません。旅程を作り直してください。',
       undefined,
       TRIP_NOT_SAVABLE_CODE,
       'not_sent',
     )
   }
-  const body = CreateTripBodySchema.safeParse(trip)
-  if (!body.success) {
+  const body = CreateTripBodySchema.safeParse({
+    ...trip,
+    stops: trip.stops.map((stop) => ({ ...stop, evidence: [] })),
+    learningSaveProof,
+    placeSaveProof,
+  })
+  if (
+    !body.success ||
+    new TextEncoder().encode(JSON.stringify(body.data)).length > TRIP_SAVE_MAX_BYTES
+  ) {
     throw new ReflectionApiError(
       trip.version !== 0
         ? '現地での変更を反映した旅程は、まだ保存できません。保存できるのは、作成した時点の旅程です。'
@@ -419,8 +491,14 @@ export async function saveTrip(
     ...options,
     method: 'POST',
     body: body.data,
+    getHeaders: async (currentScope) => {
+      const headers = await (options.getHeaders ?? getProtectedApiHeadersForScope)(currentScope)
+      if (trip.learningApplications.length > 0)
+        headers.set(LEARNING_COUNT_HEADER, String(trip.learningApplications.length))
+      return headers
+    },
   })
-  if (saved.trip.id !== body.data.id) {
+  if (saved.trip.id !== trip.id || (requiresProof && !sameSavedTrip(trip, saved.trip))) {
     throw new ReflectionApiError(INVALID_RESPONSE_MESSAGE, undefined, undefined, 'unknown')
   }
   return saved.trip

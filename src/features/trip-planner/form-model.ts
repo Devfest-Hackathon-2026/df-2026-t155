@@ -1,4 +1,10 @@
 import { GenerateTripRequestSchema } from '@/domain'
+import {
+  TRIP_PREFERENCE_MAX,
+  TRIP_PREFERENCES_MAX,
+  TRIP_REGION_MAX,
+  TRIP_STOP_NAME_MAX,
+} from '@/domain/trip-write-limits'
 import type { GenerateTripConditions } from '@/server/trip-generation/http-request'
 
 // 旅程作成フォームの入力値と、生成リクエスト（共通契約）への変換・検証。
@@ -156,8 +162,17 @@ export function buildGenerateTripRequest(values: TripFormValues): BuildRequestRe
     for (const issue of parsed.error.issues) {
       const field = issue.path[0]
       if (isFormField(field) && errors[field] === undefined) {
-        errors[field] =
-          field === 'date' ? '正しい日付を選んでください' : '入力内容を確認してください'
+        if (issue.code === 'too_big' && field === 'preferences') {
+          errors[field] =
+            typeof issue.path[1] === 'number'
+              ? `希望条件の${issue.path[1] + 1}件目を${TRIP_PREFERENCE_MAX}文字以内にしてください`
+              : `希望条件は${TRIP_PREFERENCES_MAX}件まで入力できます`
+        } else if (issue.code === 'too_big' && field === 'region') {
+          errors.region = `旅行先を${TRIP_REGION_MAX}文字以内にしてください`
+        } else {
+          errors[field] =
+            field === 'date' ? '正しい日付を選んでください' : '入力内容を確認してください'
+        }
       }
       // 固定予定：行の検証で拾えなかった契約違反も、その行の項目に結び付ける。
       if (field === 'fixedStops' && typeof issue.path[1] === 'number') {
@@ -170,7 +185,10 @@ export function buildGenerateTripRequest(values: TripFormValues): BuildRequestRe
         ) {
           fixedStopErrors[row.key] = {
             ...fixedStopErrors[row.key],
-            [stopField]: '入力内容を確認してください',
+            [stopField]:
+              stopField === 'name' && issue.code === 'too_big'
+                ? `予定名を${TRIP_STOP_NAME_MAX}文字以内にしてください`
+                : '入力内容を確認してください',
           }
         }
       }

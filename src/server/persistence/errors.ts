@@ -8,6 +8,27 @@ const failures = {
   version_conflict: [409, '保存内容の版が変わりました。最新の内容を確認してください。'],
   storage_limit_reached: [409, '保存できる件数の上限に達しました。'],
   learning_revoked: [409, '撤回済みの学びです。再保存する場合は新しいIDを使ってください。'],
+  body_read_timeout: [408, '保存リクエストの受信に時間がかかりすぎました。'],
+  learning_trip_save_disabled: [503, '学びの適用記録を含む旅程の保存は現在停止中です。'],
+  learning_trip_upgrade_required: [
+    409,
+    'この旅程を開くにはページを再読み込みして更新してください。',
+  ],
+  learning_place_provenance_invalid: [
+    422,
+    '場所の識別子を照合結果と確認できません。根拠を確認し直してください。',
+  ],
+  learning_changed: [
+    409,
+    '学びが変更または撤回されました。学びを選び直して旅程を作り直してください。',
+  ],
+  learning_provenance_missing: [409, '生成時の学びを確認できません。旅程を作り直してください。'],
+  learning_provenance_invalid: [422, '旅程または学びの適用記録が生成時の内容と一致しません。'],
+  learning_provenance_expired: [
+    409,
+    '学びの適用記録を保存できる期限が切れました。旅程を作り直してください。',
+  ],
+  learning_provenance_unavailable: [503, '生成時の学びを確認するサービスを利用できません。'],
   already_exists: [409, '同じIDの保存データが存在します。'],
   revision_mismatch: [409, '現在の旅程と変更候補の対象が一致しません。'],
   revision_not_pending: [409, 'この変更候補はすでに決定されています。'],

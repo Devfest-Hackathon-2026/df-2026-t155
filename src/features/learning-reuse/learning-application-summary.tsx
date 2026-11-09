@@ -20,23 +20,32 @@ export function LearningApplicationSummary({ trip, learnings }: LearningApplicat
       <h3 className="text-lg font-semibold">生成時の学びの適用記録</h3>
       {trip.learningApplications.length > 0 && (
         <ul className="space-y-3">
-          {trip.learningApplications.map(({ learningId, targetStopIds, explanation }) => {
-            const targets = targetStopIds.map(
-              (id) => stopNames.get(id) ?? `この旅程で確認できない予定（${id}）`,
-            )
-            return (
-              <li key={learningId} className="gt-card">
-                <p className="break-words text-sm">
-                  {byId.get(learningId)?.content ?? `選択時の内容を確認できません（${learningId}）`}
-                </p>
-                <p className="mt-1 break-words text-sm">生成時の対象：{targets.join('、')}</p>
-                <p className="mt-1 break-words text-sm">
-                  <span className="font-semibold">AIによる説明（未検証）：</span>
-                  {explanation}
-                </p>
-              </li>
-            )
-          })}
+          {trip.learningApplications.map(
+            ({ learningId, learningVersion, targetStopIds, explanation }) => {
+              const targets = targetStopIds.map(
+                (id) => stopNames.get(id) ?? `この旅程で確認できない予定（${id}）`,
+              )
+              return (
+                <li key={learningId} className="gt-card">
+                  <p className="break-words text-sm">
+                    <span>
+                      {byId.get(learningId)?.content ??
+                        `選択時の内容を確認できません（${learningId}）`}
+                    </span>
+                    {learningVersion !== undefined && ` · 版 ${learningVersion}`}
+                  </p>
+                  <p className="mt-1 break-words text-sm">
+                    {trip.version === 0 ? '生成時の対象' : '対象の予定（現在の名称）'}：
+                    {targets.join('、')}
+                  </p>
+                  <p className="mt-1 break-words text-sm">
+                    <span className="font-semibold">AIによる説明（未検証）：</span>
+                    {explanation}
+                  </p>
+                </li>
+              )
+            },
+          )}
         </ul>
       )}
       {unreported.length > 0 && (
@@ -56,11 +65,6 @@ export function LearningApplicationSummary({ trip, learnings }: LearningApplicat
       <p className="text-xs text-gt-muted">
         同じ条件でも生成結果は変わるため、学びが予定を変えたかは確認できません。
       </p>
-      {trip.learningApplications.length > 0 && (
-        <p className="text-sm">
-          学びの適用記録がある旅程は、現在プレビューで確認できます。保存には対応していません。
-        </p>
-      )}
     </section>
   )
 }

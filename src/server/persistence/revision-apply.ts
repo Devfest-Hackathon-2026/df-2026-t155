@@ -18,6 +18,7 @@ import {
 import { diagnosePersistenceFailure } from './diagnostics'
 import { fromTripDocument, readRevisionDocument, toStopDto } from './dto'
 import { parseInput, parseStored, PersistenceError } from './errors'
+import { requireLearningTripReader } from './learning-trip-rollout'
 import { found, readOwned, recordKey } from './paths'
 import { requireUnexpiredProposal } from './revision-provenance'
 import { reportState, storedReportStates } from './revision-reports'
@@ -123,6 +124,7 @@ export async function applyStoredRevision(
   expectedVersion: number,
   verify: VerifyRevision,
   guard: ApplyGuard,
+  acceptsProtocol = true,
 ): Promise<ApplyRevisionResult> {
   const ref = tripRef.collection('revisions').doc(recordKey(parseInput(PathIdSchema, revisionId)))
   const version = parseInput(VersionSchema, expectedVersion)
@@ -133,6 +135,7 @@ export async function applyStoredRevision(
   }
   const [tripSnapshot, revisionSnapshot] = await readSnapshots()
   const initial = readTarget(actor, tripSnapshot, revisionSnapshot)
+  requireLearningTripReader(acceptsProtocol, [initial.trip])
   const replay = appliedResult(initial, version)
   if (replay) return replay
   const { revision, travelModes, endpoints } = requireApplicable(initial, version)
@@ -145,6 +148,7 @@ export async function applyStoredRevision(
     return await guard.write(async (transaction) => {
       const [currentTripSnapshot, currentRevisionSnapshot] = await transaction.getAll(tripRef, ref)
       const current = readTarget(actor, currentTripSnapshot, currentRevisionSnapshot)
+      requireLearningTripReader(acceptsProtocol, [current.trip])
       const replay = appliedResult(current, version)
       if (replay) return replay
       const { stop } = requireApplicable(current, version)

@@ -12,7 +12,12 @@ Geminiで日帰り旅行（1日・1地域・3〜4地点）の旅程を**提案**
   上限を超えた時点で読み取りを中止する。**承認済みの学びの本文（`learnings`）は受け付けない**（付いていれば400）。
   学びは、サーバーが認証済みUIDの保存済みデータと `{ id, version }` を照合して解決する（`docs/LEARNINGS.md`）。
   選択が空なら学びなしで生成し、保存先は読まない。
-- 成功: HTTP 200、`{ status: 'proposed', trip }`。
+  保存契約と同じ地域120文字・希望条件16件かつ各200文字・固定予定名200文字・固定Stop ID256文字を適用する。
+  超過はGemini呼び出し前に400を返し、`issues` に該当項目のパスを含める。
+- 成功はHTTP 200の `{ status: 'proposed', trip }`。適用記録がある旅程には照合済みの `learningVersion` を記録する。
+  新形式は `X-GroundTrip-Learning-Trip: 1` を宣言したクライアントが受け取る。書き込みフラグと署名鍵が有効なら
+  `learningSaveProof` を返す。停止中や署名不可の場合は `learningSaveUnavailable` を返し、プレビューを保持する。
+  生成結果は保存スキーマと64 KiB上限を検査し、保存可能な形式を組み立てられない場合は候補なしとする。
 - 失敗: 共通契約の`ProposalFailure`（`status`と`message`）。更新後の旅程は含まない。
 
 | HTTP | `status`                                     | 意味                                                                                                    |

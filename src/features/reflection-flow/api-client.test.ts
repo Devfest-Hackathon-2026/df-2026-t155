@@ -1582,7 +1582,7 @@ describe('旅程の保存（POST /api/trips）', () => {
     vi.unstubAllGlobals()
   })
 
-  it('学びを使って作った旅程（適用記録あり）は、送らずに保存できない理由を返す', async () => {
+  it('適用記録の証跡がない旅程は、送らずに保存できない理由を返す', async () => {
     const backend = createFakeBackend({ [A]: {} })
     vi.stubGlobal('fetch', backend.fetchFn)
 
@@ -1605,8 +1605,16 @@ describe('旅程の保存（POST /api/trips）', () => {
     vi.unstubAllGlobals()
   })
 
-  it('送信後に応答を失ったときは「結果不明」とし、再送しない', async () => {
+  it('適用記録を含む旅程の保存で応答を失っても、再送せず再取得で確かめられる', async () => {
     const backend = createFakeBackend({ [A]: {} })
+    const trip = TripSchema.parse({
+      ...sampleTrip,
+      id: 'learning-trip-lost-response',
+      learningApplications: sampleTrip.learningApplications.map((application) => ({
+        ...application,
+        learningVersion: 1,
+      })),
+    })
     backend.intercept(
       (call) => call.method === 'POST',
       ({ proceed }) => {
@@ -1616,8 +1624,15 @@ describe('旅程の保存（POST /api/trips）', () => {
     )
     vi.stubGlobal('fetch', backend.fetchFn)
 
-    await expect(saveTrip(scope, savableTrip)).rejects.toMatchObject({ outcome: 'unknown' })
+    await expect(
+      saveTrip(scope, trip, {
+        learningSaveProof: `v1.1794300000000.${'A'.repeat(43)}.${'A'.repeat(43)}`,
+      }),
+    ).rejects.toMatchObject({ outcome: 'unknown' })
     expect(backend.calls).toHaveLength(1)
+    const history = await loadReflectionHistory(scope, trip.id)
+    expect(history.trip.learningApplications).toEqual(trip.learningApplications)
+    expect(backend.calls.filter(({ method }) => method === 'POST')).toHaveLength(1)
     vi.unstubAllGlobals()
   })
 

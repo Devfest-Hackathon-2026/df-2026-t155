@@ -10,16 +10,10 @@ import { normalizeModes } from '../verification/segment'
 import { RevisionProofContextSchema, SaveRevisionBodySchema } from './contracts'
 import { toRevisionDocument, toTripDocument } from './dto'
 import { PersistenceError } from './errors'
+import { getProvenanceSigningKey } from './provenance-key'
 
 const TTL_MS = 15 * 60 * 1000
 type Document = ReturnType<typeof toRevisionDocument>
-
-function signingKey() {
-  const value = process.env.REVISION_PROPOSAL_SIGNING_KEY
-  if (!value || !/^[A-Za-z0-9_-]{43}$/.test(value)) return
-  const key = Buffer.from(value, 'base64url')
-  if (key.toString('base64url') === value) return key
-}
 
 function signature(
   key: Buffer,
@@ -49,7 +43,7 @@ export function issueRevisionProposalTokens(
   response: ReviseTripResponse,
   reportVersion = 0,
 ): ReviseTripResponse {
-  const key = signingKey()
+  const key = getProvenanceSigningKey()
   if (!key || response.status !== 'proposed') return response
   const expiresAt = String(Date.now() + TTL_MS)
   const modes = normalizeModes(request.travelModes)
@@ -87,7 +81,7 @@ export function verifyRevisionProposal(
   document: Document,
   token: string,
 ) {
-  const key = signingKey()
+  const key = getProvenanceSigningKey()
   if (!key) throw new PersistenceError('revision_provenance_unavailable')
   const [, expiresAt, scope, encoded] = token.split('.')
   const presented = Buffer.from(encoded, 'base64url')

@@ -14,6 +14,9 @@ const revise = { gemini: 1, places: 6, routes: 16 } satisfies OperationCost
 // 本人報告の状態の読取（Trip 1件と、旧文書の復元に使う候補の最大 `REVISION_LIMIT + 1` 件）。
 const REVISION_REPORT_READS = 2 + REVISION_LIMIT
 
+export const createTripCost = (learningCount: number): OperationCost =>
+  transaction(2 + TRIP_LIMIT + learningCount, 2)
+
 export const COSTS = {
   generate: { gemini: 1 },
   // 選んだ学びを保存済みの現行版と照合する分（一覧の読み取り）を加える。
@@ -26,7 +29,6 @@ export const COSTS = {
   learningCandidates: { gemini: 1 },
   listTrips: { reads: TRIP_LIMIT + 1 },
   getTrip: { reads: 1 },
-  createTrip: transaction(2 + TRIP_LIMIT, 2),
   updateTrip: transaction(1, 1),
   listRevisions: { reads: 1 + REVISION_LIMIT + 1 },
   getRevision: { reads: 2 },

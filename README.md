@@ -55,7 +55,7 @@ GroundTripは、旅程の**一部だけ**を便利に直す操作の中で、事
 
 - **mainに実装済み**：学び候補の作成API（#22）、候補の編集・承認・却下と保存状態表示（#26・#39）、Firestoreの本人別保存API（#44）。
 - **画面接続あり**：トップ画面で旅程を保存すると、同じページに振り返りが現れ、保存した旅程・保存済み変更履歴・学びの承認と保存（Firestore、`PERSISTENCE_ENABLED`が必要）につながります。`/reflection` は本人の保存済み旅程、`/reflection?demo=1` は架空のデモです。
-- **制限**：学びを使って作った旅程は、適用記録をサーバーで再検証する仕組みが未接続のため、保存できません。
+- **学び付き旅程の保存**：生成証跡と保存時のFirestore再検証を使い、学びの所有者・承認状態・版・適用範囲を確認して保存します。施設照合後のPlace IDも別のサーバー証跡で検証します。`LEARNING_TRIP_SAVE_ENABLED` は既定で無効です。本番で有効にする前に、読み取り互換リリースの先行配備と共通署名鍵の設定が必要です（[`docs/FIRESTORE_PERSISTENCE.md`](docs/FIRESTORE_PERSISTENCE.md)）。
 - 編集・却下・未承認の学びは次回の旅に適用しません。モデルの再学習でもありません。
 
 ### 6. 次回旅行への反映
@@ -124,6 +124,7 @@ Geminiを選んだ理由と、各APIを選んだ理由の文面は、`docs/` に
 - **API** — パス: `POST /api/learnings/candidates`／現状: 学びの候補生成（`LEARNING_CANDIDATES_ENABLED`、既定無効）
 - **API** — パス: `GET /api/auth/session`／現状: Firebase IDトークンの確認
 - **API** — パス: `/api/trips`・`/api/trips/[tripId]`・`/api/trips/[tripId]/revisions`／現状: Trip・Revisionの本人別保存・取得。`PERSISTENCE_ENABLED`が必要（既定無効）
+- **API** — パス: `POST /api/trips`（学びの適用記録つき）／現状: 署名証跡と保存時の学び再検証に対応。`LEARNING_TRIP_SAVE_ENABLED` が必要（既定無効）
 - **API** — パス: `/api/learnings`・`/api/learnings/[learningId]/approve`・`/api/learnings/[learningId]`／現状: Learningの取得・承認・撤回。`PERSISTENCE_ENABLED`が必要（既定無効）
 
 保存APIの具体的なHTTPメソッド・権限・ステータスは[`docs/FIRESTORE_PERSISTENCE.md`](docs/FIRESTORE_PERSISTENCE.md)を参照してください。**Revisionの候補保存・適用・結果不明時の復旧を、現地報告の画面へ接続しています。実環境での確認は別途必要です。**
@@ -134,7 +135,7 @@ Geminiを選んだ理由と、各APIを選んだ理由の文面は、`docs/` に
 - **現実の制約**：通常営業時間と徒歩移動の一部を照合しますが、臨時休業・特別営業・現地混雑・渋滞・遅延の保証はありません。未照合・確認不能・矛盾は区別します。
 - **路線図は模式図**です。訪問順を示すもので、地図上の距離・方角・縮尺を表しません。
 - **サンプルは架空**：`/demo`と`/reflection?demo=1`のTrip・候補・模擬根拠は、実在施設の情報や実測結果ではありません。
-- **通し導線の制限**：学びを使って作った旅程は保存できません。実環境（Firebase・App Check・保存API・各フラグを有効にした状態）での通し確認は未了です。
+- **学び付き保存の展開条件**：コードは対応済みですが、`LEARNING_TRIP_SAVE_ENABLED` は既定無効です。版付き履歴を読めるサーバー・クライアントを先に配備し、それをロールバック先として保持してから有効化してください。実環境（Firebase・App Check・署名鍵・保存API・各フラグを有効にした状態）での通し確認は未了です。
 - **課金APIは既定で停止**：生成・照合・部分修正・学び候補作成は、機能フラグが`false`。認証・全体の利用制限・App Checkまたは代替策・課金保護（#29）なしで一般公開しないでください。
 - **Firestore保存APIも既定で停止**：`PERSISTENCE_ENABLED=false`。実FirebaseのIAM・ADC・Rulesの確認と本番疎通がまだ必要です。画面からのBearer・App Check送信は接続済みです。
 - **匿名認証**は身元確認ではなく、UIDを失うと保存したデータに戻れない場合があります。

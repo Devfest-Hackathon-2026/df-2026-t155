@@ -15,6 +15,8 @@ import {
 import { errorResponse, noStoreHeaders, readBodyWithLimit } from '../http'
 import { LearningSelectionError } from '../learning-reuse/selection'
 import type { LearningSelection } from '../persistence/contracts'
+import { acceptsLearningTripProtocol } from '../persistence/learning-trip-rollout'
+import { attachLearningSaveProof } from '../persistence/learning-trip-provenance'
 import { GenerateTripHttpRequestSchema } from './http-request'
 
 export type { ApiErrorBody, ApiErrorStatus } from '../http'
@@ -157,7 +159,14 @@ export async function handleGenerateTripRequest(
         }
         // サーバーが確定した学びだけを内部の要求に入れる。契約に反すれば想定外の失敗として扱う。
         const internal = GenerateTripRequestSchema.parse({ ...conditions, learnings })
-        return deps.generate(internal, operation)
+        const generated = GenerateTripResponseSchema.parse(await deps.generate(internal, operation))
+        return attachLearningSaveProof(
+          actor,
+          generated,
+          learningSelections,
+          internal.learnings,
+          acceptsLearningTripProtocol(request),
+        )
       },
     )
     if (outcome instanceof Response) return outcome

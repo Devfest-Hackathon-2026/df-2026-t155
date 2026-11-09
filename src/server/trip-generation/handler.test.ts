@@ -3,7 +3,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import '../../../tests/helpers/mock-cost-control'
 
 import { GenerateTripResponseSchema, type GenerateTripResponse } from '../../domain'
-import { sampleApprovedLearning, sampleGenerateTripRequest, sampleTrip } from '../../domain/samples'
+import {
+  sampleApprovedLearning,
+  sampleGenerateTripRequest,
+  sampleTrip as tripWithApplication,
+} from '../../domain/samples'
 import { sampleGenerateTripBody } from '../../../tests/helpers/generate-request'
 import { LearningSelectionError } from '../learning-reuse/selection'
 import { handleGenerateTripRequest, isTripGenerationEnabled, MAX_REQUEST_BYTES } from './handler'
@@ -26,6 +30,7 @@ const post = (body: BodyInit, headers: Record<string, string> = {}) =>
   })
 
 const postJson = (value: unknown) => post(JSON.stringify(value))
+const sampleTrip = { ...tripWithApplication, learningApplications: [] }
 
 // 選択を解決する側は、既定では呼ばれない想定（呼ばれたらテストが失敗する）。
 const handlerReturning = (
@@ -267,7 +272,7 @@ describe('POST /api/trips/generate: 学びの選択（{ id, version } だけを�
   it('選択を検証済みActorのUID・地域とともにresolverへ渡し、解決された学びだけを生成に渡す', async () => {
     const resolveLearnings = vi.fn().mockResolvedValue([sampleApprovedLearning])
     const { generate, deps } = handlerReturning(
-      { status: 'proposed', trip: sampleTrip },
+      { status: 'proposed', trip: tripWithApplication },
       resolveLearnings,
     )
     const response = await handleGenerateTripRequest(

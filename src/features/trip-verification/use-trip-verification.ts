@@ -26,7 +26,10 @@ export function useTripVerification(verify: VerifyTrip = verifyTripWithProtected
 
   // 成功したら照合結果の旅程を返す。失敗・中止・実行中の再送信は null（失敗の内容は state に出る）。
   const run = useCallback(
-    async (trip: Trip): Promise<Trip | null> => {
+    async (
+      trip: Trip,
+      onPlaceSaveProof?: (proof: string | undefined) => void,
+    ): Promise<Trip | null> => {
       // stateの更新は非同期のため、二重送信はrefで確実に止める。
       if (controllerRef.current) return null
       const controller = new AbortController()
@@ -50,6 +53,7 @@ export function useTripVerification(verify: VerifyTrip = verifyTripWithProtected
       if (controller.signal.aborted) return null
       if (result.ok) {
         setState(idle)
+        onPlaceSaveProof?.(result.placeSaveProof)
         return result.trip
       }
       setState({ phase: 'failed', failure: result.failure })

@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { PLACE_SAVE_PROOF_HEADER } from '@/domain/learning-trip-protocol'
+
 import { TripSchema, type Trip } from '../../domain'
 import { COSTS } from '../cost-control/costs'
 import {
@@ -9,6 +11,7 @@ import {
   type CostlyOperation,
 } from '../costly-api'
 import { errorResponse, noStoreHeaders, readBodyWithLimit } from '../http'
+import { issuePlaceSaveProof } from '../persistence/place-save-provenance'
 import { hasTimeConflict } from './travel'
 import type { VerifyTripResult } from './verify-trip'
 
@@ -143,8 +146,10 @@ export async function handleVerifyTripRequest(
       message: '旅程の照合中に予期しないエラーが発生しました。',
     })
   }
+  const proof =
+    checked.data.status === 'verified' ? issuePlaceSaveProof(actor, checked.data.trip) : undefined
   return Response.json(checked.data, {
     status: checked.data.status === 'verified' ? 200 : 502,
-    headers: noStoreHeaders,
+    headers: proof ? { ...noStoreHeaders, [PLACE_SAVE_PROOF_HEADER]: proof } : noStoreHeaders,
   })
 }

@@ -49,6 +49,7 @@ const StopDtoSchema = z.union([
 ])
 const LearningApplicationDtoSchema = LearningApplicationSchema.pick({
   learningId: true,
+  learningVersion: true,
   targetStopIds: true,
   explanation: true,
 })
@@ -152,8 +153,9 @@ export function toTripDocument(actor: Actor, input: Trip) {
       preferences: trip.preferences,
       stops: trip.stops.map(toStopDto),
       learningApplications: trip.learningApplications.map(
-        ({ learningId, targetStopIds, explanation }) => ({
+        ({ learningId, learningVersion, targetStopIds, explanation }) => ({
           learningId,
+          ...(learningVersion === undefined ? {} : { learningVersion }),
           targetStopIds,
           explanation,
         }),

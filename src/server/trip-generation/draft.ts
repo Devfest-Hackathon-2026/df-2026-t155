@@ -1,5 +1,11 @@
 import { z } from 'zod'
 
+import {
+  LEARNING_EXPLANATION_MAX,
+  LearningExplanationSchema,
+  TRIP_STOP_NAME_MAX,
+  TripStopNameSchema,
+} from '@/domain/trip-write-limits'
 import { StopKindSchema } from '../../domain/models'
 import { IdSchema, LocalTimeSchema, TextSchema } from '../../domain/primitives'
 import { buildGeminiResponseJsonSchema } from '../gemini/schema'
@@ -11,7 +17,7 @@ export const DraftStopSchema = z.strictObject({
   fixedStopId: IdSchema.nullable().describe(
     '入力の固定予定に対応する地点ならそのid。固定予定でない地点はnull',
   ),
-  name: TextSchema.describe('地点の名称（施設名や地名）'),
+  name: TripStopNameSchema.describe(`地点の名称（施設名や地名、${TRIP_STOP_NAME_MAX}文字以内）`),
   kind: StopKindSchema.optional().describe('旅程上の予定種別。判断できなければ省略する'),
   plannedStartTime: LocalTimeSchema.describe(
     '予定開始時刻。旅程のタイムゾーンでの24時間表記HH:mm（例: 09:30、14:00）',
@@ -25,7 +31,9 @@ export const DraftLearningApplicationSchema = z.strictObject({
     .array(z.int().nonnegative())
     .min(1)
     .describe('反映した地点のstops配列での位置（0始まり）'),
-  explanation: TextSchema.describe('その学びをどう反映したかの説明'),
+  explanation: LearningExplanationSchema.describe(
+    `その学びをどう反映したかの説明（${LEARNING_EXPLANATION_MAX}文字以内）`,
+  ),
 })
 
 export const DraftFailureSchema = z.strictObject({

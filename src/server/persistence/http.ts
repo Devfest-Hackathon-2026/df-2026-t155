@@ -2,6 +2,8 @@ import 'server-only'
 
 import type { z } from 'zod'
 
+import { TRIP_SAVE_MAX_BYTES } from '@/domain/trip-write-limits'
+
 import { AuthError, authErrorResponse, type Actor } from '@/lib/auth/server'
 
 import { WriteFenceError } from '../cost-control/write-transaction'
@@ -17,12 +19,13 @@ import { diagnosePersistenceFailure } from './diagnostics'
 import { parseInput, parseStored, PersistenceError } from './errors'
 
 const headers = { 'Cache-Control': 'private, no-store' }
-const MAX_BODY_BYTES = 64 * 1024
+const MAX_BODY_BYTES = TRIP_SAVE_MAX_BYTES
+type DataAction = (actor: Actor, operation: CostlyOperation) => Promise<Response>
 
 export async function withDataActor(
   request: Request,
   cost: OperationCost,
-  action: (actor: Actor, operation: CostlyOperation) => Promise<Response>,
+  action: DataAction,
 ): Promise<Response> {
   try {
     if (!isCostlyApiEnabled(process.env.PERSISTENCE_ENABLED)) {
@@ -69,13 +72,20 @@ export function dataError(error: unknown): Response {
   )
 }
 
-export async function readDataBody<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
+export async function readDataBody<T>(
+  request: Request,
+  schema: z.ZodType<T>,
+  options?: { signal: AbortSignal; timeoutMs: number },
+): Promise<T> {
   const mediaType = request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
   if (mediaType !== 'application/json') throw new PersistenceError('unsupported_media_type')
   if (Number(request.headers.get('content-length')) > MAX_BODY_BYTES) {
     throw new PersistenceError('payload_too_large')
   }
-  const body = await readBodyWithLimit(request, MAX_BODY_BYTES)
+  const timeout = options && AbortSignal.timeout(options.timeoutMs)
+  const signal = options && timeout && AbortSignal.any([request.signal, options.signal, timeout])
+  const body = await readBodyWithLimit(request, MAX_BODY_BYTES, signal)
+  if (timeout?.aborted) throw new PersistenceError('body_read_timeout')
   if (!body.ok) {
     throw new PersistenceError(
       body.reason === 'too_large' ? 'payload_too_large' : 'invalid_request',

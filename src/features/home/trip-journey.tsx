@@ -19,6 +19,7 @@ import {
   type ApplyRevision,
   type GenerateRevisions,
 } from '@/features/revision-review/api-client'
+import type { LearningSaveUnavailable } from '@/features/trip-save/learning-save-availability'
 import { TripSavePanel, type SaveTrip } from '@/features/trip-save/trip-save-panel'
 import { getProtectedApiHeadersForScope } from '@/lib/auth/protected-api'
 import {
@@ -39,6 +40,9 @@ interface TripJourneyProps {
   generateRevisions?: GenerateRevisions
   applyRevision?: ApplyRevision
   saveTrip?: SaveTrip
+  learningSaveProof?: string
+  placeSaveProof?: string
+  learningSaveUnavailable?: LearningSaveUnavailable
   initialSavedTrip?: Trip
   learningSummary?: ReactNode
   verificationPanel: ReactNode
@@ -116,6 +120,9 @@ export function TripJourney({
   generateRevisions,
   applyRevision,
   saveTrip,
+  learningSaveProof,
+  placeSaveProof,
+  learningSaveUnavailable,
   initialSavedTrip,
   learningSummary,
   verificationPanel,
@@ -282,6 +289,10 @@ export function TripJourney({
                 trip={trip}
                 scope={scope}
                 save={saveTrip}
+                learningSaveProof={learningSaveProof}
+                learningSaveUnavailable={learningSaveUnavailable}
+                placeSaveProof={placeSaveProof}
+                onEditInput={onEditInput}
                 onSaved={setSavedTrip}
                 onRestore={
                   savedTrip && !isSavedCurrent ? () => adoptTripChange(savedTrip) : undefined

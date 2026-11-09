@@ -46,7 +46,7 @@ export async function readBodyWithLimit(
       if (done) break
       total += value.byteLength
       if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined)
+        cancel()
         return { ok: false, reason: 'too_large' }
       }
       chunks.push(value)
@@ -56,6 +56,7 @@ export async function readBodyWithLimit(
     return { ok: false, reason: 'unreadable' }
   } finally {
     signal?.removeEventListener('abort', cancel)
+    reader.releaseLock()
   }
   if (signal?.aborted) return { ok: false, reason: 'unreadable' }
 

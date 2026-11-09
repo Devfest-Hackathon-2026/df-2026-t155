@@ -15,6 +15,7 @@ import { withdrawStaleVerification } from './withdraw-verification'
 // 取り下げずに戻す「照合前の状態」は持たない（再照合の結果を、古い結果で上書きしないため）。
 interface VerifiedRecord {
   withdrawn: boolean
+  placeSaveProof?: string
 }
 
 // 画面に出している旅程の状態。
@@ -54,6 +55,7 @@ export interface VerifiableTripAfterContext {
   // 確認中の通信を止める。路線図にも採用した旅程を反映する。
   adoptExternalChange: (changed: Trip) => Trip
   routeTrip: Trip
+  placeSaveProof?: string
   adoptRouteChange: (changed: Trip) => Trip
 }
 
@@ -86,7 +88,10 @@ export function VerifiableTrip({
     const sent = view.current
     // 押したら、前回の中止の通知は消す。
     update((previous) => ({ ...previous, interrupted: false }))
-    const result = await run(sent)
+    let placeSaveProof: string | undefined
+    const result = await run(sent, (proof) => {
+      placeSaveProof = proof
+    })
     if (!result) return
     // 確認中に切り替えた固定は残し、結果の根拠だけを、その時点の最新の旅程へ取り込む。
     // 内容が変わっていれば取り込まず、中止の通知を出す（通常は adoptChange が先に通信を中止している）。
@@ -97,7 +102,7 @@ export function VerifiableTrip({
         source,
         prop: merged,
         current: merged,
-        verified: { withdrawn: false },
+        verified: { withdrawn: false, placeSaveProof },
         interrupted: false,
       }
     })
@@ -151,6 +156,7 @@ export function VerifiableTrip({
     trip: view.current,
     adoptExternalChange,
     routeTrip: view.prop,
+    placeSaveProof: view.verified?.placeSaveProof,
     adoptRouteChange: adoptChange,
   }
 

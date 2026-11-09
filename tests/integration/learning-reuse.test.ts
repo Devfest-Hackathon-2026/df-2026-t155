@@ -7,9 +7,24 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { POST as approveLearning } from '@/app/api/learnings/[learningId]/approve/route'
 import { DELETE as revokeLearning } from '@/app/api/learnings/[learningId]/route'
 import { GET as listLearnings } from '@/app/api/learnings/route'
-import { GET as getTrip } from '@/app/api/trips/[tripId]/route'
-import { POST as createTrip } from '@/app/api/trips/route'
-import { sampleApprovedLearning, sampleTrip } from '@/domain/samples'
+import { POST as generateTrip } from '@/app/api/trips/generate/route'
+import {
+  GET as listRevisions,
+  POST as saveRevision,
+} from '@/app/api/trips/[tripId]/revisions/route'
+import { GET as getTrip, PATCH as patchTrip } from '@/app/api/trips/[tripId]/route'
+import { GET as listTrips, POST as createTrip } from '@/app/api/trips/route'
+import {
+  LEARNING_COUNT_HEADER,
+  LEARNING_TRIP_HEADER,
+  LEARNING_TRIP_PROTOCOL,
+  PLACE_SAVE_PROOF_HEADER,
+} from '@/domain/learning-trip-protocol'
+import { attachLearningSaveProof } from '@/server/persistence/learning-trip-provenance'
+import { handleVerifyTripRequest } from '@/server/verification/handler'
+import { verifyTrip } from '@/server/verification/verify-trip'
+import { GenerateTripResponseSchema } from '@/domain'
+import { sampleApprovedLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 import type { SessionScope, SessionScopeOperation } from '@/lib/auth/session-scope'
 import { getAdminAuth, getAdminFirestore } from '@/lib/firebase/admin'
 import { MAX_LEARNING_CONTENT_LENGTH } from '@/lib/learnings/lifecycle'
@@ -17,6 +32,13 @@ import { resolveSelectedLearnings } from '@/server/learning-reuse/selection'
 import { LearningListResponseSchema, TripResponseSchema } from '@/server/persistence/contracts'
 import { toLearningDocument, toTripDocument } from '@/server/persistence/dto'
 import { FirestoreLearningStore } from '@/server/persistence/learnings'
+import { sampleGenerateTripBody } from '../helpers/generate-request'
+
+const { generateJson } = vi.hoisted(() => ({ generateJson: vi.fn() }))
+vi.mock('@/server/gemini/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/server/gemini/client')>()),
+  createLazyVertexGeminiClient: () => ({ generateJson }),
+}))
 
 // 次回の旅への学びの再利用（#13）の、保存先・認証・サーバー側の解決を実際のEmulatorで確かめる。
 // 画面側のセッション結び付けは、実クライアントの認証モジュールで確かめる。
@@ -33,10 +55,10 @@ async function createSession(name: string) {
   return {
     uid: user.uid,
     headers: () => new Headers({ Authorization: `Bearer ${token}` }),
-    request(method = 'GET', body?: unknown, query = '') {
+    request(method = 'GET', body?: unknown, query = '', extra?: Record<string, string>) {
       return new Request(`http://localhost/api${query}`, {
         method,
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...extra },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       })
     },
@@ -273,7 +295,7 @@ describe('学びの選択の解決（Emulator・認証済みRoute・実Firestore
         },
       ],
     }
-    // 現在の保存APIは適用記録つきのTripを保存させないため、保存済みの旧データを直接用意する。
+    // 版を持たない先行形式を直接用意する。
     await getAdminFirestore()
       .doc(`users/${session.uid}/trips/orphan-trip`)
       .set(toTripDocument({ uid: session.uid }, trip))
@@ -291,6 +313,358 @@ describe('学びの選択の解決（Emulator・認証済みRoute・実Firestore
         ]),
       ),
     ).toBe('selection_changed')
+  })
+})
+
+describe('学びの適用記録を含む旅程の保存（Emulator）', () => {
+  const protocol = { [LEARNING_TRIP_HEADER]: LEARNING_TRIP_PROTOCOL }
+  function saveRequest(input: unknown, session = a, count = 1) {
+    return session.request('POST', input, '/trips', {
+      ...protocol,
+      [LEARNING_COUNT_HEADER]: String(count),
+    })
+  }
+
+  beforeEach(() => {
+    vi.stubEnv('TRIP_GENERATION_ENABLED', 'true')
+    vi.stubEnv('LEARNING_TRIP_SAVE_ENABLED', 'true')
+    vi.stubEnv('REVISION_PROPOSAL_SIGNING_KEY', Buffer.alloc(32, 19).toString('base64url'))
+  })
+
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    generateJson.mockReset()
+  })
+
+  async function generateWithLearning(id: string) {
+    const body = sampleGenerateTripBody([{ id, version: 1 }])
+    generateJson.mockResolvedValueOnce(
+      JSON.stringify({
+        failure: null,
+        stops: sampleTrip.stops.map(({ id, name, isFixed, plannedStartTime, durationMinutes }) => ({
+          fixedStopId: isFixed ? id : null,
+          name,
+          plannedStartTime,
+          durationMinutes,
+        })),
+        learningApplications: [
+          { learningId: id, stopIndexes: [1], explanation: '昼食を提案した。' },
+        ],
+      }),
+    )
+    const response = await generateTrip(a.request('POST', body, '/trips/generate', protocol))
+    expect(response.status).toBe(200)
+    const result = GenerateTripResponseSchema.parse(await response.json())
+    if (result.status !== 'proposed') throw new Error('生成に失敗しました')
+    return result
+  }
+
+  async function expectSaveError(input: unknown, status: number, code: string, session = a) {
+    const count =
+      typeof input === 'object' &&
+      input !== null &&
+      'learningApplications' in input &&
+      Array.isArray(input.learningApplications)
+        ? input.learningApplications.length
+        : 1
+    const response = await createTrip(saveRequest(input, session, count))
+    expect(response.status).toBe(status)
+    expect(await response.json()).toMatchObject({ error: { code } })
+  }
+
+  it('保存・再取得後も版と対象を保持し、旅行前と現地の部分修正・履歴取得に使える', async () => {
+    const id = 'save-regional-learning'
+    expect(
+      (await approve(a, id, tripA.id, '昼食を取る', 0, { kind: 'region', region })).status,
+    ).toBe(200)
+    const { trip, learningSaveProof } = await generateWithLearning(id)
+    const ctx = context({ tripId: trip.id })
+    // 照合応答から付いたPlace IDを保存する。固定状態は本人が照合後に切り替えられる。
+    const inputToVerify = {
+      ...trip,
+      stops: trip.stops.map((stop) => ({ ...stop, placeId: 'client-claimed-place' })),
+    }
+    const verified = await handleVerifyTripRequest(
+      a.request('POST', { trip: inputToVerify }, '/trips/verify'),
+      {
+        isEnabled: () => true,
+        verify: (requested) =>
+          verifyTrip(requested, {
+            maps: {
+              async searchPlaces({ query }) {
+                if (!query.includes(trip.stops[1].name)) return { status: 'no_candidates' }
+                return {
+                  status: 'found',
+                  candidates: [
+                    {
+                      placeId: 'verified-place-id',
+                      name: trip.stops[1].name,
+                      address: '日本、京都府京都市東山区清水1丁目',
+                      openingHours: { status: 'unavailable' },
+                    },
+                  ],
+                }
+              },
+              async computeRoute() {
+                return { status: 'no_route' }
+              },
+            },
+          }),
+      },
+    )
+    expect(verified.status).toBe(200)
+    const placeSaveProof = verified.headers.get(PLACE_SAVE_PROOF_HEADER)
+    expect(placeSaveProof).toMatch(/^p1\./)
+    const verifiedTrip = TripResponseSchema.parse({ trip: (await verified.json()).trip }).trip
+    expect(verifiedTrip.stops.map(({ placeId }) => placeId)).toEqual([
+      null,
+      'verified-place-id',
+      null,
+    ])
+    const input = {
+      ...verifiedTrip,
+      learningSaveProof,
+      placeSaveProof,
+      stops: verifiedTrip.stops.map((stop, index) =>
+        index === 0 ? { ...stop, isFixed: false } : stop,
+      ),
+    }
+    const replaced = input.stops.map((stop, index) =>
+      index === 1 ? { ...stop, placeId: 'replacement-place-id' } : stop,
+    )
+    await expectSaveError({ ...input, stops: replaced }, 422, 'learning_place_provenance_invalid')
+    await expectSaveError(
+      { ...input, placeSaveProof: undefined },
+      422,
+      'learning_place_provenance_invalid',
+    )
+    await expectSaveError({ ...input, placeSaveProof: learningSaveProof }, 400, 'invalid_request')
+    await expectSaveError({ ...input, learningSaveProof: placeSaveProof }, 400, 'invalid_request')
+    const response = await createTrip(saveRequest(input))
+    expect(response.status).toBe(201)
+    const saved = TripResponseSchema.parse(await response.json()).trip
+    expect(saved.learningApplications).toEqual([
+      {
+        learningId: id,
+        learningVersion: 1,
+        targetStopIds: [saved.stops[1].id],
+        explanation: '昼食を提案した。',
+      },
+    ])
+    expect(saved.stops[0].isFixed).toBe(false)
+    expect(saved.stops[1]).toMatchObject({
+      placeId: 'verified-place-id',
+      isFixed: false,
+      evidence: [],
+    })
+    const raw = (await getAdminFirestore().doc(`users/${a.uid}/trips/${trip.id}`).get()).data()
+    expect(JSON.stringify(raw)).not.toMatch(/learningSaveProof|placeSaveProof|evidence|昼食を取る/)
+    expect(raw?.trip.learningApplications).toEqual(saved.learningApplications)
+    // 保存後の撤回は、既に確定した旅程の履歴に影響しない。
+    expect((await revoke(a, id, 1)).status).toBe(204)
+    expect(
+      TripResponseSchema.parse(
+        await (await getTrip(a.request('GET', undefined, '/trips', protocol), ctx)).json(),
+      ).trip,
+    ).toEqual(saved)
+    await expectSaveError(input, 409, 'already_exists')
+
+    const before = saved.stops[1]
+    for (const revisionContext of [{ phase: 'planning' }, sampleRevision.context]) {
+      const revision = {
+        ...sampleRevision,
+        id: `test-${revisionContext.phase}`,
+        tripId: saved.id,
+        baseTripVersion: saved.version,
+        targetStopId: before.id,
+        context: revisionContext,
+        diff: { before, after: { ...before, name: '昼食の代替候補' } },
+      }
+      expect((await saveRevision(a.request('POST', revision), ctx)).status).toBe(201)
+    }
+    const history = await listRevisions(a.request(), ctx)
+    expect(history.status).toBe(200)
+    expect((await history.json()).revisions).toHaveLength(2)
+  })
+
+  it('別UIDの同じIDと版で保存できず、説明・版・対象・証跡の改ざんを拒否する', async () => {
+    const id = 'save-shared-learning'
+    expect((await approve(a, id, tripA.id, 'Aが選んだ学び')).status).toBe(200)
+    expect((await approve(b, id, tripB.id, 'Bが選んだ学び')).status).toBe(200)
+    const { trip, learningSaveProof } = await generateWithLearning(id)
+    const [application] = trip.learningApplications
+    const input = { ...trip, learningSaveProof }
+    await expectSaveError(input, 422, 'learning_provenance_invalid', b)
+    await expectSaveError(trip, 409, 'learning_provenance_missing')
+    await expectSaveError({ ...trip, learningApplications: [] }, 422, 'learning_provenance_invalid')
+    await expectSaveError({ ...input, id: 'another-trip' }, 422, 'learning_provenance_invalid')
+    await expectSaveError(
+      { ...input, learningSaveProof: learningSaveProof?.replace(/\.[^.]+$/, `.${'A'.repeat(43)}`) },
+      422,
+      'learning_provenance_invalid',
+    )
+    for (const patch of [
+      { explanation: '書き換えた説明' },
+      { learningVersion: 2 },
+      { targetStopIds: [trip.stops[2].id] },
+    ]) {
+      await expectSaveError(
+        { ...input, learningApplications: [{ ...application, ...patch }] },
+        422,
+        'learning_provenance_invalid',
+      )
+    }
+    await expectSaveError(
+      { ...input, learningApplications: [{ ...application, targetStopIds: ['missing-stop'] }] },
+      400,
+      'invalid_request',
+    )
+    expect((await getTrip(a.request(), context({ tripId: trip.id }))).status).toBe(404)
+  })
+
+  it.each(['revoke', 'update', 'scope', 'content'] as const)(
+    '生成後の学びの変更（%s）を拒否する',
+    async (change) => {
+      const id = `save-before-${change}`
+      expect((await approve(a, id, tripA.id, '生成に使った学び')).status).toBe(200)
+      const { trip, learningSaveProof } = await generateWithLearning(id)
+      if (change === 'revoke') {
+        expect((await revoke(a, id, 1)).status).toBe(204)
+      } else if (change === 'update') {
+        expect((await approve(a, id, tripA.id, '新しい版の学び', 1)).status).toBe(200)
+      } else {
+        // 管理側で版を変えずに差し替えた場合も、生成時の内容と突き合わせる。
+        await getAdminFirestore()
+          .doc(`users/${a.uid}/learnings/${id}`)
+          .update(
+            change === 'scope'
+              ? { 'learning.scope': { kind: 'region', region: '奈良市' } }
+              : { 'learning.content': '同じ版に上書きされた本文' },
+          )
+      }
+      await expectSaveError({ ...trip, learningSaveProof }, 409, 'learning_changed')
+      expect((await getTrip(a.request(), context({ tripId: trip.id }))).status).toBe(404)
+    },
+  )
+
+  it('読み取り互換リリースへ戻しても旧・新版が読め、書き込み停止中は新規保存を拒否する', async () => {
+    const id = 'save-rollback-learning'
+    expect((await approve(a, id, tripA.id, '昼食の学び')).status).toBe(200)
+    const first = await generateWithLearning(id)
+    const pending = await generateWithLearning(id)
+    const input = { ...first.trip, learningSaveProof: first.learningSaveProof }
+    expect((await createTrip(saveRequest(input))).status).toBe(201)
+
+    vi.stubEnv('LEARNING_TRIP_SAVE_ENABLED', 'false')
+    const ctx = context({ tripId: first.trip.id })
+    expect((await getTrip(a.request(), context({ tripId: tripA.id }))).status).toBe(200)
+    const oldClient = await getTrip(a.request(), ctx)
+    expect(oldClient.status).toBe(409)
+    expect(await oldClient.json()).toMatchObject({
+      error: { code: 'learning_trip_upgrade_required' },
+    })
+    expect((await listTrips(a.request())).status).toBe(409)
+    const readable = await listTrips(a.request('GET', undefined, '/trips', protocol))
+    expect(readable.status).toBe(200)
+    expect((await readable.json()).trips).toContainEqual(first.trip)
+    const preferences = ['更新した希望']
+    const oldPatch = await patchTrip(a.request('PATCH', { expectedVersion: 0, preferences }), ctx)
+    expect(oldPatch.status).toBe(409)
+    const patched = await patchTrip(
+      a.request('PATCH', { expectedVersion: 0, preferences }, '/trips', protocol),
+      ctx,
+    )
+    expect(patched.status).toBe(200)
+    const updated = TripResponseSchema.parse(await patched.json()).trip
+    expect(updated.version).toBe(1)
+    expect(updated.learningApplications).toEqual(first.trip.learningApplications)
+    const preview = await generateWithLearning(id)
+    expect(preview.learningSaveUnavailable).toBe('disabled')
+    expect(preview.learningSaveProof).toBeUndefined()
+    await expectSaveError(
+      { ...pending.trip, learningSaveProof: pending.learningSaveProof },
+      503,
+      'learning_trip_save_disabled',
+    )
+    await saveTrip(a, 'learning-trip-previous-client-id')
+    await saveTrip(a, 'learning-trip-00000000-0000-1000-8000-000000000001')
+  })
+
+  it('期限切れと鍵更新をサーバーで拒否する', async () => {
+    const id = 'save-expired-learning'
+    expect((await approve(a, id, tripA.id, '昼食の学び')).status).toBe(200)
+    const current = await generateWithLearning(id)
+    const approved = (await store.listVersionedApproved(a.uid)).find(
+      ({ learning }) => learning.id === id,
+    )
+    if (!approved) throw new Error('承認済みの学びが必要です')
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 3_600_001)
+    const expired = attachLearningSaveProof(
+      { uid: a.uid },
+      {
+        status: 'proposed',
+        trip: { ...current.trip, id: current.trip.id.slice('learning-trip-'.length) },
+      },
+      [{ id, version: 1 }],
+      [approved.learning],
+      true,
+    )
+    clock.mockRestore()
+    if (expired.status !== 'proposed') throw new Error('証跡が必要です')
+    await expectSaveError(
+      { ...expired.trip, learningSaveProof: expired.learningSaveProof },
+      409,
+      'learning_provenance_expired',
+    )
+    vi.stubEnv('REVISION_PROPOSAL_SIGNING_KEY', Buffer.alloc(32, 55).toString('base64url'))
+    await expectSaveError(
+      { ...current.trip, learningSaveProof: current.learningSaveProof },
+      422,
+      'learning_provenance_invalid',
+    )
+  })
+
+  it('同時に撤回したときは、撤回より先に確定した場合だけ旅程が残る', async () => {
+    const id = 'save-revoke-race-learning'
+    expect((await approve(a, id, tripA.id, '昼食の学び')).status).toBe(200)
+    const { trip, learningSaveProof } = await generateWithLearning(id)
+    const [saved, revoked] = await Promise.all([
+      createTrip(saveRequest({ ...trip, learningSaveProof })),
+      revoke(a, id, 1),
+    ])
+    expect(revoked.status).toBe(204)
+    const db = getAdminFirestore()
+    const [stored, withdrawn] = await Promise.all([
+      db.doc(`users/${a.uid}/trips/${trip.id}`).get(),
+      db.doc(`users/${a.uid}/learnings/${id}`).get(),
+    ])
+    if (saved.status === 201) {
+      expect(stored.exists).toBe(true)
+      expect(stored.createTime?.toMillis()).toBeLessThanOrEqual(
+        withdrawn.updateTime?.toMillis() ?? 0,
+      )
+    } else {
+      expect(saved.status).toBe(409)
+      expect(await saved.json()).toMatchObject({ error: { code: 'learning_changed' } })
+      expect(stored.exists).toBe(false)
+    }
+  })
+
+  it('署名鍵が使えない場合はプレビューを保持し、保存を拒否する', async () => {
+    const id = 'save-without-key'
+    expect((await approve(a, id, tripA.id, '昼食の学び')).status).toBe(200)
+    const signed = await generateWithLearning(id)
+    vi.stubEnv('REVISION_PROPOSAL_SIGNING_KEY', '')
+    const preview = await generateWithLearning(id)
+    expect(preview.learningSaveProof).toBeUndefined()
+    expect(preview.learningSaveUnavailable).toBe('signing_unavailable')
+    expect(preview.trip.learningApplications).toHaveLength(1)
+    await expectSaveError(preview.trip, 409, 'learning_provenance_missing')
+    await expectSaveError(
+      { ...signed.trip, learningSaveProof: signed.learningSaveProof },
+      503,
+      'learning_provenance_unavailable',
+    )
   })
 })
 

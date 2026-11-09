@@ -18,7 +18,12 @@ import {
 import { GET as getTrip, PATCH as patchTrip } from '@/app/api/trips/[tripId]/route'
 import { POST as generate } from '@/app/api/trips/generate/route'
 import { GET as listTrips, POST as createTrip } from '@/app/api/trips/route'
-import { sampleRevision, sampleTrip } from '@/domain/samples'
+import {
+  LEARNING_COUNT_HEADER,
+  LEARNING_TRIP_HEADER,
+  LEARNING_TRIP_PROTOCOL,
+} from '@/domain/learning-trip-protocol'
+import { sampleApprovedLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 import { sampleGenerateTripBody } from '../helpers/generate-request'
 import { getAdminFirestore } from '@/lib/firebase/admin'
 import { DEFAULT_LIMITS, type Policy } from '@/server/cost-control/policy'
@@ -29,7 +34,8 @@ import {
   reserveCost,
   type Admission,
 } from '@/server/cost-control/store'
-import { toTripDocument } from '@/server/persistence/dto'
+import { toLearningDocument, toTripDocument } from '@/server/persistence/dto'
+import { attachLearningSaveProof } from '@/server/persistence/learning-trip-provenance'
 import { FirestoreTripStore } from '@/server/persistence/trips'
 
 const { verifyAppCheck, generateJson } = vi.hoisted(() => ({
@@ -552,6 +558,103 @@ describe('保存書き込みとリース交代', () => {
       trip: { version: trip.version + 1, preferences: ['一度だけ反映'] },
     })
   })
+
+  it('低速な保存本文は共有同時枠を使い、2秒で打ち切って枠を解放する', async () => {
+    const settings = policy()
+    settings.storage.uid.concurrent = 1
+    await seed(settings)
+    const entered = Promise.withResolvers<void>()
+    const cancel = vi.fn()
+    const body = new ReadableStream<Uint8Array>(
+      {
+        // highWaterMarkを0にして、Routeが読み始めた時点でだけ通知する。
+        pull() {
+          entered.resolve()
+        },
+        cancel,
+      },
+      { highWaterMark: 0 },
+    )
+    const init: RequestInit & { duplex: 'half' } = {
+      method: 'POST',
+      body,
+      duplex: 'half',
+      headers: request('/api/trips').headers,
+    }
+    const saving = createTrip(new Request('http://localhost/api/trips', init))
+    await entered.promise
+    expect((await listTrips(request('/api/trips'))).status).toBe(429)
+    const timedOut = await saving
+    expect(timedOut.status).toBe(408)
+    expect(await timedOut.json()).toMatchObject({ error: { code: 'body_read_timeout' } })
+    expect(cancel).toHaveBeenCalledOnce()
+    expect((await gate.get()).get('leases')).toEqual([])
+  })
+
+  it('学びの件数宣言と本文が異なる場合は書き込まない', async () => {
+    await seed()
+    const input = { ...sampleTrip, learningApplications: [] }
+    const incoming = request('/api/trips', input)
+    incoming.headers.set(LEARNING_COUNT_HEADER, '1')
+    const denied = await createTrip(incoming)
+    expect(denied.status).toBe(400)
+    expect(await denied.json()).toMatchObject({ error: { code: 'invalid_request' } })
+    expect((await db.doc(`users/${uid}/trips/${input.id}`).get()).exists).toBe(false)
+  })
+
+  it('学び付き旅程のコミット応答が失われても、同じ旅程を再取得できる', async () => {
+    await seed()
+    vi.stubEnv('LEARNING_TRIP_SAVE_ENABLED', 'true')
+    vi.stubEnv('REVISION_PROPOSAL_SIGNING_KEY', Buffer.alloc(32, 21).toString('base64url'))
+    const learning = sampleApprovedLearning
+    const actor = { uid }
+    await db
+      .doc(`users/${uid}/learnings/${learning.id}`)
+      .set(toLearningDocument(actor, { learning, version: 1 }))
+    const result = attachLearningSaveProof(
+      actor,
+      { status: 'proposed', trip: { ...sampleTrip, id: '00000000-0000-4000-8000-000000000001' } },
+      [{ id: learning.id, version: 1 }],
+      [learning],
+      true,
+    )
+    if (result.status !== 'proposed') throw new Error('生成に失敗しました')
+    const { trip, learningSaveProof } = result
+    const input = { ...trip, learningSaveProof }
+    const saveRequest = () => {
+      const req = request('/api/trips', input)
+      req.headers.set(LEARNING_COUNT_HEADER, '1')
+      return req
+    }
+    const create = FirestoreTripStore.prototype.createTrip
+    const run = db.runTransaction.bind(db)
+    vi.spyOn(FirestoreTripStore.prototype, 'createTrip').mockImplementationOnce(function (
+      this: FirestoreTripStore,
+      ...args
+    ) {
+      vi.spyOn(db, 'runTransaction').mockImplementationOnce(async (callback, options) => {
+        await run(callback, options)
+        throw Object.assign(new Error('lost commit response'), { code: 14 })
+      })
+      return create.apply(this, args)
+    })
+
+    const unknown = await createTrip(saveRequest())
+    expect(unknown.status).toBe(503)
+    expect(await unknown.json()).toMatchObject({ error: { code: 'write_result_unknown' } })
+    expect((await gate.get()).get('reserved')).toMatchObject({ reads: 115, writes: 10 })
+    const path = `/api/trips/${trip.id}`
+    const read = request(path)
+    read.headers.set(LEARNING_TRIP_HEADER, LEARNING_TRIP_PROTOCOL)
+    const restored = await getTrip(read, { params: Promise.resolve({ tripId: trip.id }) })
+    expect(restored.status).toBe(200)
+    expect(await restored.json()).toMatchObject({
+      trip: { id: trip.id, learningApplications: trip.learningApplications },
+    })
+    const replay = await createTrip(saveRequest())
+    expect(replay.status).toBe(409)
+    expect(await replay.json()).toMatchObject({ error: { code: 'already_exists' } })
+  })
 })
 
 describe('認証＋App Check＋分散枠を通る実Route', () => {
@@ -562,7 +665,9 @@ describe('認証＋App Check＋分散枠を通る実Route', () => {
     expect(generateJson).toHaveBeenCalledTimes(1)
     expect(verifyAppCheck).toHaveBeenCalledBefore(generateJson)
 
-    expect((await listTrips(request('/api/trips'))).status).toBe(200)
+    const currentClientRequest = request('/api/trips')
+    currentClientRequest.headers.set(LEARNING_TRIP_HEADER, LEARNING_TRIP_PROTOCOL)
+    expect((await listTrips(currentClientRequest)).status).toBe(200)
     const snapshot = await gate.get()
     expect(snapshot.get('reserved')).toMatchObject({ gemini: 1, reads: 21 })
     expect(snapshot.get('leases')).toEqual([])

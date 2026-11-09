@@ -21,6 +21,7 @@ import {
   SaveRevisionBodySchema,
   UpdateTripBodySchema,
   type PendingRevision,
+  type CreateTripBody,
   type SaveRevisionBody,
   type SavedRevision,
 } from './contracts'
@@ -32,6 +33,12 @@ import {
   toTripDocument,
 } from './dto'
 import { parseInput, parseStored, PersistenceError } from './errors'
+import {
+  requireCurrentLearningApplications,
+  verifyLearningSaveProof,
+} from './learning-trip-provenance'
+import { requireLearningTripReader } from './learning-trip-rollout'
+import { requireVerifiedPlaceIds } from './place-save-provenance'
 import { reserveDocumentSlot, REVISION_LIMIT, TRIP_LIMIT } from './limits'
 import { found, listOwned, ownedCollection, readOwned, recordKey } from './paths'
 import { applyStoredRevision, type ApplyGuard, type VerifyRevision } from './revision-apply'
@@ -55,8 +62,12 @@ export class FirestoreTripStore {
     return this.trips(actor).doc(recordKey(id))
   }
 
-  async createTrip(actor: Actor, input: Trip, write: WriteTransaction): Promise<Trip> {
-    const document = toTripDocument(actor, parseInput(CreateTripBodySchema, input))
+  async createTrip(actor: Actor, input: CreateTripBody, write: WriteTransaction): Promise<Trip> {
+    const { learningSaveProof, placeSaveProof, ...plan } = parseInput(CreateTripBodySchema, input)
+    const document = toTripDocument(actor, plan)
+    const proof = verifyLearningSaveProof(document, learningSaveProof)
+    if (proof) requireVerifiedPlaceIds(document, placeSaveProof)
+    else if (placeSaveProof) throw new PersistenceError('invalid_request')
     const collection = this.trips(actor)
     const ref = collection.doc(recordKey(document.trip.id))
     const trip = fromTripDocument(document, ref.id)
@@ -64,6 +75,15 @@ export class FirestoreTripStore {
     await write(async (transaction) => {
       if (readOwned(actor, await transaction.get(ref), fromTripDocument)) {
         throw new PersistenceError('already_exists')
+      }
+      if (proof) {
+        await requireCurrentLearningApplications(
+          transaction,
+          ownedCollection(this.db, actor, 'learnings'),
+          actor,
+          plan,
+          proof,
+        )
       }
       await reserveDocumentSlot(transaction, collection, TRIP_LIMIT)
       transaction.create(ref, { ...document, revisionReports: [] })
@@ -85,12 +105,14 @@ export class FirestoreTripStore {
     expectedVersion: number,
     preferences: string[],
     write: WriteTransaction,
+    acceptsProtocol = true,
   ): Promise<Trip> {
     const ref = this.trip(actor, id)
     const update = parseInput(UpdateTripBodySchema, { expectedVersion, preferences })
 
     return write(async (transaction) => {
       const current = found(readOwned(actor, await transaction.get(ref), fromTripDocument))
+      requireLearningTripReader(acceptsProtocol, [current])
       if (current.version !== update.expectedVersion) throw new PersistenceError('version_conflict')
 
       const document = toTripDocument(actor, {
@@ -276,9 +298,19 @@ export class FirestoreTripStore {
     expectedVersion: number,
     verify: VerifyRevision,
     guard: ApplyGuard,
+    acceptsProtocol = true,
   ) {
     const tripRef = this.trip(actor, parseInput(TripIdSchema, tripId))
-    return applyStoredRevision(this.db, actor, tripRef, revisionId, expectedVersion, verify, guard)
+    return applyStoredRevision(
+      this.db,
+      actor,
+      tripRef,
+      revisionId,
+      expectedVersion,
+      verify,
+      guard,
+      acceptsProtocol,
+    )
   }
 
   async listRevisions(actor: Actor, tripId: string, assertActive: () => void) {

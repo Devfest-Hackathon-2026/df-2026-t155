@@ -1,6 +1,10 @@
 import { COSTS } from '@/server/cost-control/costs'
 import { TripResponseSchema, UpdateTripBodySchema } from '@/server/persistence/contracts'
 import { dataResponse, readDataBody, withDataActor } from '@/server/persistence/http'
+import {
+  acceptsLearningTripProtocol,
+  requireLearningTripReader,
+} from '@/server/persistence/learning-trip-rollout'
 import { FirestoreTripStore } from '@/server/persistence/trips'
 
 export const runtime = 'nodejs'
@@ -11,9 +15,9 @@ export function GET(request: Request, context: Context): Promise<Response> {
   return withDataActor(request, COSTS.getTrip, async (actor, operation) => {
     const { tripId } = await context.params
     operation.assertActive()
-    return dataResponse(TripResponseSchema, {
-      trip: await new FirestoreTripStore().getTrip(actor, tripId),
-    })
+    const trip = await new FirestoreTripStore().getTrip(actor, tripId)
+    requireLearningTripReader(acceptsLearningTripProtocol(request), [trip])
+    return dataResponse(TripResponseSchema, { trip })
   })
 }
 
@@ -28,6 +32,7 @@ export function PATCH(request: Request, context: Context): Promise<Response> {
       expectedVersion,
       preferences,
       operation.write,
+      acceptsLearningTripProtocol(request),
     )
     return dataResponse(TripResponseSchema, { trip })
   })

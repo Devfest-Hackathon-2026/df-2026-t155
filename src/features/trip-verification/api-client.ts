@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { PLACE_SAVE_PROOF_HEADER, PlaceSaveProofSchema } from '@/domain/learning-trip-protocol'
 import { TripSchema, type Trip } from '@/domain'
 
 // 旅程の照合API（POST /api/trips/verify）を呼ぶクライアント。
@@ -30,7 +31,7 @@ export interface VerificationFailure {
 }
 
 export type VerificationResult =
-  { ok: true; trip: Trip } | { ok: false; failure: VerificationFailure }
+  { ok: true; trip: Trip; placeSaveProof?: string } | { ok: false; failure: VerificationFailure }
 
 export interface VerificationOptions {
   fetchFn?: typeof fetch
@@ -142,9 +143,15 @@ export async function requestTripVerification(
 
   const verified = VerifiedSchema.safeParse(body)
   if (verified.success) {
-    return response.status === 200 && sameAsSent(trip, verified.data.trip)
-      ? { ok: true, trip: verified.data.trip }
-      : failure('unexpected', UNEXPECTED_MESSAGE)
+    if (response.status !== 200 || !sameAsSent(trip, verified.data.trip)) {
+      return failure('unexpected', UNEXPECTED_MESSAGE)
+    }
+    const proof = PlaceSaveProofSchema.safeParse(response.headers.get(PLACE_SAVE_PROOF_HEADER))
+    return {
+      ok: true,
+      trip: verified.data.trip,
+      ...(proof.success ? { placeSaveProof: proof.data } : {}),
+    }
   }
 
   const error = ErrorBodySchema.safeParse(body)

@@ -1,3 +1,4 @@
+import { PLACE_SAVE_PROOF_HEADER } from '@/domain/learning-trip-protocol'
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -196,6 +197,7 @@ function setup(
   const state = {
     generate: (): Response | Promise<Response> => json({ status: 'proposed', trip: generatedTrip }),
     verifyCalls: 0,
+    placeSaveProof: undefined as string | undefined,
   }
   const fetchFn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input)
@@ -209,7 +211,9 @@ function setup(
     if (path === '/api/trips/verify') {
       state.verifyCalls += 1
       const sent = JSON.parse(String(init?.body)).trip as Trip
-      return json({ status: 'verified', trip: verifiedFrom(TripSchema.parse(sent)) })
+      const verified = json({ status: 'verified', trip: verifiedFrom(TripSchema.parse(sent)) })
+      if (state.placeSaveProof) verified.headers.set(PLACE_SAVE_PROOF_HEADER, state.placeSaveProof)
+      return verified
     }
     return backend.fetchFn(input, init)
   })
@@ -1123,17 +1127,22 @@ describe('トップ画面：前の旅の学びを選んで、次の旅程の生�
     expect(screen.queryByRole('region', { name: '生成時の学びの適用記録' })).toBeNull()
   })
 
-  it('生成時の学びと対象を表示し、未報告の学びと区別する。適用記録つき旅程の保存は送信しない', async () => {
+  it('学びと対象を表示し、証跡を付けて旅程を保存する', async () => {
     const unreported = saved('learning-b', '混雑時は屋外で休憩する')
-    const { state, fetchFn } = setup({ [A]: { learnings: [learningA, unreported] } })
+    const { state, fetchFn, backend } = setup({ [A]: { learnings: [learningA, unreported] } })
+    const expires = Date.now() + 60 * 60 * 1000
+    const learningSaveProof = `v1.${expires}.${'A'.repeat(43)}.${'A'.repeat(43)}`
+    state.placeSaveProof = `p1.${expires}.${'A'.repeat(43)}`
     state.generate = () =>
       json({
         status: 'proposed',
+        learningSaveProof,
         trip: {
           ...generatedTrip,
           learningApplications: [
             {
               learningId: learningA.learning.id,
+              learningVersion: learningA.version,
               targetStopIds: [lunch.id],
               explanation: '昼食後の休憩時間に余裕を持たせた。',
             },
@@ -1141,7 +1150,7 @@ describe('トップ画面：前の旅の学びを選んで、次の旅程の生�
         },
       })
     const user = userEvent.setup()
-    renderHome()
+    const view = renderHome()
     await user.type(screen.getByLabelText(/旅行先/), REGION)
     await chooseLearning(user)
     await user.click(screen.getByRole('checkbox', { name: /混雑時は屋外で休憩する/ }))
@@ -1157,17 +1166,41 @@ describe('トップ画面：前の旅の学びを選んで、次の旅程の生�
     expect(omitted.textContent).toBe(unreported.learning.content)
     expect(summary.getByText(/AIから反映先の報告がなかった/)).toBeTruthy()
 
-    await user.click(screen.getByRole('button', { name: '本人の操作で旅程を保存する' }))
-    expect((await screen.findByRole('alert')).textContent).toContain('まだ保存できません')
-    expect(
-      fetchFn.mock.calls.some(([url, init]) => url === '/api/trips' && init?.method === 'POST'),
-    ).toBe(false)
-
     // 次の操作で選択を外しても、生成結果には当時の内容を表示し続ける。
     await editInput(user)
     await user.click(screen.getByRole('checkbox', { name: /昼食後は休憩を長めに取る/ }))
     await backToTrip(user)
     expect(summary.getByText(learningA.learning.content)).toBeTruthy()
+
+    await verify(user)
+    await saveTripFromScreen(user)
+    const posts = fetchFn.mock.calls.filter(
+      ([url, init]) => url === '/api/trips' && init?.method === 'POST',
+    )
+    expect(posts).toHaveLength(1)
+    expect(JSON.parse(String(posts[0][1]?.body))).toMatchObject({
+      learningSaveProof,
+      placeSaveProof: state.placeSaveProof,
+      learningApplications: [
+        { learningId: learningA.learning.id, learningVersion: learningA.version },
+      ],
+    })
+    expect(backend.account(A).trips[0].learningApplications).toHaveLength(1)
+    await showDuring(user)
+    await showBefore(user)
+    await openReflection(user)
+    await screen.findByRole('heading', { name: '振り返り', level: 1 })
+
+    view.unmount()
+    renderHome()
+    await user.click(screen.getByRole('button', { name: '保存した旅程で旅行を続ける' }))
+    await user.click(await screen.findByRole('button', { name: new RegExp(generatedTrip.region) }))
+    const restoredSummary = within(screen.getByRole('region', { name: '生成時の学びの適用記録' }))
+    expect(restoredSummary.getByRole('listitem').textContent).toContain(`版 ${learningA.version}`)
+    expect(restoredSummary.getByRole('listitem').textContent).toContain(
+      '昼食後の休憩時間に余裕を持たせた。',
+    )
+    expect(restoredSummary.queryByText(learningA.learning.content)).toBeNull()
 
     act(() => fakeAuth.signInAs(B))
     await waitFor(() =>

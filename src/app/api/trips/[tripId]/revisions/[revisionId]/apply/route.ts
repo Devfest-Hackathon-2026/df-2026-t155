@@ -8,6 +8,7 @@ import {
 } from '@/server/persistence/contracts'
 import { PersistenceError } from '@/server/persistence/errors'
 import { dataError, dataResponse, readDataBody, withDataActor } from '@/server/persistence/http'
+import { acceptsLearningTripProtocol } from '@/server/persistence/learning-trip-rollout'
 import { FirestoreTripStore } from '@/server/persistence/trips'
 import { createRevisionVerifier } from '@/server/revision/verify-for-apply'
 
@@ -34,6 +35,7 @@ export function POST(request: Request, context: Context): Promise<Response> {
       expectedVersion,
       createRevisionVerifier(meteredMaps(operation, maps)),
       operation,
+      acceptsLearningTripProtocol(request),
     )
     return dataResponse(ApplyRevisionResponseSchema, result)
   })

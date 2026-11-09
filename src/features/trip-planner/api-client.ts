@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { LEARNING_TRIP_HEADER, LEARNING_TRIP_PROTOCOL } from '@/domain/learning-trip-protocol'
 import { GenerateTripResponseSchema, type Trip } from '@/domain'
 import {
   InvalidLearningSelectionError,
@@ -65,7 +66,14 @@ export interface GenerationFailure {
   message: string
 }
 
-export type GenerationResult = { ok: true; trip: Trip } | { ok: false; failure: GenerationFailure }
+export type GenerationResult =
+  | {
+      ok: true
+      trip: Trip
+      learningSaveProof?: string
+      learningSaveUnavailable?: 'disabled' | 'signing_unavailable'
+    }
+  | { ok: false; failure: GenerationFailure }
 
 export interface GenerationOptions {
   fetchFn?: typeof fetch
@@ -152,6 +160,7 @@ export async function requestTripGeneration(
     return failure(kind, PROTECTED_FAILURE_MESSAGES[kind])
   }
   headers.set('Content-Type', 'application/json')
+  headers.set(LEARNING_TRIP_HEADER, LEARNING_TRIP_PROTOCOL)
 
   // 学びを選んでいるときは、通信を認証世代に登録する。世代が変われば同期的に中断され、結果は採用しない。
   let operation: ReturnType<typeof beginSessionScopeOperation> | undefined
@@ -239,9 +248,15 @@ function interpretResponse(httpStatus: number, text: string): GenerationResult {
     if (httpStatus !== EXPECTED_HTTP_STATUS[data.status]) {
       return failure('unexpected', UNEXPECTED_MESSAGE)
     }
-    return data.status === 'proposed'
-      ? { ok: true, trip: data.trip }
-      : failure(data.status, data.message)
+    if (data.status !== 'proposed') return failure(data.status, data.message)
+    return {
+      ok: true,
+      trip: data.trip,
+      ...(data.learningSaveProof ? { learningSaveProof: data.learningSaveProof } : {}),
+      ...(data.learningSaveUnavailable
+        ? { learningSaveUnavailable: data.learningSaveUnavailable }
+        : {}),
+    }
   }
 
   const apiError = ApiLayerErrorSchema.safeParse(body)

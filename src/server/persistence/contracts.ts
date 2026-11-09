@@ -12,10 +12,23 @@ import {
   StopSchema,
   TripSchema,
 } from '@/domain'
+import {
+  LEARNING_TRIP_ID_PATTERN,
+  LearningSaveProofSchema,
+  PlaceSaveProofSchema,
+} from '@/domain/learning-trip-protocol'
+import {
+  LearningExplanationSchema,
+  TripPreferencesSchema,
+  TripRecordIdSchema,
+  TripRegionSchema,
+  TripStopNameSchema,
+} from '@/domain/trip-write-limits'
 import { IdSchema, TextSchema, TimestampSchema } from '@/domain/primitives'
 import { MAX_LEARNING_CONTENT_LENGTH } from '@/lib/learnings/lifecycle'
+import { LEARNING_LIMIT } from './learning-limit'
 
-export const RecordIdSchema = IdSchema.max(256).refine((id) => id.isWellFormed())
+export const RecordIdSchema = TripRecordIdSchema
 export const VersionSchema = z.int().nonnegative()
 
 // URLのドットセグメントはエンコードしても正規化される。
@@ -23,13 +36,16 @@ export const PathIdSchema = RecordIdSchema.refine((id) => id !== '.' && id !== '
 const tripRouteNames = new Set(['generate', 'verify', 'revise'])
 export const TripIdSchema = PathIdSchema.refine((id) => !tripRouteNames.has(id))
 export const LearningIdSchema = PathIdSchema.refine((id) => id !== 'candidates')
+export const requiresLearningSaveProof = (
+  trip: Pick<z.infer<typeof TripSchema>, 'id' | 'learningApplications'>,
+) => LEARNING_TRIP_ID_PATTERN.test(trip.id) || trip.learningApplications.length > 0
 
-const RegionSchema = TextSchema.max(120)
-const PreferencesSchema = z.array(TextSchema.max(200)).max(16)
 const WriteStopSchema = StopSchema.safeExtend({
   id: RecordIdSchema,
-  name: TextSchema.max(200),
-  placeId: IdSchema.max(1024).nullable(),
+  name: TripStopNameSchema,
+  placeId: IdSchema.max(1024)
+    .refine((id) => id.isWellFormed())
+    .nullable(),
   evidence: StopSchema.shape.evidence.max(16),
 })
 
@@ -37,15 +53,25 @@ const WriteStopSchema = StopSchema.safeExtend({
 export const CreateTripBodySchema = TripSchema.safeExtend({
   id: TripIdSchema,
   version: z.literal(0),
-  region: RegionSchema,
-  preferences: PreferencesSchema,
+  region: TripRegionSchema,
+  preferences: TripPreferencesSchema,
   stops: z.array(WriteStopSchema).min(3).max(4),
-  learningApplications: TripSchema.shape.learningApplications.max(0),
+  learningApplications: z
+    .array(
+      TripSchema.shape.learningApplications.element.safeExtend({
+        learningId: LearningIdSchema,
+        learningVersion: VersionSchema.positive(),
+        explanation: LearningExplanationSchema,
+      }),
+    )
+    .max(LEARNING_LIMIT),
+  learningSaveProof: LearningSaveProofSchema.optional(),
+  placeSaveProof: PlaceSaveProofSchema.optional(),
 })
 
 export const UpdateTripBodySchema = z.strictObject({
   expectedVersion: VersionSchema,
-  preferences: PreferencesSchema,
+  preferences: TripPreferencesSchema,
 })
 
 export const PendingRevisionSchema = RevisionSchema.safeExtend({
@@ -116,7 +142,7 @@ export const ApproveLearningBodySchema = z.strictObject({
   category: LearningSchema.shape.category,
   content: TextSchema.max(MAX_LEARNING_CONTENT_LENGTH),
   scope: LearningSchema.shape.scope.refine(
-    (scope) => scope.kind === 'all_trips' || RegionSchema.safeParse(scope.region).success,
+    (scope) => scope.kind === 'all_trips' || TripRegionSchema.safeParse(scope.region).success,
   ),
 })
 
@@ -180,6 +206,7 @@ export const LearningListResponseSchema = z.strictObject({
 })
 
 export type ApproveLearningBody = z.infer<typeof ApproveLearningBodySchema>
+export type CreateTripBody = z.infer<typeof CreateTripBodySchema>
 export type PendingRevision = z.infer<typeof PendingRevisionSchema>
 export type SaveRevisionBody = z.infer<typeof SaveRevisionBodySchema>
 export type SavedRevision = z.infer<typeof SavedRevisionSchema>

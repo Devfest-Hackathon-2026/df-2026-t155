@@ -7,7 +7,7 @@ import { parseStored, PersistenceError } from './errors'
 
 export const TRIP_LIMIT = 20
 export const REVISION_LIMIT = 12
-export const LEARNING_LIMIT = 40
+export { LEARNING_LIMIT } from './learning-limit'
 
 const CountSchema = z.strictObject({ count: z.int().nonnegative() })
 

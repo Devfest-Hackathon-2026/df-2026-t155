@@ -73,6 +73,8 @@ export function HomePlanner({
   const [generation, setGeneration] = useState<{
     seq: number
     trip: Trip
+    learningSaveProof?: string
+    learningSaveUnavailable?: 'disabled' | 'signing_unavailable'
     learnings: readonly ApprovedLearning[]
   } | null>(null)
   const [showInput, setShowInput] = useState(true)
@@ -116,6 +118,8 @@ export function HomePlanner({
         setGeneration((previous) => ({
           seq: (previous?.seq ?? 0) + 1,
           trip: result.trip,
+          learningSaveProof: result.learningSaveProof,
+          learningSaveUnavailable: result.learningSaveUnavailable,
           learnings: selection?.learnings ?? [],
         }))
       } else if (result.failure.kind === 'selection_changed') {
@@ -186,6 +190,7 @@ export function HomePlanner({
               routeTrip,
               adoptRouteChange,
               verificationPanel,
+              placeSaveProof,
             }) => (
               <TripJourney
                 trip={current}
@@ -196,12 +201,16 @@ export function HomePlanner({
                 generateRevisions={generateRevisions}
                 applyRevision={applyRevision}
                 saveTrip={saveTrip}
+                learningSaveProof={selected ? undefined : generation?.learningSaveProof}
+                learningSaveUnavailable={selected ? undefined : generation?.learningSaveUnavailable}
+                placeSaveProof={placeSaveProof}
                 initialSavedTrip={selected ?? undefined}
                 verificationPanel={verificationPanel}
                 learningSummary={
-                  generation?.trip === trip && (
-                    <LearningApplicationSummary trip={trip} learnings={generation.learnings} />
-                  )
+                  <LearningApplicationSummary
+                    trip={current}
+                    learnings={selected ? [] : (generation?.learnings ?? [])}
+                  />
                 }
                 visible={!showInput}
                 onEditInput={() => setShowInput(true)}

@@ -83,6 +83,8 @@ export const ApprovedLearningSchema = LearningSchema.extend({
 
 export const LearningApplicationSchema = z.strictObject({
   learningId: IdSchema,
+  // 先行データは版を持たない。新規保存では生成時に確定した版を必須にする。
+  learningVersion: z.int().positive().optional(),
   targetStopIds: z.array(IdSchema).min(1),
   explanation: TextSchema,
 })

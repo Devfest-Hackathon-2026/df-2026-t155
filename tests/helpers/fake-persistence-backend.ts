@@ -1,8 +1,9 @@
 import { vi } from 'vitest'
 
-import { TripSchema, type Learning, type Revision, type Trip } from '../../src/domain'
+import type { Learning, Revision, Trip } from '../../src/domain'
 import {
   ApproveLearningBodySchema,
+  CreateTripBodySchema,
   type VersionedLearning,
 } from '../../src/server/persistence/contracts'
 import { uidOfToken } from './fake-auth-client'
@@ -101,7 +102,9 @@ export function createFakeBackend(
       return ok({ trips: data.trips, listInfo: { returned: data.trips.length, ...emptyInfo } })
     }
     if (call.method === 'POST' && call.path === '/api/trips') {
-      const incoming = TripSchema.parse(call.body)
+      const incoming = CreateTripBodySchema.parse(call.body)
+      delete incoming.learningSaveProof
+      delete incoming.placeSaveProof
       if (data.trips.some((trip) => trip.id === incoming.id)) {
         return {
           status: 409,
