@@ -1,5 +1,6 @@
 import type { ConstraintCheck, Revision, Stop, Trip } from '@/domain'
 
+import { GoogleMapsSourceBox } from '@/features/legal/google-maps-attribution'
 import {
   EvidenceDetail,
   StatusBadge,
@@ -69,7 +70,7 @@ function TravelValue({
   const segment = slot?.segment
   const simulated = segment?.status === 'known' && segment.source.kind === 'simulation'
   const checkedAt = segment?.checkedAt && checkedAtFormat.format(new Date(segment.checkedAt))
-  return (
+  const content = (
     <>
       {!segment ? (
         '移動時間は未取得'
@@ -100,6 +101,13 @@ function TravelValue({
       )}
     </>
   )
+  return segment?.status === 'known' && segment.source.kind === 'routes' ? (
+    <GoogleMapsSourceBox caption="Google Mapsの移動時間" compact>
+      {content}
+    </GoogleMapsSourceBox>
+  ) : (
+    content
+  )
 }
 
 function VerificationScope({
@@ -117,6 +125,11 @@ function VerificationScope({
     { label: '施設の特定', evidence: checkStopEvidence(stop, 'place_identity') },
     { label: '営業時間', evidence: checkStopEvidence(stop, 'opening_hours') },
   ]
+  const googleEvidence = stop.evidence.filter(
+    (item) =>
+      item.source.kind === 'places' &&
+      (item.subject === 'place_identity' || item.subject === 'opening_hours'),
+  )
   return (
     <div className="space-y-1 text-sm leading-relaxed text-gt-muted">
       <p className="font-semibold">この候補の確認範囲</p>
@@ -144,17 +157,41 @@ function VerificationScope({
           </li>
         )}
       </ul>
+      {googleEvidence.length > 0 && (
+        <GoogleMapsSourceBox caption="候補のGoogle Maps照合">
+          {googleEvidence.map((evidence) => (
+            <EvidenceDetail key={evidence.id} evidence={evidence} />
+          ))}
+        </GoogleMapsSourceBox>
+      )}
       <p>臨時休業・渋滞・遅延は確認の対象外です。</p>
     </div>
   )
 }
 
 function StopEvidence({ stop, label }: { stop: Stop; label: string }) {
+  const google = stop.evidence.filter(
+    ({ source }) => source.kind === 'places' || source.kind === 'routes',
+  )
+  const other = stop.evidence.filter(
+    ({ source }) => source.kind !== 'places' && source.kind !== 'routes',
+  )
   return (
     <div className="space-y-1">
       <h4 className="text-sm font-bold">{label}</h4>
       {stop.evidence.length ? (
-        stop.evidence.map((evidence) => <EvidenceDetail key={evidence.id} evidence={evidence} />)
+        <>
+          {other.map((evidence) => (
+            <EvidenceDetail key={evidence.id} evidence={evidence} />
+          ))}
+          {google.length > 0 && (
+            <GoogleMapsSourceBox caption="Google Maps Platformで確認した内容">
+              {google.map((evidence) => (
+                <EvidenceDetail key={evidence.id} evidence={evidence} />
+              ))}
+            </GoogleMapsSourceBox>
+          )}
+        </>
       ) : (
         <UnverifiedBadge />
       )}

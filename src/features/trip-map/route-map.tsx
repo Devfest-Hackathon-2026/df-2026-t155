@@ -1,4 +1,5 @@
 import type { Stop, Trip } from '@/domain'
+import { GoogleMapsAttribution } from '@/features/legal/google-maps-attribution'
 
 import { EvidenceBadge, UnverifiedBadge } from './evidence-badge'
 import { segmentEvidence, type SegmentEvidenceItem } from './evidence-scope'
@@ -76,9 +77,21 @@ function FixedChip() {
 
 function Evidence({ stop }: { stop: Stop }) {
   const worst = worstEvidence(stop.evidence)
+  const google = worst?.source.kind === 'places' || worst?.source.kind === 'routes'
   return (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      {worst ? <EvidenceBadge evidence={worst} /> : <UnverifiedBadge />}
+      {worst ? (
+        google ? (
+          <span className="inline-flex flex-wrap items-center gap-1 rounded border border-[#5E5E5E] bg-white p-1">
+            <EvidenceBadge evidence={worst} />
+            <GoogleMapsAttribution />
+          </span>
+        ) : (
+          <EvidenceBadge evidence={worst} />
+        )
+      ) : (
+        <UnverifiedBadge />
+      )}
       {stop.evidence.length > 1 && (
         <span className="text-xs text-gt-muted">ほか{stop.evidence.length - 1}件</span>
       )}
@@ -111,7 +124,9 @@ function SegmentLabel({
     text = '次の地点まで：徒歩移動を確認できません'
   }
   return (
-    <p className="mt-2 flex items-center gap-1.5 text-xs text-gt-muted">
+    <p
+      className={`mt-2 flex flex-wrap items-center gap-1.5 text-xs text-gt-muted ${travelEvidence ? 'rounded border border-[#5E5E5E] bg-white p-1' : ''}`}
+    >
       <svg
         width="12"
         height="12"
@@ -125,7 +140,8 @@ function SegmentLabel({
       >
         <path d="M12 4v15M6 13l6 6 6-6" />
       </svg>
-      {text}
+      <span>{text}</span>
+      {travelEvidence && <GoogleMapsAttribution />}
     </p>
   )
 }

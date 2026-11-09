@@ -464,6 +464,19 @@ describe('旅程の路線図: 移動区間の根拠の状態', () => {
     )
   })
 
+  it('既知の所要時間とRoutes根拠が共存するときもGoogle Maps帰属を表示する', () => {
+    render(<TripRouteView trip={withTravel('consistent', null)} meta={sampleRouteMeta} />)
+
+    const knownSegmentLabel = screen.getByText('次の地点まで：徒歩10分')
+    expect(knownSegmentLabel.parentElement?.textContent).toContain('Google Maps')
+  })
+
+  it('Routes根拠がない既知の所要時間にはGoogle Maps帰属を付けない', () => {
+    render(<TripRouteView trip={withTravel(null, null)} meta={sampleRouteMeta} />)
+
+    expect(screen.queryByText('Google Maps')).toBeNull()
+  })
+
   it('Routesの値（所要時間・余裕）や「正しい」という保証は、路線図に出さない', () => {
     render(<TripRouteView trip={withTravel('consistent', 'conflicting')} />)
 

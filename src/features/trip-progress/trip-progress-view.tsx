@@ -3,6 +3,7 @@
 import { useState } from 'react'
 
 import type { Stop, Trip } from '@/domain'
+import { GoogleMapsAttribution } from '@/features/legal/google-maps-attribution'
 
 import { paletteStyle } from './palette'
 import {
@@ -175,14 +176,32 @@ function CurrentCard({ stop, onReplan }: { stop: Stop; onReplan?: (stopId: strin
             <StatusLine kind="unchecked">根拠：未照合（まだ確認していません）</StatusLine>
           </li>
         ) : (
-          lines.map((line) => (
-            <li key={`${line.subject}-${line.simulated ? 'demo' : 'real'}`}>
-              <StatusLine
-                kind={line.status}
-                simulated={line.simulated}
-              >{`${line.subjectLabel}：${line.statusLabel}`}</StatusLine>
-            </li>
-          ))
+          lines.map((line) => {
+            const source = stop.evidence.find(
+              (item) =>
+                item.subject === line.subject &&
+                item.status === line.status &&
+                (item.source.kind === 'simulation') === line.simulated,
+            )?.source.kind
+            const google = source === 'places' || source === 'routes'
+            return (
+              <li key={`${line.subject}-${line.simulated ? 'demo' : 'real'}`}>
+                <span
+                  className={
+                    google
+                      ? 'inline-flex flex-wrap items-center gap-1 rounded border border-[#5E5E5E] bg-white p-1'
+                      : undefined
+                  }
+                >
+                  <StatusLine
+                    kind={line.status}
+                    simulated={line.simulated}
+                  >{`${line.subjectLabel}：${line.statusLabel}`}</StatusLine>
+                  {google && <GoogleMapsAttribution />}
+                </span>
+              </li>
+            )
+          })
         )}
       </ul>
       {lines.some((line) => line.simulated) && (
@@ -242,15 +261,26 @@ function NextBody({ current, next }: { current: Stop; next: Stop }) {
       <p className={`text-xl font-black leading-snug ${wrapClass}`}>{next.name}</p>
       <div className="mt-3 grid gap-1.5">
         <p className="text-xs font-bold text-(color:--tp-muted)">次の予定までの移動</p>
-        {bases.map((basis) => (
-          <StatusLine
-            key={basis.simulated ? 'demo' : 'real'}
-            kind={basis.kind}
-            simulated={basis.simulated}
-          >
-            {basis.text}
-          </StatusLine>
-        ))}
+        {bases.map((basis) => {
+          const source = next.evidence.find(
+            (item) =>
+              item.subject === 'travel_time' &&
+              item.status === basis.kind &&
+              (item.source.kind === 'simulation') === basis.simulated,
+          )?.source.kind
+          const google = source === 'routes' || source === 'places'
+          return (
+            <div
+              key={basis.simulated ? 'demo' : 'real'}
+              className={google ? 'rounded border border-[#5E5E5E] bg-white p-1' : undefined}
+            >
+              <StatusLine kind={basis.kind} simulated={basis.simulated}>
+                {basis.text}
+              </StatusLine>
+              {google && <GoogleMapsAttribution />}
+            </div>
+          )
+        })}
         {bases.some((basis) => basis.simulated) && (
           <p className={`text-xs text-(color:--tp-muted) ${wrapClass}`}>
             「デモ用の想定」は、{simulatedNote}。

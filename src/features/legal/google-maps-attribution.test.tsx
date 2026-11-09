@@ -93,7 +93,7 @@ describe('GoogleMapsSourceBox', () => {
     )
     const box = screen.getByRole('group', { name: '確認に使った情報源' })
     const content = screen.getByText('清水寺（名称の一致を確認）')
-    const mark = screen.getByText('Google Maps')
+    const mark = screen.getByRole('img', { name: 'Google Maps' })
     expect(box.contains(content)).toBe(true)
     expect(box.contains(mark)).toBe(true)
     // 内容が先、帰属が後（文書順）
@@ -130,7 +130,7 @@ describe('GoogleMapsSourceBox', () => {
         </GoogleMapsSourceBox>
       </>,
     )
-    const marks = screen.getAllByText('Google Maps')
+    const marks = screen.getAllByRole('img', { name: 'Google Maps' })
     expect(marks).toHaveLength(1)
     expect(screen.getByRole('group').contains(marks[0])).toBe(true)
   })

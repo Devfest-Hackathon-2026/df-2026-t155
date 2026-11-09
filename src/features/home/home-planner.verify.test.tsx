@@ -235,9 +235,8 @@ describe('HomePlanner: 根拠の確認（照合）', () => {
     await user.click(verifyButton())
 
     const summaryBox = await panel().findByRole('group', { name: '確認に使った情報源' })
-    const attribution = within(summaryBox).getByText('Google Maps')
-    expect(attribution.getAttribute('translate')).toBe('no')
-    expect(attribution.style.whiteSpace).toBe('nowrap')
+    const attribution = within(summaryBox).getByRole('img', { name: 'Google Maps' })
+    expect(attribution.getAttribute('alt')).toBe('Google Maps')
     // 帰属は枠の中の最後（内容の下）にある。
     expect(summaryBox.lastElementChild?.contains(attribution)).toBe(true)
 
@@ -246,8 +245,8 @@ describe('HomePlanner: 根拠の確認（照合）', () => {
     const sheetBox = within(dialog).getByRole('group', {
       name: 'Google Maps Platformで確認した内容',
     })
-    const sheetAttribution = within(sheetBox).getByText('Google Maps')
-    expect(sheetAttribution.getAttribute('translate')).toBe('no')
+    const sheetAttribution = within(sheetBox).getByRole('img', { name: 'Google Maps' })
+    expect(sheetAttribution.getAttribute('alt')).toBe('Google Maps')
     // 根拠の内容（出典・照合日時・理由）が、枠の中で確認できる。
     expect(sheetBox.textContent).toContain('施設の存在')
     expect(sheetBox.textContent).toContain('移動時間')
@@ -442,7 +441,7 @@ describe('HomePlanner: 根拠の確認（照合）', () => {
       expect(panelText()).not.toContain('変更後は未確認')
       expect(panel().queryByRole('alert')).toBeNull()
       expect(route().getAllByText('未照合')).toHaveLength(1)
-      expect(document.querySelector('[translate="no"]')).not.toBeNull()
+      expect(panel().getByRole('img', { name: 'Google Maps' })).toBeTruthy()
       expect(route().getByRole('button', { name: /昼食店A.*（固定予定）.*矛盾あり/ })).toBeTruthy()
       expect(fetchFn).toHaveBeenCalledOnce()
 

@@ -1,10 +1,11 @@
 import type { CSSProperties, ReactNode } from 'react'
+import Image from 'next/image'
 
 // Google Maps Platform由来の内容を、地図を使わずに表示するときの帰属表示（テキスト版）。
 // 書式はGoogleの帰属表示の要件に従う：文字は「Google Maps」から変えない（翻訳・折り返し・大小文字の変更をしない）、
 // Roboto（なければsans-serif）、通常体、太さ400、文字サイズ12〜16px、letter-spacingはnormal、
 // 色は白・#1F1F1F・#5E5E5E のいずれかで、背景に対して4.5:1以上。
-// ロゴが望ましいが、公式の素材の入手までは、テキストで表示する（docs/GOOGLE_MAPS_COMPLIANCE.md）。
+// 狭い領域ではテキストを使い、通常の枠ではGoogle提供の公式ロゴを使う。
 
 export const GOOGLE_MAPS_ATTRIBUTION_TEXT = 'Google Maps'
 
@@ -51,10 +52,12 @@ export function GoogleMapsAttribution({
 export function GoogleMapsSourceBox({
   caption,
   children,
+  compact = false,
 }: {
   // 枠の見出し（例：「確認に使った情報源」）。任意。
   caption?: string
   children: ReactNode
+  compact?: boolean
 }) {
   return (
     <div
@@ -64,9 +67,21 @@ export function GoogleMapsSourceBox({
     >
       {caption && <p className="mb-1.5 text-xs font-bold text-[#1F1F1F]">{caption}</p>}
       <div className="min-w-0 [overflow-wrap:anywhere]">{children}</div>
-      <p className="mt-2 flex justify-end border-t border-[#C8C8C8] pt-1.5">
-        <GoogleMapsAttribution />
-      </p>
+      <div className="mt-2 flex justify-end border-t border-[#C8C8C8]">
+        {compact ? (
+          <GoogleMapsAttribution />
+        ) : (
+          <span style={{ padding: '10px 10px 5px' }}>
+            <Image
+              src="/google-maps-attribution.svg"
+              alt="Google Maps"
+              width={98}
+              height={18}
+              unoptimized
+            />
+          </span>
+        )}
+      </div>
     </div>
   )
 }

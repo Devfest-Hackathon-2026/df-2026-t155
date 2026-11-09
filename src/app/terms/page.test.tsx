@@ -54,6 +54,14 @@ describe('利用条件ページ', () => {
     expect(text).toContain('この版のアプリは')
   })
 
+  it('本人操作による旅程と承認済みの学びの保存を説明する', () => {
+    render(<TermsPage />)
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('本人が保存を操作した旅程')
+    expect(text).toContain('承認した学び')
+    expect(text).not.toContain('入力内容を、利用者のアカウントに保存しません')
+  })
+
   it('断定的な保証表現や、未確定の運用（保存期間・連絡先の個別情報）を書かない', () => {
     render(<TermsPage />)
     const text = document.body.textContent ?? ''

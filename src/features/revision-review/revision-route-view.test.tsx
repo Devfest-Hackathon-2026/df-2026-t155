@@ -148,7 +148,14 @@ describe('部分修正の候補比較', () => {
     const table = within(await screen.findByRole('table'))
     const scope = () => within(screen.getByRole('region', { name: '予定への影響' }))
     expect(scope().getByText(/営業時間：情報源と整合（照合/)).toBeTruthy()
-    expect(scope().getByText(/前の予定から：徒歩8分/)).toBeTruthy()
+    expect(
+      scope().getByText(
+        (_text, element) =>
+          element?.tagName === 'LI' &&
+          Boolean(element.textContent?.includes('前の予定から：')) &&
+          Boolean(element.textContent?.includes('徒歩8分')),
+      ),
+    ).toBeTruthy()
     expect(scope().getByText(/臨時休業・渋滞・遅延は確認の対象外/)).toBeTruthy()
     expect(table.getByText('徒歩8分')).toBeTruthy()
     expect(table.getByText('2分短い')).toBeTruthy()

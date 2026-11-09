@@ -86,7 +86,7 @@ describe('VerificationPanel: 照合した項目・未確認の項目・照合日
     renderPanel({ kind: 'verified', summary: summary({}, 3) })
 
     const box = screen.getByRole('group', { name: '確認に使った情報源' })
-    expect(within(box).getByText('Google Maps').getAttribute('translate')).toBe('no')
+    expect(within(box).getByRole('img', { name: 'Google Maps' })).toBeTruthy()
     const other = screen.getByText(/ほかに、公式情報・本人の報告・模擬データ由来の根拠が3件/)
     expect(other.textContent).toContain('Google Mapsでの照合の結果ではありません')
     expect(box.contains(other)).toBe(false)
