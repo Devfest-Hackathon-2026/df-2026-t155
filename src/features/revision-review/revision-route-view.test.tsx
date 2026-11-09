@@ -636,6 +636,7 @@ describe('本人承認とサーバー適用', () => {
         request: expect.objectContaining({ reason: '店が休み', travelModes: ['walk'] }),
         revision: first,
       }),
+      expect.any(AbortSignal),
     )
   })
 

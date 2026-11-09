@@ -4,6 +4,12 @@ import { useMemo, useState } from 'react'
 
 import type { Trip } from '@/domain'
 import { OnSiteReplanningFlow } from '@/features/onsite-flow/onsite-replanning-flow'
+import {
+  scopedOnSiteApply,
+  scopedRecovery,
+  scopedReportControl,
+} from '@/features/onsite-flow/onsite-persistence'
+import { sameSavedTrip } from '@/features/onsite-flow/saved-snapshot'
 import { ReflectionFlow } from '@/features/reflection-flow/reflection-flow'
 import {
   requestRevisions,
@@ -28,6 +34,7 @@ interface TripJourneyProps {
   generateRevisions?: GenerateRevisions
   applyRevision?: ApplyRevision
   saveTrip?: SaveTrip
+  initialSavedTrip?: Trip
   // 学びを保存したとき。次の旅に使う学びの一覧を読み込み直すために使う。
   onLearningsChanged: () => void
 }
@@ -98,11 +105,25 @@ export function TripJourney({
   generateRevisions,
   applyRevision,
   saveTrip,
+  initialSavedTrip,
   onLearningsChanged,
 }: TripJourneyProps) {
-  const [savedTripId, setSavedTripId] = useState<string | null>(null)
+  const [savedTripId, setSavedTripId] = useState<string | null>(initialSavedTrip?.id ?? null)
+  const [savedTrip, setSavedTrip] = useState<Trip | null>(initialSavedTrip ?? null)
+  const isSavedCurrent = savedTrip !== null && sameSavedTrip(trip, savedTrip)
+  const persistence = useMemo(
+    () =>
+      scope
+        ? {
+            apply: scopedOnSiteApply(scope),
+            reportControl: scopedReportControl(scope),
+            ...scopedRecovery(scope),
+          }
+        : null,
+    [scope],
+  )
   // 保存の結果が不明のとき、保存済みの旅行の一覧を開いて確かめる。
-  const [reflectionOpen, setReflectionOpen] = useState(false)
+  const [reflectionOpen, setReflectionOpen] = useState(Boolean(initialSavedTrip))
 
   // 候補生成の処理は、認証確認中に現在の別UIDのBearerへフォールバックしない。
   const revisions = useMemo(
@@ -113,10 +134,13 @@ export function TripJourney({
   return (
     <div className="space-y-8">
       <TripSavePanel
+        key={`${trip.id}:${savedTrip?.version ?? 'new'}`}
+        initialSavedTrip={isSavedCurrent ? (savedTrip ?? undefined) : undefined}
         trip={trip}
         scope={scope}
         save={saveTrip}
-        onSaved={(tripId) => {
+        onSaved={(tripId, saved) => {
+          setSavedTrip(saved)
           setSavedTripId(tripId)
           setReflectionOpen(true)
         }}
@@ -131,11 +155,36 @@ export function TripJourney({
           旅行当日に予定が変わったときに、その予定だけを直す候補を比べます。旅程に反映できるのは「実際の報告」だけです。
           「デモ用の模擬報告」は、実際に起きたことではないため、候補の比較までで旅程には適用しません。
         </p>
+        {!isSavedCurrent && (
+          <div role="note" className="text-sm">
+            <p>
+              現地の候補を作るには、現在の旅程を保存してください。保存後に変更した場合は保存済みの旅程へ戻してください。
+            </p>
+            {savedTrip && (
+              <button
+                className="min-h-11 font-semibold underline"
+                type="button"
+                onClick={() => adoptTripChange(savedTrip)}
+              >
+                保存済みの旅程へ戻す
+              </button>
+            )}
+          </div>
+        )}
         <OnSiteReplanningFlow
           trip={trip}
-          generate={revisions}
-          apply={applyRevision}
-          onTripChange={adoptTripChange}
+          generate={isSavedCurrent ? revisions : undefined}
+          generationUnavailableReason="保存済みの現在の旅程を確認してから再計画を始めてください。"
+          apply={isSavedCurrent ? (applyRevision ?? persistence?.apply) : undefined}
+          ownerUid={scope?.uid}
+          reportControl={persistence?.reportControl}
+          lockManagedByApply={!applyRevision}
+          loadLatestTrip={persistence?.loadLatestTrip}
+          loadAppliedRevision={persistence?.loadAppliedRevision}
+          onTripChange={(next) => {
+            setSavedTrip(next)
+            adoptTripChange(next)
+          }}
         />
       </section>
 
@@ -149,6 +198,7 @@ export function TripJourney({
             選んだ学びだけが、次の旅程の作成に使われます。
           </p>
           <ReflectionFlow
+            key={`${savedTripId}:${savedTrip?.version ?? 0}`}
             initialTripId={savedTripId ?? undefined}
             embedded
             onLearningsChanged={onLearningsChanged}

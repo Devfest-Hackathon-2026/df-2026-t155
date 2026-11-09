@@ -60,11 +60,14 @@ export type GenerateRevisions = (
 ) => Promise<RevisionResult>
 
 // 本人の承認操作を受け取る。applied と失敗はサーバーで結果が確定した場合にだけ返す。
-export type ApplyRevision = (decision: {
-  request: RevisionRequest
-  revision: Revision
-  proposalToken: string
-}) => Promise<
+export type ApplyRevision = (
+  decision: {
+    request: RevisionRequest
+    revision: Revision
+    proposalToken: string
+  },
+  signal?: AbortSignal,
+) => Promise<
   | { status: 'applied'; trip: Trip; receipt?: ApplyRevisionResult }
   | { status: 'conflict' | 'unavailable' | 'failed' | 'uncertain'; message?: string }
 >

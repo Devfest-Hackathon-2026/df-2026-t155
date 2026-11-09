@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useRef, useState } from 'react'
+import type { Trip } from '@/domain'
 
 import type { LoadLearningOptions } from '@/features/learning-reuse/learning-reuse-picker'
 import type { ScopedLearningSelection } from '@/features/learning-reuse/selection-scope'
@@ -17,6 +18,7 @@ import { useSessionScope } from '@/lib/auth/use-session-scope'
 
 import { HomeLearningPicker } from './home-learning-picker'
 import { TripJourney } from './trip-journey'
+import { SavedTripChooser } from './saved-trip-chooser'
 
 interface HomePlannerProps {
   // 以下はテスト用の差し替え口。省略時は実際のAPIを呼ぶ（本人のBearer＋App Check付き。取得できなければ送信しない）。
@@ -85,11 +87,17 @@ export function HomePlanner({
   const [pickerKey, setPickerKey] = useState(0)
   // 生成のたびに増やし、旅程が変わるたびに下の導線（保存・報告・振り返り）を作り直す。
   const [generationSeq, setGenerationSeq] = useState(0)
+  const [choiceSeq, setChoiceSeq] = useState(0)
+  const [chooserSeq, setChooserSeq] = useState(0)
+  const [chosen, setChosen] = useState<{ trip: Trip; discard: number } | null>(null)
+  const selected = chosen?.discard === session.discard ? chosen.trip : null
 
   const run = generate ?? requestTripGeneration
   const generateWithSelection = useCallback<GenerateTrip>(
     async (request, options) => {
       // 選択は、ここで取り出した値をそのまま渡す。送信の直前に、クライアント側で現在のセッションと照合される。
+      setChosen(null)
+      setChooserSeq((count) => count + 1)
       const result = await run(request, { ...options, learningSelection: selectionRef.current })
       if (result.ok) {
         setGenerationSeq((count) => count + 1)
@@ -103,29 +111,60 @@ export function HomePlanner({
   )
 
   return (
-    <TripPlanner
-      generate={generateWithSelection}
-      discardKey={String(session.discard)}
-      renderLearningPicker={(region) => (
-        <HomeLearningPicker
-          key={pickerKey}
-          region={region}
-          session={auth}
-          load={loadLearnings}
-          delayMs={learningPickerDelayMs}
-          onSelectionChange={onSelectionChange}
-        />
-      )}
-      renderTrip={(trip) => (
+    <>
+      <SavedTripChooser
+        key={`${session.discard}:${chooserSeq}`}
+        scope={authScope}
+        onChoose={(trip) => {
+          setChoiceSeq((count) => count + 1)
+          setChosen({ trip, discard: session.discard })
+        }}
+      />
+      <TripPlanner
+        generate={generateWithSelection}
+        discardKey={`${session.discard}:${choiceSeq}`}
+        renderLearningPicker={(region) => (
+          <HomeLearningPicker
+            key={pickerKey}
+            region={region}
+            session={auth}
+            load={loadLearnings}
+            delayMs={learningPickerDelayMs}
+            onSelectionChange={onSelectionChange}
+          />
+        )}
+        renderTrip={(trip) =>
+          !selected && (
+            <VerifiableTrip
+              key={`${trip.id}:${generationSeq}`}
+              trip={trip}
+              verify={verify ?? verifyTripWithProtectedApi}
+              renderAfter={({ trip: current, adoptExternalChange }) => (
+                <TripJourney
+                  trip={current}
+                  adoptTripChange={adoptExternalChange}
+                  scope={authScope}
+                  generateRevisions={generateRevisions}
+                  applyRevision={applyRevision}
+                  saveTrip={saveTrip}
+                  onLearningsChanged={() => setPickerKey((count) => count + 1)}
+                />
+              )}
+            />
+          )
+        }
+      />
+      {selected && (
         <VerifiableTrip
-          key={`${trip.id}:${generationSeq}`}
-          trip={trip}
+          key={`saved:${selected.id}:${choiceSeq}`}
+          trip={selected}
           verify={verify ?? verifyTripWithProtectedApi}
           renderAfter={({ trip: current, adoptExternalChange }) => (
             <TripJourney
               trip={current}
               adoptTripChange={adoptExternalChange}
               scope={authScope}
+              initialSavedTrip={selected}
               generateRevisions={generateRevisions}
               applyRevision={applyRevision}
               saveTrip={saveTrip}
@@ -134,6 +173,6 @@ export function HomePlanner({
           )}
         />
       )}
-    />
+    </>
   )
 }

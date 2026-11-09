@@ -7,15 +7,33 @@ import { OnSiteReportForm } from '@/features/onsite-report/onsite-report-form'
 import type { OnSiteReportSubmission } from '@/features/onsite-report/report-model'
 import type { ApplyRevision, GenerateRevisions } from '@/features/revision-review/api-client'
 import { RevisionReview } from '@/features/revision-review/revision-review'
+import {
+  clearApplyUnresolved,
+  judgeLatestTrip,
+  markApplyUnresolved,
+  readUnresolvedApply,
+} from '@/features/revision-review/unresolved-apply'
 import { TripProgressView } from '@/features/trip-progress/trip-progress-view'
 
 import { guardOnSiteProposal } from './onsite-approval-guard'
+import type { scopedReportControl } from './onsite-persistence'
+import { ReportResolution } from './report-resolution'
 
 interface OnSiteReplanningFlowProps {
   trip: Trip
   generate?: GenerateRevisions
+  generationUnavailableReason?: string
   apply?: ApplyRevision
   onTripChange?: (trip: Trip) => void
+  lockManagedByApply?: boolean
+  reportControl?: ReturnType<typeof scopedReportControl>
+  ownerUid?: string
+  loadLatestTrip?: (tripId: string, signal: AbortSignal) => Promise<unknown>
+  loadAppliedRevision?: (
+    tripId: string,
+    revisionId: string,
+    signal: AbortSignal,
+  ) => Promise<unknown>
   initialIndex?: number
 }
 
@@ -50,9 +68,15 @@ const fingerprintOf = (trip: Trip) => {
 export function OnSiteReplanningFlow({
   trip: sourceTrip,
   generate,
+  generationUnavailableReason,
   apply,
   onTripChange,
   initialIndex,
+  ownerUid,
+  reportControl,
+  lockManagedByApply,
+  loadLatestTrip,
+  loadAppliedRevision,
 }: OnSiteReplanningFlowProps) {
   const [watch, setWatch] = useState(() => ({
     fingerprint: fingerprintOf(sourceTrip),
@@ -64,7 +88,12 @@ export function OnSiteReplanningFlow({
   const [draft, setDraft] = useState<Draft | null>(null)
   const [session, setSession] = useState<Session | null>(null)
   // 適用の結果をサーバーから確認できていない状態。利用者の操作では解除しない（下の注記を参照）。
-  const [applyUnresolved, setApplyUnresolved] = useState(false)
+  const [applyUnresolved, setApplyUnresolved] = useState(() =>
+    ownerUid ? readUnresolvedApply(ownerUid, sourceTrip.id).status !== 'clear' : false,
+  )
+  const [checking, setChecking] = useState(false)
+  const recoveryAbort = useRef<AbortController | null>(null)
+  useEffect(() => () => recoveryAbort.current?.abort(), [])
   // 同じ文言が続いても読み上げ直されるよう、更新のたびに数える。
   const [notice, setNotice] = useState({ text: '', tick: 0 })
   const [focusRequest, setFocusRequest] = useState<{ to: FocusTarget } | null>(null)
@@ -94,6 +123,8 @@ export function OnSiteReplanningFlow({
     }
   }
   const epoch = watch.epoch
+  const epochRef = useRef(epoch)
+  epochRef.current = watch.fingerprint === sourceFingerprint ? epoch : epoch + 1
   const trip = local && local.epoch === epoch ? local.value : sourceTrip
 
   const target = session && trip.stops.find((stop) => stop.id === session.submission.targetStopId)
@@ -134,7 +165,11 @@ export function OnSiteReplanningFlow({
 
   const startReport = (stopId: string) => {
     if (!generate || !trip.stops.some((stop) => stop.id === stopId && !stop.isFixed)) return
-    if (applyUnresolved) {
+    if (
+      applyUnresolved ||
+      (ownerUid && readUnresolvedApply(ownerUid, trip.id).status !== 'clear')
+    ) {
+      setApplyUnresolved(true)
       // 前回の適用結果が分からないまま、古い旅程から報告を始めさせない。
       announce(stoppedMessage)
       moveFocus('unresolved')
@@ -180,7 +215,8 @@ export function OnSiteReplanningFlow({
     moveFocus('report')
   }
 
-  const applied = (next: Trip) => {
+  const applied = (next: Trip, _receipt?: unknown, revisionId?: string) => {
+    if (ownerUid && revisionId) clearApplyUnresolved(ownerUid, sourceTrip.id, revisionId)
     // 適用を確認できた応答は、その世代の画面に届く。親が反映するまでの間、適用後の旅程を表示する。
     setLocal({ epoch, value: next })
     setSession(null)
@@ -192,6 +228,49 @@ export function OnSiteReplanningFlow({
     onTripChange?.(next)
   }
 
+  const recover = async () => {
+    if (!ownerUid || !loadLatestTrip || !loadAppliedRevision || checking) return
+    const lock = readUnresolvedApply(ownerUid, sourceTrip.id)
+    if (lock.status !== 'pending') return
+    const controller = new AbortController()
+    const recoveryEpoch = epochRef.current
+    recoveryAbort.current = controller
+    setChecking(true)
+    try {
+      const latest = await loadLatestTrip(sourceTrip.id, controller.signal)
+      const revision = await loadAppliedRevision(
+        sourceTrip.id,
+        lock.value.revisionId,
+        controller.signal,
+      )
+      if (controller.signal.aborted || epochRef.current !== recoveryEpoch) return
+      const current = readUnresolvedApply(ownerUid, sourceTrip.id)
+      if (
+        current.status !== 'pending' ||
+        current.value.revisionId !== lock.value.revisionId ||
+        current.value.baseVersion !== lock.value.baseVersion
+      )
+        return
+      const verdict = judgeLatestTrip(
+        sourceTrip.id,
+        lock.value.baseVersion,
+        lock.value.revisionId,
+        latest,
+        revision,
+      )
+      if (verdict.kind !== 'applied') {
+        announce('対象の適用を確認できませんでした。再操作は停止したままです。')
+        return
+      }
+      clearApplyUnresolved(ownerUid, sourceTrip.id, lock.value.revisionId)
+      applied(verdict.trip)
+    } catch {
+      if (!controller.signal.aborted)
+        announce('対象の適用を確認できませんでした。再操作は停止したままです。')
+    } finally {
+      if (!controller.signal.aborted) setChecking(false)
+    }
+  }
   return (
     <section aria-label="旅行中の再計画" className="mx-auto w-full max-w-xl space-y-3">
       <p
@@ -219,6 +298,16 @@ export function OnSiteReplanningFlow({
             <p>
               旅程の最新状態を確認できるまで、再計画を停止しています。ページを再読み込みして、最新の旅程を取得し直してください。再読み込みすると、この画面の入力と、手動で進めた現在位置は失われます。
             </p>
+            {ownerUid && loadLatestTrip && loadAppliedRevision && (
+              <button
+                className="min-h-11 font-semibold underline"
+                type="button"
+                onClick={() => void recover()}
+                disabled={checking}
+              >
+                {checking ? '確認中…' : '最新の旅程を取得して確認する'}
+              </button>
+            )}
           </div>
         )}
         <TripProgressView
@@ -228,7 +317,8 @@ export function OnSiteReplanningFlow({
         />
         {!generate && (
           <p className="px-4 text-sm text-gt-muted">
-            現地報告からの再計画は、候補生成サービスを接続すると利用できます。
+            {generationUnavailableReason ??
+              '現地報告からの再計画は、候補生成サービスを接続すると利用できます。'}
           </p>
         )}
       </div>
@@ -275,6 +365,23 @@ export function OnSiteReplanningFlow({
               現地での報告は利用者による申告です。Placesなどの照合結果と区別して扱います。
             </p>
           )}
+          {session.submission.context.report.kind === 'actual' &&
+            reportControl &&
+            !applyUnresolved && (
+              <ReportResolution
+                key={JSON.stringify([ownerUid, trip.id, trip.version, session.epoch, target.id])}
+                tripId={trip.id}
+                stopId={target.id}
+                tripVersion={trip.version}
+                control={reportControl}
+                onResolved={() => {
+                  setSession(null)
+                  setStep('report')
+                  announce('保留を解消しました。報告内容を見直して、候補を作り直してください。')
+                  moveFocus('report')
+                }}
+              />
+            )}{' '}
           <RevisionReview
             key={`${session.epoch}:${target.id}`}
             trip={trip}
@@ -295,7 +402,16 @@ export function OnSiteReplanningFlow({
             }}
             onCancel={cancelReview}
             onApplied={applied}
-            onApplyUnresolvedChange={setApplyUnresolved}
+            onApplyUnresolvedChange={(unresolved, revisionId) => {
+              if (ownerUid) {
+                if (!revisionId) throw new Error('候補を確認できません。')
+                if (unresolved && !lockManagedByApply)
+                  markApplyUnresolved(ownerUid, trip.id, trip.version, revisionId)
+                else if (!unresolved && !lockManagedByApply)
+                  clearApplyUnresolved(ownerUid, trip.id, revisionId)
+              }
+              setApplyUnresolved(unresolved)
+            }}
           />
         </div>
       )}

@@ -128,7 +128,7 @@ export function RevisionReview({
     message?: string
   } | null>(null)
   const activeGeneration = useRef<AbortController | null>(null)
-  const activeApply = useRef<object | null>(null)
+  const activeApply = useRef<AbortController | null>(null)
   const heading = useRef<HTMLHeadingElement>(null)
   const reasonField = useRef<HTMLTextAreaElement>(null)
   const preferencesField = useRef<HTMLTextAreaElement>(null)
@@ -156,6 +156,7 @@ export function RevisionReview({
     () => () => {
       activeGeneration.current?.abort()
       activeGeneration.current = null
+      activeApply.current?.abort()
       activeApply.current = null
     },
     [],
@@ -307,7 +308,7 @@ export function RevisionReview({
       setApplyFailure({ status: 'conflict' })
       return
     }
-    const attempt = {}
+    const attempt = new AbortController()
     activeApply.current = attempt
     setApplyFailure(null)
     setIsApplying(true)
@@ -324,7 +325,7 @@ export function RevisionReview({
       return
     }
     try {
-      const result = await apply(structuredClone(decision))
+      const result = await apply(structuredClone(decision), attempt.signal)
       if (activeApply.current !== attempt) return
       if (result.status === 'applied') {
         const nextTrip = confirmedTrip(

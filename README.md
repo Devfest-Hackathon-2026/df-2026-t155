@@ -42,13 +42,13 @@ GroundTripは、旅程の**一部だけ**を便利に直す操作の中で、事
 
 - **mainに実装済み**：路線図・固定予定UI（#20）、候補生成／制約検証／前後移動比較API（#28）、候補比較・未承認プレビューの画面部品（#38）。
 - **現時点の画面導線**：通常画面の「旅行中」の報告から実APIの候補比較へ進めます。路線図上の直接変更は未接続です。`/demo`の候補は架空です。
-- **未接続**：サーバーでの再検証・本人承認後のRevision適用・保存。候補生成APIは旅程を更新しません。固定予定や未承認の旅程を勝手に変更しないことが必須です。
+- **画面接続あり**：保存済みの旅程から候補を比較し、本人の承認後に候補保存と適用APIを呼びます。サーバーが再検証・確定した旅程だけを採用します。未保存の旅程や保存後の変更は、そのまま適用しません。
 
 ### 4. 現地報告からの再計画
 
 - **mainに実装済み**：少ない操作で報告するフォーム（#41）、今の予定と次の予定を手動で管理する旅行中の表示（#42）、部分修正APIが扱う `on_site` 文脈（#28）。
 - **画面接続あり**：トップ画面の旅程の下に、現地報告と部分修正の候補比較があります。実際の報告だけが適用の対象で、模擬報告は比較までです。
-- **未接続**：候補の承認後にサーバーで再検証して旅程へ適用するAPI（承認欄は「未接続」と表示されます）。旅行中の位置情報は取得せず、進行状況も保存しません。
+- **適用と復旧**：「保存した旅程で旅行を続ける」から再開できます。適用結果が不明なら再操作を止め、対象候補の承認記録と最新Tripで確認します。未確認状態はUID・Trip別に端末へ残します。旅行中の位置情報は取得せず、進行状況も保存しません。
 - デモ用の模擬報告は、現地の実体験として扱いません。
 
 ### 5. 振り返りと本人が承認した学び
@@ -79,7 +79,7 @@ GroundTripは、旅程の**一部だけ**を便利に直す操作の中で、事
 - **アプリ** — 使っているもの: Next.js 15 App Router・React 19・TypeScript strict・Tailwind CSS 4／現在の実装境界: 生成画面とUI部品
 - **入出力検証** — 使っているもの: Zod 4（`src/domain`）／現在の実装境界: 共有モデル・APIで検証
 - **AI** — 使っているもの: Vertex AI Gemini（`@google/genai`、ADC）／現在の実装境界: 旅程生成／部分修正候補／学び候補API。利用フラグで既定無効
-- **Maps** — 使っているもの: Places API (New) Text Search、Routes API（徒歩・一部車）／現在の実装境界: 通常画面の照合と現地報告からの候補比較に接続。承認後の適用は未接続
+- **Maps** — 使っているもの: Places API (New) Text Search、Routes API（徒歩・一部車）／現在の実装境界: 通常画面の照合・現地報告の候補比較・本人承認後の適用前再検証に接続
 - **認証・保存** — 使っているもの: Firebase匿名認証・Firebase Admin SDK・Firestore／現在の実装境界: 通常画面の保存・振り返り・学び選択に接続。本番環境の通し確認は未実施
 - **テスト** — 使っているもの: Vitest・Testing Library・Firebase Auth/Firestore Emulator、GitHub Actions／現在の実装境界: 自動テストとCI。実Google APIを用いた全画面E2Eの代わりではない
 - **ホスティング** — 使っているもの: Firebase App Hosting／現在の実装境界: mainからロールアウト。公開URL：https://groundtrip--groundtrip.asia-east1.hosted.app/
@@ -112,7 +112,7 @@ Geminiを選んだ理由と、各APIを選んだ理由の文面は、`docs/` に
 
 以下のルートは**mainのコードに存在**します。画面導線、本番での機能フラグ、IAMの設定は別に確認が必要です。
 
-- **画面** — パス: `/`／現状: 旅程の生成（前の旅の学びの選択つき）→根拠の照合→保存→現地報告と部分修正の候補比較→振り返りと学びの保存。承認後の適用は未接続
+- **画面** — パス: `/`／現状: 旅程の生成（前の旅の学びの選択つき）→根拠の照合→保存→現地報告と候補比較・本人承認後の適用→振り返りと学びの保存。保存した旅程の再開にも対応
 - **画面** — パス: `/demo`／現状: **架空の**旅程・候補・根拠による路線図と部分修正UI。実APIには接続しない
 - **画面** — パス: `/reflection`／現状: 本人の保存済み旅程の振り返りと学びの保存。`/reflection?demo=1`は**架空の**Tripによる確認（保存しない）
 - **画面** — パス: `/terms`／現状: 利用条件・プライバシーとGoogle Mapsの関連表示（#40）
@@ -120,12 +120,13 @@ Geminiを選んだ理由と、各APIを選んだ理由の文面は、`docs/` に
 - **API** — パス: `POST /api/trips/generate`／現状: 旅程生成（`TRIP_GENERATION_ENABLED`、既定無効）
 - **API** — パス: `POST /api/trips/verify`／現状: Places・Routes照合（`TRIP_VERIFICATION_ENABLED`、既定無効）
 - **API** — パス: `POST /api/trips/revise`／現状: 部分修正候補の提案のみ（`TRIP_REVISION_ENABLED`、既定無効）
+- **API** — パス: `POST /api/trips/[tripId]/revisions/[revisionId]/apply`／現状: 保存した候補の再検証と原子的な適用（`TRIP_REVISION_APPLY_ENABLED`と`PERSISTENCE_ENABLED`が必要、既定無効）。署名付き候補にはサーバー専用の`REVISION_PROPOSAL_SIGNING_KEY`も必要
 - **API** — パス: `POST /api/learnings/candidates`／現状: 学びの候補生成（`LEARNING_CANDIDATES_ENABLED`、既定無効）
 - **API** — パス: `GET /api/auth/session`／現状: Firebase IDトークンの確認
 - **API** — パス: `/api/trips`・`/api/trips/[tripId]`・`/api/trips/[tripId]/revisions`／現状: Trip・Revisionの本人別保存・取得。`PERSISTENCE_ENABLED`が必要（既定無効）
 - **API** — パス: `/api/learnings`・`/api/learnings/[learningId]/approve`・`/api/learnings/[learningId]`／現状: Learningの取得・承認・撤回。`PERSISTENCE_ENABLED`が必要（既定無効）
 
-保存APIの具体的なHTTPメソッド・権限・ステータスは[`docs/FIRESTORE_PERSISTENCE.md`](docs/FIRESTORE_PERSISTENCE.md)を参照してください。**Revisionの実適用APIと結果不明時の復旧は、PR #59のレビュー・統合後に接続します。**
+保存APIの具体的なHTTPメソッド・権限・ステータスは[`docs/FIRESTORE_PERSISTENCE.md`](docs/FIRESTORE_PERSISTENCE.md)を参照してください。**Revisionの候補保存・適用・結果不明時の復旧を、現地報告の画面へ接続しています。実環境での確認は別途必要です。**
 
 ## 制限事項
 
@@ -133,7 +134,7 @@ Geminiを選んだ理由と、各APIを選んだ理由の文面は、`docs/` に
 - **現実の制約**：通常営業時間と徒歩移動の一部を照合しますが、臨時休業・特別営業・現地混雑・渋滞・遅延の保証はありません。未照合・確認不能・矛盾は区別します。
 - **路線図は模式図**です。訪問順を示すもので、地図上の距離・方角・縮尺を表しません。
 - **サンプルは架空**：`/demo`と`/reflection?demo=1`のTrip・候補・模擬根拠は、実在施設の情報や実測結果ではありません。
-- **通し導線の未接続部分**：部分修正の承認後の適用（サーバーでの再検証つき）は未接続です。学びを使って作った旅程は保存できません。実環境（Firebase・App Check・保存API・各フラグを有効にした状態）での通し確認は未了です。
+- **通し導線の制限**：学びを使って作った旅程は保存できません。実環境（Firebase・App Check・保存API・各フラグを有効にした状態）での通し確認は未了です。
 - **課金APIは既定で停止**：生成・照合・部分修正・学び候補作成は、機能フラグが`false`。認証・全体の利用制限・App Checkまたは代替策・課金保護（#29）なしで一般公開しないでください。
 - **Firestore保存APIも既定で停止**：`PERSISTENCE_ENABLED=false`。実FirebaseのIAM・ADC・Rulesの確認と本番疎通がまだ必要です。画面からのBearer・App Check送信は接続済みです。
 - **匿名認証**は身元確認ではなく、UIDを失うと保存したデータに戻れない場合があります。

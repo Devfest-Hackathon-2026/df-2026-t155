@@ -26,16 +26,22 @@ export function TripSavePanel({
   save = saveTrip,
   onSaved,
   onCheckSaved,
+  initialSavedTrip,
 }: {
   trip: Trip
   // 認証済みのセッション。なければ保存を始めない。
   scope: SessionScope | null
   save?: SaveTrip
-  onSaved: (tripId: string) => void
+  onSaved: (tripId: string, saved: Trip, original: Trip) => void
   // 結果不明のとき、保存済みの旅行の一覧で確かめる操作。
   onCheckSaved: () => void
+  initialSavedTrip?: Trip
 }) {
-  const [state, setState] = useState<SaveState>({ phase: 'idle' })
+  const [state, setState] = useState<SaveState>(() =>
+    initialSavedTrip
+      ? { phase: 'saved', tripId: initialSavedTrip.id, savedFingerprint: JSON.stringify(trip) }
+      : { phase: 'idle' },
+  )
   // 同じ描画の間の二重押下を止める。
   const busy = useRef(false)
   const fingerprint = JSON.stringify(trip)
@@ -51,7 +57,7 @@ export function TripSavePanel({
     try {
       const saved = await save(scope, trip)
       setState({ phase: 'saved', tripId: saved.id, savedFingerprint: fingerprint })
-      onSaved(saved.id)
+      onSaved(saved.id, saved, trip)
     } catch (error) {
       const known = error instanceof Error ? error.message : ''
       // 送信後に応答を失った・読めないときは、保存されたかもしれない。未保存とは言わない。

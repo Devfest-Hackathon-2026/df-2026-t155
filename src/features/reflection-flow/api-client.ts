@@ -135,6 +135,62 @@ const KNOWN_FAILURES: Readonly<
     message: '現在の旅程と変更候補の対象が一致しません。',
     outcome: 'rejected',
   },
+  revision_not_pending: {
+    status: 409,
+    message: '候補は既に決定されています。',
+    outcome: 'rejected',
+  },
+  revision_travel_modes_missing: {
+    status: 409,
+    message: '移動手段を確認できません。候補を作り直してください。',
+    outcome: 'rejected',
+  },
+  revision_report_changed: {
+    status: 409,
+    message: '本人報告の状態が変わりました。確認してください。',
+    outcome: 'rejected',
+  },
+  revision_endpoints_changed: {
+    status: 409,
+    message: '前後の予定が変わりました。候補を作り直してください。',
+    outcome: 'rejected',
+  },
+  revision_provenance_missing: {
+    status: 409,
+    message: '候補の来歴を確認できません。',
+    outcome: 'rejected',
+  },
+  revision_proposal_expired: {
+    status: 409,
+    message: '候補の期限が切れました。作り直してください。',
+    outcome: 'rejected',
+  },
+  revision_simulated: { status: 422, message: '模擬報告は適用できません。', outcome: 'rejected' },
+  revision_provenance_invalid: {
+    status: 422,
+    message: '候補の来歴が一致しません。',
+    outcome: 'rejected',
+  },
+  revision_not_applicable: {
+    status: 422,
+    message: 'この候補を適用できません。',
+    outcome: 'rejected',
+  },
+  revision_place_mismatch: {
+    status: 422,
+    message: '施設を確認し直してください。',
+    outcome: 'rejected',
+  },
+  revision_unverified: {
+    status: 422,
+    message: '必要な情報を確認できませんでした。',
+    outcome: 'rejected',
+  },
+  revision_apply_disabled: {
+    status: 503,
+    message: '変更の適用は現在利用できません。',
+    outcome: 'rejected',
+  },
   storage_limit_reached: {
     status: 409,
     message: '保存できる件数の上限に達しました。',
@@ -211,7 +267,7 @@ type RequestOptions = {
 
 // 取得した時点のセッション（scope）のBearer＋App Checkだけで送る。
 // 送信の直前にUIDを確かめ、違えば送らずに失敗する（古い画面のデータを別のUIDのトークンで送らない）。
-async function authorizedJson<T>(
+export async function authorizedJson<T>(
   scope: SessionScope,
   path: string,
   schema: z.ZodType<T>,

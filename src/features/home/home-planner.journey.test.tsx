@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LearningSchema, TripSchema, type Learning, type Stop, type Trip } from '@/domain'
 import { sampleApprovedLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 import type { ApplyRevision, GenerateRevisions } from '@/features/revision-review/api-client'
-import type { VersionedLearning } from '@/server/persistence/contracts'
+import {
+  SaveRevisionBodySchema,
+  SavedRevisionSchema,
+  type VersionedLearning,
+} from '@/server/persistence/contracts'
 
 import { fakeAppCheck } from '../../../tests/helpers/fake-app-check'
 import { fakeAuth } from '../../../tests/helpers/fake-auth-client'
@@ -201,7 +205,7 @@ function setup(
     return backend.fetchFn(input, init)
   })
   vi.stubGlobal('fetch', fetchFn)
-  return { backend, generateCalls, state }
+  return { backend, generateCalls, state, fetchFn }
 }
 
 type User = ReturnType<typeof userEvent.setup>
@@ -327,6 +331,118 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     expect(state.verifyCalls).toBe(1)
   })
 
+  it('既定の保存・適用APIで承認し、サーバー確定の旅程と振り返りを表示する', async () => {
+    const { backend, fetchFn } = setup()
+    const revisionPath = `/api/trips/${generatedTrip.id}/revisions`
+    const applyPath = `${revisionPath}/${sampleRevision.id}/apply`
+    backend.intercept(
+      (call) => call.method === 'POST' && call.path === revisionPath,
+      ({ call }) => {
+        const candidate = SaveRevisionBodySchema.parse(call.body)
+        delete candidate.travelModes
+        delete candidate.proposalToken
+        return json(
+          {
+            revision: {
+              ...candidate,
+              impactSummary: '保存した候補です。現在の影響は再確認が必要です。',
+              constraintCheck: { status: 'not_checked', explanation: '制約は再確認が必要です。' },
+              diff: {
+                before: { ...candidate.diff.before, evidence: [] },
+                after: { ...candidate.diff.after, evidence: [] },
+              },
+            },
+          },
+          201,
+        )
+      },
+    )
+    backend.intercept(
+      (call) => call.method === 'POST' && call.path === applyPath,
+      ({ call }) => {
+        expect(call.body).toEqual({ expectedVersion: 0, confirm: true })
+        const proposal = generateRevisions.mock.results.at(-1)?.value
+        return Promise.resolve(proposal).then((result) => {
+          if (!result || result.status !== 'proposed') throw new Error('missing candidate')
+          const candidate = result.revisions[0]
+          const original = backend.account(A).trips[0]
+          const next = {
+            ...original,
+            version: 1,
+            stops: original.stops.map((stop) =>
+              stop.id === candidate.targetStopId ? candidate.diff.after : stop,
+            ),
+          }
+          const approved = {
+            ...candidate,
+            impactSummary: '適用済みの変更です。現在の影響は再確認が必要です。',
+            constraintCheck: { status: 'not_checked', explanation: '制約は再確認が必要です。' },
+            approval: { status: 'approved', decidedAt: '2026-11-08T12:00:00+09:00' },
+            diff: {
+              before: { ...candidate.diff.before, evidence: [] },
+              after: { ...candidate.diff.after, evidence: [] },
+            },
+          }
+          backend.account(A).trips[0] = {
+            ...next,
+            stops: next.stops.map((stop) => ({ ...stop, evidence: [] })),
+          }
+          backend.account(A).revisions.push(SavedRevisionSchema.parse(approved))
+          return json({
+            status: 'applied',
+            appliedTripVersion: 1,
+            trip: next,
+            revision: approved,
+            verification: 'fresh',
+          })
+        })
+      },
+    )
+    const user = userEvent.setup()
+    render(<HomePlanner generateRevisions={generateRevisions} learningPickerDelayMs={0} />)
+    await generate(user)
+    await verify(user)
+    await saveTripFromScreen(user)
+    await reportAndOpenCandidates(user, 'actual')
+    expect(backend.calls.filter((call) => call.path === applyPath)).toHaveLength(0)
+    await user.click(approve())
+    await waitFor(() =>
+      expect(backend.calls.filter((call) => call.path === applyPath)).toHaveLength(1),
+    )
+    await waitFor(() =>
+      expect(
+        within(screen.getAllByRole('list', { name: '旅程の路線図' })[0]).getByText(after.name),
+      ).toBeTruthy(),
+    )
+    const candidateCall = backend.calls.find(
+      (call) => call.path === revisionPath && call.method === 'POST',
+    )!
+    expect(SaveRevisionBodySchema.parse(candidateCall.body)).toMatchObject({
+      travelModes: ['walk'],
+      proposalToken: expect.any(String),
+    })
+    expect(candidateCall.uid).toBe(A)
+    expect(backend.calls.find((call) => call.path === applyPath)?.uid).toBe(A)
+    for (const path of [revisionPath, applyPath]) {
+      const call = fetchFn.mock.calls.find(
+        ([url, init]) => String(url) === path && init?.method === 'POST',
+      )!
+      const headers = new Headers(call[1]?.headers)
+      expect(headers.get('Authorization')).toContain(A)
+      expect(headers.get('X-Firebase-AppCheck')).toBeTruthy()
+    }
+    expect(backend.account(A).trips[0].stops[0]).toEqual(
+      expect.objectContaining({ id: morning.id, isFixed: true }),
+    )
+    expect(backend.account(A).trips[0].stops[2]).toEqual(
+      expect.objectContaining({ id: exhibition.id, isFixed: true }),
+    )
+    await waitFor(() =>
+      expect(
+        backend.calls.filter((call) => call.path === revisionPath && call.method === 'GET').length,
+      ).toBeGreaterThan(1),
+    )
+  })
   it('デモ用の模擬報告は、候補を比べられても旅程に適用せず、照合も取り下げない', async () => {
     setup()
     const user = userEvent.setup()
@@ -334,6 +450,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
 
     await generate(user)
     await verify(user)
+    await saveTripFromScreen(user)
     await reportAndOpenCandidates(user, 'simulated')
 
     expect(screen.getByText(/デモ用の想定です。現地で実際に起きたことではありません/)).toBeTruthy()
@@ -348,22 +465,29 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     ).toBeTruthy()
   })
 
-  it('適用サービスが未接続なら、実際の報告でも承認できず、旅程も照合も変わらない（既定）', async () => {
+  it('保存前には現地の候補を生成しない', async () => {
     setup()
     const user = userEvent.setup()
     render(<HomePlanner generateRevisions={generateRevisions} learningPickerDelayMs={0} />)
-
     await generate(user)
     await verify(user)
-    await reportAndOpenCandidates(user, 'actual')
-
-    expect(screen.getByText('承認・適用サービスは未接続です。')).toBeTruthy()
-    await user.click(approve())
-    await flush()
-    expect(panelStatus()).toContain('照合結果あり')
+    await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
+    expect(
+      screen.queryByRole('button', { name: '予定が変わった？この予定だけ変更する' }),
+    ).toBeNull()
+    expect(generateRevisions).not.toHaveBeenCalled()
   })
 })
 
+it('保存済み旅程を開くと振り返りにも進める', async () => {
+  const { backend } = setup()
+  backend.account(A).trips.push(generatedTrip)
+  const user = userEvent.setup()
+  renderHome()
+  await user.click(screen.getByRole('button', { name: '保存した旅程で旅行を続ける' }))
+  await user.click(await screen.findByRole('button', { name: new RegExp(generatedTrip.region) }))
+  expect(await screen.findByRole('heading', { name: '保存した旅行を振り返る' })).toBeTruthy()
+})
 describe('トップ画面：保存して振り返る（同じページ内で、旅程を失わずに進む）', () => {
   it('保存すると、同じページに振り返りが現れ、保存した旅程が選ばれる。生成結果は残る', async () => {
     const { backend } = setup()

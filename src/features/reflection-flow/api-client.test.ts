@@ -1194,6 +1194,14 @@ describe('承認済み学びのFirestore保存', () => {
       }
     })
 
+    it.each([
+      [409, 'revision_report_changed'],
+      [409, 'revision_proposal_expired'],
+      [422, 'revision_unverified'],
+    ] as const)('確定した修正拒否 %s %s は結果不明にしない', async (status, code) => {
+      const result = await failWith(code, 'server detail', status)
+      expect(result).toMatchObject({ ok: false, unknownIds: [] })
+    })
     it('HTTP 502とversion_conflictの不整合応答は、確定拒否にせず結果不明にする', async () => {
       const result = await failWith('version_conflict', '版が一致しません', 502)
 
