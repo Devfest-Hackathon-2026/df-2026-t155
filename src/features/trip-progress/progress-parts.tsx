@@ -21,59 +21,28 @@ export function CheckIcon({ size = 14 }: { size?: number }) {
   )
 }
 
-export function LockIcon({ size = 12 }: { size?: number }) {
+const progressStyles: Record<StopProgress, string> = {
+  visited: 'border-gt-rail bg-gt-bg text-gt-muted',
+  current: 'border-gt-action bg-gt-line-tint text-gt-line-strong',
+  upcoming: 'border-gt-rail bg-gt-bg text-gt-muted',
+}
+
+export function ProgressChip({
+  progress,
+  compact = false,
+}: {
+  progress: StopProgress
+  compact?: boolean
+}) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
+    <span
+      className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[11px] leading-tight font-bold ${progressStyles[progress]}`}
     >
-      <rect x="5" y="11" width="14" height="9" rx="2" />
-      <path d="M8 11V8a4 4 0 0 1 8 0v3" />
-    </svg>
-  )
-}
-
-// 固定は予約済み・購入済みを意味しない。予定の種類や進行状態とは独立に付ける。
-export function FixedChip() {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-md border-2 border-(color:--tp-ink) bg-(color:--tp-card) px-2 py-0.5 text-xs font-bold text-(color:--tp-ink)">
-      <LockIcon />
-      固定予定
-    </span>
-  )
-}
-
-// 進行状態のチップ。訪問済み＝チェック、いま＝塗りつぶし、これから＝点線の枠。文字も併記する。
-export function ProgressChip({ progress }: { progress: StopProgress }) {
-  const label = stopProgressLabels[progress]
-  if (progress === 'visited') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-md border-2 border-(color:--tp-edge) bg-(color:--tp-card) px-2 py-0.5 text-xs font-bold text-(color:--tp-muted)">
-        <CheckIcon size={12} />
-        {label}
-      </span>
-    )
-  }
-  if (progress === 'current') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-md border-2 border-(color:--tp-accent) bg-(color:--tp-accent) px-2 py-0.5 text-xs font-bold text-white">
-        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
-          <path d="M2 1l7 4-7 4z" fill="currentColor" />
-        </svg>
-        {label}
-      </span>
-    )
-  }
-  return (
-    <span className="inline-flex items-center rounded-md border-2 border-dashed border-(color:--tp-edge) bg-(color:--tp-card) px-2 py-0.5 text-xs font-bold text-(color:--tp-muted)">
-      {label}
+      {progress === 'visited' && <CheckIcon size={10} />}
+      {progress === 'current' && !compact && (
+        <span aria-hidden="true" className="size-2 rounded-full bg-current" />
+      )}
+      {stopProgressLabels[progress]}
     </span>
   )
 }

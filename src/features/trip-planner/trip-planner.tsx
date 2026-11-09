@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 
 import type { Trip } from '@/domain'
 import { RouteFailure, RouteLoading } from '@/features/trip-map/route-states'
@@ -33,6 +33,7 @@ interface TripPlannerProps {
   // 値が変わったら（認証セッションが変わったとき）、進行中の生成を中止し、生成結果と失敗の表示を捨てる。
   // 入力欄の値は利用者が入れたものなので、捨てずに残す。
   discardKey?: string
+  active?: boolean
 }
 
 const defaultRenderTrip = (trip: Trip) => <TripProposalPreview trip={trip} />
@@ -46,6 +47,7 @@ export function TripPlanner({
   renderTrip = defaultRenderTrip,
   renderLearningPicker,
   discardKey = '',
+  active = true,
 }: TripPlannerProps) {
   const [values, setValues] = useState<TripFormValues>(initialFormValues)
   const [errors, setErrors] = useState<TripFormErrors>({})
@@ -64,6 +66,9 @@ export function TripPlanner({
   const state: GenerationState =
     appliedDiscardKey === discardKey ? generationState : initialGenerationState
   const isGenerating = state.phase === 'generating'
+  useLayoutEffect(() => {
+    if (!active) reset()
+  }, [active, reset])
   useEffect(() => {
     // 初回は何も捨てない。変わったときだけ、進行中の通信と結果を捨てる。
     if (discardKey !== initialDiscardKey.current) {
@@ -115,7 +120,9 @@ export function TripPlanner({
       ...current,
       fixedStops: current.fixedStops.filter((row) => row.key !== key),
     }))
-    setFixedStopErrors(({ [key]: _removed, ...rest }) => rest)
+    setFixedStopErrors((current) =>
+      Object.fromEntries(Object.entries(current).filter(([row]) => row !== key)),
+    )
     setFixedStopNotice('固定予定を削除しました。')
     // 消えたボタンの代わりに、追加ボタンへフォーカスを移す。
     addFixedStopRef.current?.focus()
@@ -142,7 +149,7 @@ export function TripPlanner({
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (isGenerating) return
+    if (!active || isGenerating) return
 
     const built = buildGenerateTripRequest(values)
     if (!built.ok) {
@@ -169,12 +176,12 @@ export function TripPlanner({
         onSubmit={handleSubmit}
         noValidate
         aria-describedby="form-note"
-        className="gt-card space-y-5"
+        className="gt-card space-y-4"
       >
         <p id="form-note" className="text-sm">
           旅行先と日付、希望条件から、日帰り旅行の旅程を提案します。
         </p>
-        <fieldset disabled={isGenerating} className="min-w-0 space-y-5">
+        <fieldset disabled={isGenerating} className="min-w-0 space-y-4">
           <legend className="sr-only">旅行条件</legend>
 
           <div className="space-y-1">
@@ -197,7 +204,7 @@ export function TripPlanner({
               className={inputClassName}
             />
             <p id="region-hint" className="text-sm">
-              例：京都市東山区、奈良市。市区町村の名前で入れると、あとで施設の場所を地図の情報と照らして確認しやすくなります。
+              例：京都市東山区、奈良市
             </p>
             {errors.region && (
               <p id="region-error" className="text-sm font-medium">
@@ -238,7 +245,7 @@ export function TripPlanner({
             <textarea
               id="preferences"
               name="preferences"
-              rows={4}
+              rows={2}
               ref={(element) => {
                 fieldRefs.current.preferences = element
               }}

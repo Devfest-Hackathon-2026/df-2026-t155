@@ -211,8 +211,8 @@ describe('未照合の表示のコントラスト（指摘5）', () => {
       stops: sampleTrip.stops.map((stop) => ({ ...stop, evidence: [] })),
     })
     render(<TripRouteView trip={unverified} />)
-    const fixedBadge = within(items()[0]).getByText('未照合')
-    const normalBadge = within(items()[1]).getByText('未照合')
+    const fixedBadge = within(items()[0]).getByText(/未照合/)
+    const normalBadge = within(items()[1]).getByText(/未照合/)
 
     expect(fixedBadge.className).toBe(normalBadge.className)
     expect(fixedBadge.className).toContain('text-gt-muted')

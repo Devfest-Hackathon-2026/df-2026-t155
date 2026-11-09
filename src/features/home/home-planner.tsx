@@ -156,12 +156,14 @@ export function HomePlanner({
         />
         <TripPlanner
           generate={generateWithSelection}
+          active={showInput}
           discardKey={`${session.discard}:${choiceSeq}`}
           renderTrip={null}
           renderLearningPicker={(region) => (
             <HomeLearningPicker
               key={pickerKey}
               region={region}
+              active={showInput}
               session={auth}
               load={loadLearnings}
               delayMs={learningPickerDelayMs}

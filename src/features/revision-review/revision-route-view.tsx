@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 
 import { revisionTargetRestriction, type Trip } from '@/domain'
 import type { RouteMeta } from '@/features/trip-map/model'
-import { ROUTE_LIST_ID, stopButtonId } from '@/features/trip-map/route-map'
+import { reviseButtonId, ROUTE_LIST_ID, stopButtonId } from '@/features/trip-map/route-map'
 import { TripRouteView } from '@/features/trip-map/trip-route-view'
 import type { ApplyRevisionResult } from '@/server/persistence/contracts'
 
@@ -15,7 +15,7 @@ import {
   judgeLatestTrip,
   markApplyUnresolved,
   readUnresolvedApply,
-  unresolvedApplyStorageKey,
+  subscribeApplyLock,
   type UnresolvedApplyState,
 } from './unresolved-apply'
 
@@ -50,6 +50,7 @@ interface RevisionRouteViewProps {
   onRevisionApplied?: (saved: Trip) => void
   revisionUnavailableReason?: string
   routeActions?: ReactNode
+  active?: boolean
 }
 
 export function RevisionRouteView({
@@ -66,6 +67,7 @@ export function RevisionRouteView({
   onRevisionApplied,
   revisionUnavailableReason,
   routeActions,
+  active = true,
 }: RevisionRouteViewProps) {
   const [local, setLocal] = useState<{
     source: Trip
@@ -87,6 +89,7 @@ export function RevisionRouteView({
   const [session, setSession] = useState<{
     trip: Trip
     stopId: string
+    fromShortcut?: boolean
     applyUnresolved?: boolean
   } | null>(null)
   // 最初の描画では永続ロックの復元が未完了。確認前に操作を開始してはならない。
@@ -106,17 +109,9 @@ export function RevisionRouteView({
   )
 
   useEffect(() => {
-    updateStoredLock()
-    // 別タブからの書き込み／解除も、そのタブの表示に反映する。
-    const key = ownerUid ? unresolvedApplyStorageKey(ownerUid, sourceTrip.id) : null
-    const onStorage = (event: StorageEvent) => {
-      if (event.storageArea === window.localStorage && (event.key === key || event.key === null)) {
-        updateStoredLock()
-      }
-    }
-    window.addEventListener('storage', onStorage)
-    return () => window.removeEventListener('storage', onStorage)
-  }, [lockKey, ownerUid, sourceTrip.id, updateStoredLock])
+    if (active) updateStoredLock()
+    if (ownerUid) return subscribeApplyLock(ownerUid, sourceTrip.id, updateStoredLock)
+  }, [active, ownerUid, sourceTrip.id, updateStoredLock])
 
   const [reconcile, setReconcile] = useState<{
     status: 'checking' | 'failed'
@@ -127,13 +122,14 @@ export function RevisionRouteView({
     stopId: string
     applyUnresolved?: boolean
   } | null>(null)
-  const [returnTo, setReturnTo] = useState<string | null>(null)
+  const [returnTo, setReturnTo] = useState<{ stopId: string; fromShortcut?: boolean } | null>(null)
   const [notice, setNotice] = useState<{
     source: Trip
     message: string
     tone: 'neutral' | 'success'
   } | null>(null)
   const updateNotice = useRef<HTMLDivElement>(null)
+  const actions = useRef<HTMLDivElement>(null)
   const target = session && current.trip.stops.find((stop) => stop.id === session.stopId)
   const hasActiveSession =
     session &&
@@ -154,22 +150,24 @@ export function RevisionRouteView({
   useEffect(() => () => reconcileAbort.current?.abort(), [lockKey])
 
   useLayoutEffect(() => {
-    if (interruption && document.activeElement === document.body) {
+    if (active && interruption && document.activeElement === document.body) {
       updateNotice.current?.focus()
     }
-  }, [interruption])
+  }, [active, interruption])
 
   useEffect(() => {
-    if (!returnTo) return
+    if (!active || !returnTo) return
     const destination =
-      document.getElementById(stopButtonId(returnTo)) ?? document.getElementById(ROUTE_LIST_ID)
+      (returnTo.fromShortcut ? document.getElementById(reviseButtonId(returnTo.stopId)) : null) ??
+      document.getElementById(stopButtonId(returnTo.stopId)) ??
+      document.getElementById(ROUTE_LIST_ID)
     destination?.focus()
     setReturnTo(null)
-  }, [returnTo])
+  }, [active, returnTo])
 
   const leave = (message: string, tone: 'neutral' | 'success' = 'neutral') => {
     setNotice(message ? { source: sourceTrip, message, tone } : null)
-    setReturnTo(session?.stopId ?? interruption?.stopId ?? null)
+    setReturnTo(session ?? interruption)
     setInterruption(null)
     setSession(null)
   }
@@ -323,6 +321,7 @@ export function RevisionRouteView({
           )}
           <RevisionReview
             trip={session.trip}
+            active={active}
             target={target}
             meta={current.meta}
             generate={generate}
@@ -382,6 +381,15 @@ export function RevisionRouteView({
               {unresolvedGuide}
             </div>
           )}
+          {routeActions && (
+            <button
+              type="button"
+              className="min-h-11 text-sm font-semibold text-gt-line-strong underline underline-offset-4"
+              onClick={() => actions.current?.focus()}
+            >
+              根拠・保存の操作へ
+            </button>
+          )}
           <TripRouteView
             trip={current.trip}
             meta={current.meta}
@@ -399,7 +407,7 @@ export function RevisionRouteView({
             }}
             onStartRevision={
               generate && !operationBlocked
-                ? (stopId) => {
+                ? (stopId, fromShortcut) => {
                     if (apply && readUnresolvedApply(ownerUid, sourceTrip.id).status !== 'clear') {
                       updateStoredLock()
                       return
@@ -411,7 +419,7 @@ export function RevisionRouteView({
                     ) {
                       setNotice(null)
                       setInterruption(null)
-                      setSession({ trip: current.trip, stopId })
+                      setSession({ trip: current.trip, stopId, fromShortcut })
                     }
                   }
                 : undefined
@@ -420,7 +428,14 @@ export function RevisionRouteView({
         </div>
       )}
       {routeActions && (
-        <div hidden={Boolean(hasActiveSession)} className="mt-4 space-y-4">
+        <div
+          ref={actions}
+          tabIndex={-1}
+          role="region"
+          aria-label="旅程の確認と保存"
+          hidden={Boolean(hasActiveSession)}
+          className="mt-4 space-y-4 scroll-mt-4 outline-none"
+        >
           {routeActions}
         </div>
       )}

@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
-import { RevisionSchema, TripSchema } from '../../domain'
+import { TripSchema } from '../../domain'
+import { ReflectionRevisionSchema } from '../persistence/contracts'
 
 export const MAX_FEEDBACK_LENGTH = 1000
 
@@ -8,7 +9,7 @@ export const MAX_FEEDBACK_LENGTH = 1000
 export const LearningReviewInputSchema = z
   .strictObject({
     trip: TripSchema,
-    revisions: z.array(RevisionSchema).max(20),
+    revisions: z.array(ReflectionRevisionSchema).max(20),
     feedback: z.string().trim().max(MAX_FEEDBACK_LENGTH),
   })
   .superRefine((input, ctx) => {
@@ -18,6 +19,17 @@ export const LearningReviewInputSchema = z
           code: 'custom',
           path: ['revisions', index, 'tripId'],
           message: '別の旅程の変更履歴が含まれています',
+        })
+      }
+      if (
+        revision.approval.status === 'approved' &&
+        revision.constraintCheck.status === 'not_checked' &&
+        revision.baseTripVersion >= input.trip.version
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['revisions', index, 'baseTripVersion'],
+          message: '適用後の旅程の版と変更履歴が一致しません',
         })
       }
     })

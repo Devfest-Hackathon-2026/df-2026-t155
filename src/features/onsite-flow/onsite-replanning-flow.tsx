@@ -12,6 +12,7 @@ import {
   judgeLatestTrip,
   markApplyUnresolved,
   readUnresolvedApply,
+  subscribeApplyLock,
 } from '@/features/revision-review/unresolved-apply'
 import { TripProgressView } from '@/features/trip-progress/trip-progress-view'
 
@@ -35,6 +36,7 @@ interface OnSiteReplanningFlowProps {
     signal: AbortSignal,
   ) => Promise<unknown>
   initialIndex?: number
+  active?: boolean
 }
 
 type Step = 'progress' | 'report' | 'review'
@@ -72,6 +74,7 @@ export function OnSiteReplanningFlow({
   apply,
   onTripChange,
   initialIndex,
+  active = true,
   ownerUid,
   reportControl,
   lockManagedByApply,
@@ -91,6 +94,13 @@ export function OnSiteReplanningFlow({
   const [applyUnresolved, setApplyUnresolved] = useState(() =>
     ownerUid ? readUnresolvedApply(ownerUid, sourceTrip.id).status !== 'clear' : false,
   )
+  useEffect(() => {
+    if (!ownerUid) return
+    const refreshLock = () =>
+      setApplyUnresolved(readUnresolvedApply(ownerUid, sourceTrip.id).status !== 'clear')
+    if (active) refreshLock()
+    return subscribeApplyLock(ownerUid, sourceTrip.id, refreshLock)
+  }, [active, ownerUid, sourceTrip.id])
   const [checking, setChecking] = useState(false)
   const recoveryAbort = useRef<AbortController | null>(null)
   useEffect(() => () => recoveryAbort.current?.abort(), [])
@@ -138,7 +148,7 @@ export function OnSiteReplanningFlow({
 
   // 切り替えた先の見出しなどへフォーカスを移す。隠していた画面は、このコミットで表示される。
   useEffect(() => {
-    if (!focusRequest) return
+    if (!active || !focusRequest) return
     const element =
       focusRequest.to === 'unresolved'
         ? unresolvedNote.current
@@ -149,12 +159,13 @@ export function OnSiteReplanningFlow({
     // 見出しは通常フォーカスできない。プログラムからだけフォーカスできるようにする。
     if (!element.hasAttribute('tabindex')) element.tabIndex = -1
     element.focus()
-  }, [focusRequest])
+    setFocusRequest(null)
+  }, [active, focusRequest])
 
   // 親の更新で比較画面が消えると、フォーカスが失われる。中止の通知へ移す。
   useLayoutEffect(() => {
-    if (stale && document.activeElement === document.body) staleAlert.current?.focus()
-  }, [stale])
+    if (active && stale && document.activeElement === document.body) staleAlert.current?.focus()
+  }, [active, stale])
 
   // 現地報告の候補は、承認の可否を下げる方向にだけ働く暫定ガードを通してから比較画面へ渡す。
   const guardedGenerate: GenerateRevisions = async (request, signal) => {
@@ -178,7 +189,11 @@ export function OnSiteReplanningFlow({
       moveFocus('unresolved')
       return
     }
-    setDraft({ epoch, targetId: stopId })
+    setDraft((current) =>
+      current?.epoch === epoch && current.targetId === stopId
+        ? current
+        : { epoch, targetId: stopId },
+    )
     setSession(null)
     announce('')
     setStep('report')
@@ -272,11 +287,11 @@ export function OnSiteReplanningFlow({
     }
   }
   return (
-    <section aria-label="旅行中の再計画" className="mx-auto w-full max-w-xl space-y-3">
+    <section aria-label="旅行中の再計画" className="mx-auto w-full max-w-xl">
       <p
         role="status"
         aria-live="polite"
-        className="text-sm not-empty:rounded-lg not-empty:border not-empty:border-gt-rule not-empty:p-3"
+        className="text-sm not-empty:mb-3 not-empty:rounded-lg not-empty:border not-empty:border-gt-rule not-empty:p-3"
       >
         {notice.text && <span key={notice.tick}>{notice.text}</span>}
       </p>
@@ -326,21 +341,6 @@ export function OnSiteReplanningFlow({
       {/* 報告を修正するために戻っても入力内容を維持する。 */}
       {draft && (
         <div hidden={step !== 'report'} ref={reportArea}>
-          <div className="px-4 pt-3">
-            <button
-              type="button"
-              className="min-h-11 text-sm font-bold underline"
-              onClick={() => {
-                setDraft(null)
-                setSession(null)
-                setStep('progress')
-                announce('元の旅程を表示しています。')
-                moveFocus('progress')
-              }}
-            >
-              旅行中の画面に戻る
-            </button>
-          </div>
           <OnSiteReportForm
             key={`${draft.epoch}:${draft.targetId ?? ''}`}
             trip={trip}
@@ -349,6 +349,12 @@ export function OnSiteReplanningFlow({
             autoSelectSingleTarget={draft.targetId !== null}
             status={{ phase: 'idle' }}
             onSubmit={submitReport}
+            onBack={() => {
+              setSession(null)
+              setStep('progress')
+              announce('元の旅程を表示しています。')
+              moveFocus('progress')
+            }}
           />
         </div>
       )}
@@ -384,6 +390,7 @@ export function OnSiteReplanningFlow({
             )}{' '}
           <RevisionReview
             key={`${session.epoch}:${target.id}`}
+            active={active}
             trip={trip}
             target={target}
             generate={guardedGenerate}

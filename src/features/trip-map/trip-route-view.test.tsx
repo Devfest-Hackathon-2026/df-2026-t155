@@ -119,6 +119,20 @@ describe('旅程の路線図: 選択と詳細', () => {
     expect(stopButton(/昼食店A/).getAttribute('aria-pressed')).toBe('true')
   })
 
+  it('食事の施設を照合できても、営業時間の根拠がなければ未照合と区別する', async () => {
+    const user = userEvent.setup()
+    const trip = TripSchema.parse({
+      ...sampleTrip,
+      stops: sampleTrip.stops.map((stop, index) =>
+        index === 1 ? { ...stop, evidence: [sampleTrip.stops[0].evidence[0]] } : stop,
+      ),
+    })
+    renderView({ trip })
+    await user.click(stopButton(/昼食店A/))
+    expect(within(sheet()).getByText('施設の存在：情報源と整合')).toBeTruthy()
+    expect(within(sheet()).getByText('営業時間：未照合')).toBeTruthy()
+  })
+
   it('根拠の詳細（確認項目・情報源・照合日時・説明）をタップで確認できる', async () => {
     const user = userEvent.setup()
     renderView()

@@ -20,7 +20,7 @@ interface TripRouteViewProps {
   // 親が別のTripを採用する場合（根拠の取り下げなど）は、そのTripを返す。以後、画面にはそのTripを出す。
   onTripChange?: (trip: Trip) => Trip | void
   // 部分修正を始める（候補の比較・承認は部分修正の機能の責務）。未指定なら修正の操作は出さない。
-  onStartRevision?: (stopId: string) => void
+  onStartRevision?: (stopId: string, fromShortcut?: boolean) => void
   revisionUnavailableReason?: string
 }
 
@@ -121,7 +121,7 @@ export function TripRouteView({
 
   return (
     <div
-      className="rounded-2xl bg-gt-bg p-4 pb-6 text-gt-ink"
+      className="text-gt-ink"
       style={{ paddingBottom: selected ? 'min(60dvh, 30rem)' : undefined }}
     >
       {mock && (
@@ -138,12 +138,13 @@ export function TripRouteView({
         meta={meta}
         selectedStopId={selectedId}
         appliedStopId={appliedStopId}
+        onReviseStop={onStartRevision && ((stopId) => onStartRevision(stopId, true))}
         onSelectStop={(id) => {
           if (selectedId === null && closingId === null) setSelectedId(id)
         }}
       />
       <p className="mt-3 text-sm text-gt-muted empty:hidden">{!selected && notice?.message}</p>
-      <p className="mt-2 text-sm text-gt-muted">
+      <p className="mt-2 text-xs text-gt-muted">
         路線図は旅の順番を表すもので、実際の地図ではありません。
         {!mock && trip.stops.some((stop) => stop.kind !== undefined) && (
           <>AIが提案した予定の種別は旅程上の分類です。照合結果は各予定の根拠に表示します。</>

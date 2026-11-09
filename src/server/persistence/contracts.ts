@@ -98,6 +98,9 @@ const hasValidRevisionDiff = (revision: z.infer<typeof UncheckedRevisionRecordSc
   PendingRevisionSchema.safeParse({ ...revision, approval: { status: 'pending' } }).success
 
 export const SavedRevisionSchema = UncheckedRevisionRecordSchema.refine(hasValidRevisionDiff)
+
+// 振り返りは照合を含む候補と、承認履歴を保持した再照合前の保存済み記録を扱う。
+export const ReflectionRevisionSchema = z.union([RevisionSchema, SavedRevisionSchema])
 const AppliedRevisionSchema = UncheckedRevisionRecordSchema.extend({
   approval: z.strictObject({ status: z.literal('approved'), decidedAt: TimestampSchema }),
 }).refine(hasValidRevisionDiff)

@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { DemoExitAction } from '@/features/demo-access/demo-exit-action'
 import { SiteFooter } from '@/features/legal/site-footer'
+import { GroundTripBrand } from '@/features/screen-chrome/screen-header'
 import './globals.css'
 
 const geistSans = Geist({
@@ -24,7 +25,6 @@ export const viewport: Viewport = {
   initialScale: 1,
 }
 
-// アプリ共通の最小限の枠。配色・ナビゲーション・装飾は、デザインが確定するまで決めない。
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -33,9 +33,11 @@ export default function RootLayout({
   return (
     <html lang="ja">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <header className="border-b border-gt-rule px-4 py-3">
-          <div className="mx-auto flex w-full max-w-xl flex-wrap items-center justify-between gap-x-3">
-            <p className="font-semibold">GroundTrip</p>
+        <header className="bg-gt-paper px-4">
+          <div className="mx-auto flex w-full max-w-[34rem] flex-wrap items-center justify-between gap-x-3">
+            <div className="gt-site-brand flex min-h-[69px] min-w-0 max-w-full items-center">
+              <GroundTripBrand />
+            </div>
             <DemoExitAction />
           </div>
         </header>

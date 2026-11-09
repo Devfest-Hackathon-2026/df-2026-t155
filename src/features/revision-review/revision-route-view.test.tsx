@@ -116,9 +116,51 @@ const request = async (user: ReturnType<typeof userEvent.setup>) => {
 const route = () => within(screen.getByRole('list', { name: '旅程の路線図' }))
 const approve = () => screen.getByRole<HTMLButtonElement>('button', { name: '承認して適用を依頼' })
 const approvalDisabled = () => approve().getAttribute('aria-disabled') === 'true'
-const tableInConfirmation = () => within(screen.getByRole('table'))
+const tableInConfirmation = () => within(screen.getByRole('table', { hidden: true }))
 
 describe('部分修正の候補比較', () => {
+  it('チケットの比較ボタンから開き、食事の希望を既存の修正理由として送る', async () => {
+    const user = userEvent.setup()
+    const generate = vi
+      .fn<GenerateRevisions>()
+      .mockResolvedValue({ status: 'no_candidates', message: '候補がありません' })
+    render(<RevisionRouteTest trip={trip} meta={meta} generate={generate} />)
+
+    await user.click(screen.getByRole('button', { name: 'この予定だけ変更して比較' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await user.type(screen.getByLabelText('修正理由（必須）'), '店内が静かな場所がよい')
+    await user.type(screen.getByLabelText('希望条件（任意）'), '温かい麺')
+    await user.click(screen.getByRole('button', { name: /^早い/ }))
+    expect(screen.getByLabelText<HTMLTextAreaElement>('修正理由（任意）').value).toBe(
+      '店内が静かな場所がよい',
+    )
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targetStopId: target.id,
+        reason: '移動時間を短くしたい\n店内が静かな場所がよい\n希望条件：温かい麺',
+      }),
+      expect.any(AbortSignal),
+    )
+  })
+
+  it('おまかせのボタンは理由の手入力なしで既存の候補生成へ進む', async () => {
+    const user = userEvent.setup()
+    const generate = vi
+      .fn<GenerateRevisions>()
+      .mockResolvedValue({ status: 'no_candidates', message: '候補がありません' })
+    render(<RevisionRouteTest trip={trip} meta={meta} generate={generate} />)
+
+    await open(user)
+    await user.click(screen.getByRole('button', { name: 'こだわらない（おまかせで探す）' }))
+
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({ targetStopId: target.id, reason: 'おまかせで別の場所を探したい' }),
+      expect.any(AbortSignal),
+    )
+  })
+
   it('非固定の乗車・乗換は旅行前の部分修正の対象外にする', async () => {
     const user = userEvent.setup()
     const generate = vi.fn<GenerateRevisions>()
@@ -175,8 +217,21 @@ describe('部分修正の候補比較', () => {
     expect(
       route().getByText(trip.stops[2].name).closest('[data-variant]')?.querySelector('svg'),
     ).toBeTruthy()
-    expect(route().getByText('営業時間：確認できない')).toBeTruthy()
+    expect(route().getByText('変更は未適用')).toBeTruthy()
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
+    const disclosure = screen.getByText('詳細な比較・根拠を見る')
+    expect(disclosure.closest('details')?.open).toBe(false)
+    const beforeApproval = (element: HTMLElement) =>
+      element.compareDocumentPosition(approve()) & Node.DOCUMENT_POSITION_FOLLOWING
+    const summary = screen.getByRole('region', { name: '予定への影響' })
+    expect(beforeApproval(summary)).toBeTruthy()
+    expect(beforeApproval(screen.getByRole('heading', { name: '変更されるもの' }))).toBeTruthy()
+    expect(beforeApproval(disclosure)).toBeTruthy()
+    expect(within(summary).getByText('予定に収まる')).toBeTruthy()
+    expect(within(summary).getByText(/出典：Google Places/)).toBeTruthy()
+    expect(within(summary).getAllByText('Google Routes')).toHaveLength(2)
+    await user.click(disclosure)
+    expect(disclosure.closest('details')?.open).toBe(true)
     const table = within(await screen.findByRole('table'))
     const scope = () => within(screen.getByRole('region', { name: '予定への影響' }))
     expect(scope().getByText(/営業時間：情報源と整合（照合/)).toBeTruthy()
@@ -207,6 +262,14 @@ describe('部分修正の候補比較', () => {
     expect(route().getByText('別の食堂')).toBeTruthy()
     expect(route().queryByText(after.name)).toBeNull()
     await user.click(screen.getByRole('button', { name: '変更内容を確認する' }))
+    expect(screen.getByText('詳細な比較・根拠を見る').closest('details')?.open).toBe(false)
+    expect(beforeApproval(scope().getByText('営業時間：未確認'))).toBeTruthy()
+    expect(
+      scope()
+        .getAllByRole('listitem')
+        .filter((item) => item.textContent?.includes('移動時間は未取得')),
+    ).toHaveLength(2)
+    await user.click(screen.getByText('詳細な比較・根拠を見る'))
     expect(within(screen.getByRole('table')).getAllByText('移動時間は未取得')).toHaveLength(4)
     expect(within(screen.getByRole('table')).getAllByText('時間差：未確認')).toHaveLength(2)
     expect(scope().getByText('営業時間：未確認')).toBeTruthy()
@@ -373,7 +436,7 @@ describe('部分修正の候補比較', () => {
     expect(screen.getByLabelText<HTMLTextAreaElement>('修正理由（必須）').value).toBe('店が休み')
   })
 
-  it('待機中にTabでキャンセルへ移ると、502の後もEnterで再送信しない', async () => {
+  it('待機中にTabでキャンセル操作へ移ると、502の後もEnterで再送信しない', async () => {
     const user = userEvent.setup()
     const pending = Promise.withResolvers<Response>()
     const fetchFn = vi.fn<typeof fetch>().mockReturnValue(pending.promise)
@@ -384,9 +447,12 @@ describe('部分修正の候補比較', () => {
     await open(user)
     expect(container.querySelector('[role="status"][aria-atomic="true"]')).toBe(liveRegion)
     await request(user)
-    const cancel = screen.getByRole('button', { name: 'キャンセル' })
     await user.tab({ shift: document.activeElement !== document.body })
-    expect(document.activeElement).toBe(cancel)
+    const cancel = document.activeElement
+    expect([
+      screen.getByRole('button', { name: '部分修正を閉じる' }),
+      screen.getByRole('button', { name: 'キャンセル' }),
+    ]).toContain(cancel)
 
     await act(async () =>
       pending.resolve(
@@ -516,7 +582,7 @@ describe('部分修正の候補比較', () => {
       expect(source).toEqual(trip)
       expect(route().getByText(target.name)).toBeTruthy()
       expect(route().queryByText(/改変された/)).toBeNull()
-      expect(screen.queryByRole('table')).toBeNull()
+      expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
     },
   )
 
@@ -530,7 +596,7 @@ describe('部分修正の候補比較', () => {
     await user.click(screen.getByRole('button', { name: 'キャンセル' }))
     expect(generate.mock.calls[0][1].aborted).toBe(true)
     await act(async () => pending.resolve(proposal))
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
     expect(route().getByText(target.name)).toBeTruthy()
   })
 
@@ -555,7 +621,7 @@ describe('部分修正の候補比較', () => {
     expect(generate.mock.calls[0][1].aborted).toBe(true)
     expect(screen.getByRole('alert').textContent).toContain('旅程が更新された')
     await act(async () => pending.resolve(proposal))
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
     expect(route().getByText('新しい予定')).toBeTruthy()
   })
 
@@ -571,7 +637,7 @@ describe('部分修正の候補比較', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     expect(
       within(screen.getByRole('region', { name: '予定への影響' })).getByText(/徒歩6分（模擬）/),
     ).toBeTruthy()
@@ -589,7 +655,7 @@ describe('部分修正の候補比較', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     view.rerender(
       <RevisionRouteTest
         trip={{ ...trip, version: 1, stops: trip.stops.with(1, { ...target, isFixed: true }) }}
@@ -597,7 +663,7 @@ describe('部分修正の候補比較', () => {
       />,
     )
     expect(screen.getByRole('alert').textContent).toContain('旅程が更新された')
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
     expect(route().getByRole('button', { name: /昼食店A.*固定予定/ })).toBeTruthy()
   })
 })
@@ -616,7 +682,7 @@ describe('本人承認とサーバー適用', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     await user.click(approve())
     expect(approvalDisabled()).toBe(true)
     expect(screen.getByText(/候補の来歴を確認できません/)).toBeTruthy()
@@ -656,7 +722,7 @@ describe('本人承認とサーバー適用', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     await user.click(approve())
     expect(await screen.findByText('その後の施設')).toBeTruthy()
     expect(route().queryByText('変更を反映済み')).toBeNull()
@@ -677,7 +743,7 @@ describe('本人承認とサーバー適用', () => {
     expect(container.querySelector('[role="status"][aria-atomic="true"]')).toBe(liveRegion)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     await user.click(approve())
     expect(apply).toHaveBeenCalledOnce()
     expect(apply.mock.calls[0][0]).toMatchObject({
@@ -753,7 +819,7 @@ describe('本人承認とサーバー適用', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     await user.click(approve())
     expect(source).toEqual(trip)
     expect(tableInConfirmation().getByText(after.name)).toBeTruthy()
@@ -798,7 +864,7 @@ describe('本人承認とサーバー適用', () => {
       await open(user)
       await request(user)
       await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-      await screen.findByRole('table')
+      await screen.findByRole('button', { name: '承認して適用を依頼' })
       await user.click(approve())
       expect((await screen.findByRole('alert')).textContent).toContain(
         '適用結果を確認できませんでした',
@@ -819,7 +885,7 @@ describe('本人承認とサーバー適用', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     approve().focus()
     await user.keyboard('{Enter}')
     expect(apply).toHaveBeenCalledOnce()
@@ -836,7 +902,7 @@ describe('本人承認とサーバー適用', () => {
     expect(update.textContent).toContain('適用結果を確認できませんでした')
     expect(update.textContent).not.toContain('取り消しました')
     expect(route().getByRole('button', { name: /親が更新した昼食.*固定予定/ })).toBeTruthy()
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
     await user.tab()
     expect(document.activeElement).toBe(
       within(update).getByRole('button', { name: '比較を閉じる' }),
@@ -881,7 +947,7 @@ describe('本人承認とサーバー適用', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     await user.click(approve())
     expect((await screen.findByRole('alert')).textContent).toContain(message)
     expect(tableInConfirmation().getByText(target.name)).toBeTruthy()
@@ -898,7 +964,7 @@ describe('本人承認とサーバー適用', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     await user.click(approve())
     await user.click(await screen.findByRole('button', { name: '旅程を確認' }))
     expect(screen.getByRole('alert').textContent).toContain('適用結果を確認できませんでした')
@@ -915,7 +981,7 @@ describe('本人承認とサーバー適用', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     await user.click(approve())
     expect(apply).toHaveBeenCalledTimes(1)
 
@@ -927,7 +993,7 @@ describe('本人承認とサーバー適用', () => {
     expect(screen.getByRole('alert').textContent).toContain('再操作できません')
     await user.click(route().getByRole('button', { name: /昼食店A/ }))
     expect(screen.queryByRole('button', { name: 'この予定だけ変更' })).toBeNull()
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
     expect(generate).toHaveBeenCalledTimes(1)
     expect(apply).toHaveBeenCalledTimes(1)
   })
@@ -952,7 +1018,7 @@ describe('本人承認とサーバー適用', () => {
       await open(user)
       await request(user)
       await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-      await screen.findByRole('table')
+      await screen.findByRole('button', { name: '承認して適用を依頼' })
       await user.click(approve())
       await user.click(await screen.findByRole('button', { name: '旅程を確認' }))
       await user.click(screen.getByRole('button', { name: '比較を閉じる' }))
@@ -1024,7 +1090,7 @@ describe('本人承認とサーバー適用', () => {
       await open(user)
       await request(user)
       await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-      await screen.findByRole('table')
+      await screen.findByRole('button', { name: '承認して適用を依頼' })
       await user.click(approve())
       await waitFor(() =>
         expect(screen.getByRole('alert').textContent).toContain('適用を開始しませんでした'),
@@ -1041,7 +1107,7 @@ describe('本人承認とサーバー適用', () => {
       await open(user)
       await request(user)
       await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-      await screen.findByRole('table')
+      await screen.findByRole('button', { name: '承認して適用を依頼' })
       await user.click(approve())
       view.unmount()
       pending.resolve({ status: 'uncertain' })
@@ -1210,7 +1276,7 @@ describe('本人承認とサーバー適用', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     expect(approvalDisabled()).toBe(true)
   })
 })
@@ -1260,7 +1326,7 @@ describe('旅程の変更を親が採用する（adoptTripChange）', () => {
     await open(user)
     await request(user)
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     await user.click(approve())
 
     await screen.findByText(/旅程に反映されました/)

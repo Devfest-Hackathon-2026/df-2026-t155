@@ -267,12 +267,12 @@ async function reportAndOpenCandidates(user: User, kind: 'actual' | 'simulated')
   )
   await user.click(
     screen.getByRole('button', {
-      name: kind === 'actual' ? '実際の報告として送る' : '模擬報告として送る',
+      name: kind === 'actual' ? '実際の報告で候補検索へ' : '模擬報告で候補検索へ',
     }),
   )
   await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
   await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-  await screen.findByRole('table')
+  await screen.findByRole('button', { name: '承認して適用を依頼' })
 }
 
 const approve = () => screen.getByRole<HTMLButtonElement>('button', { name: '承認して適用を依頼' })
@@ -301,6 +301,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  window.localStorage.clear()
   vi.unstubAllGlobals()
 })
 
@@ -504,7 +505,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     expect(generateRevisions).toHaveBeenCalledOnce()
     expect(applyRevision).not.toHaveBeenCalled()
     await user.click(preview)
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     expect(generateRevisions.mock.calls[0][0].context).toEqual({ phase: 'planning' })
     await user.click(approve())
     await waitFor(() => expect(applyRevision).toHaveBeenCalledTimes(1))
@@ -528,7 +529,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
     await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     await user.click(approve())
     await screen.findByText(/候補の保存結果を確認できません/)
     expect(readUnresolvedApply(A, generatedTrip.id)).toEqual({ status: 'clear' })
@@ -542,7 +543,8 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await saveTripFromScreen(user)
     markApplyUnresolved(A, generatedTrip.id, generatedTrip.version, sampleRevision.id)
     await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
-    await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
+    expect(screen.queryByRole('button', { name: 'この予定だけ変更' })).toBeNull()
+    expect(screen.getByRole('dialog').textContent).toContain('先に適用結果を確認')
     expect(screen.queryByLabelText('修正理由（必須）')).toBeNull()
     await user.click(screen.getByRole('button', { name: '閉じる' }))
     await showDuring(user)
@@ -550,7 +552,6 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await user.click(screen.getByRole('button', { name: '予定が変わった？この予定だけ変更する' }))
     expect(screen.queryByRole('heading', { name: '現地の状況を報告する' })).toBeNull()
     expect(generateRevisions).not.toHaveBeenCalled()
-    window.localStorage.clear()
   })
   it('採用した部分修正は旅程を変え、前回の照合結果を取り下げて「変更後は未確認」に戻す', async () => {
     const { backend, state } = setup()
@@ -681,7 +682,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
         await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
         await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
         await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-        await screen.findByRole('table')
+        await screen.findByRole('button', { name: '承認して適用を依頼' })
         expect(generateRevisions.mock.calls[0][0].context).toEqual({ phase: 'planning' })
       } else {
         await reportAndOpenCandidates(user, 'actual')
@@ -879,6 +880,139 @@ describe('トップ画面：保存して振り返る（同じページ内で、�
     expect(
       backend.calls.filter((call) => call.method === 'POST' && call.path === '/api/trips'),
     ).toHaveLength(0)
+  })
+})
+
+describe('表示中の旅程と別画面の処理', () => {
+  it('再生成中に旅程に戻ると通信を中止し、遅れた応答で旅程を置き換えない', async () => {
+    const { state, fetchFn, generateCalls } = setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await editInput(user)
+    const pending = Promise.withResolvers<Response>()
+    state.generate = () => pending.promise
+    await user.click(screen.getByRole('button', { name: '旅程を作成する' }))
+    await waitFor(() => expect(generateCalls).toHaveLength(2))
+    const signal = fetchFn.mock.calls.findLast(([path]) => path === '/api/trips/generate')?.[1]
+      ?.signal
+    await backToTrip(user)
+    expect(signal?.aborted).toBe(true)
+    await act(async () =>
+      pending.resolve(
+        json({ status: 'proposed', trip: { ...generatedTrip, region: '遅れて届いた旅程' } }),
+      ),
+    )
+    expect(screen.queryByText(/遅れて届いた旅程/)).toBeNull()
+    expect(screen.getByRole('list', { name: '旅程の路線図' })).toBeTruthy()
+    await editInput(user)
+    expect(screen.getByLabelText<HTMLInputElement>(/旅行先/).value).toBe(REGION)
+    expect(screen.getByRole('button', { name: '旅程を作成する' })).toBeTruthy()
+  })
+
+  it('部分修正の生成中に旅行中へ移ると古い候補を捨て、入力を保ったまま再試行できる', async () => {
+    setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await saveTripFromScreen(user)
+    const pending = Promise.withResolvers<Awaited<ReturnType<GenerateRevisions>>>()
+    generateRevisions.mockImplementationOnce(() => pending.promise)
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
+    await user.type(screen.getByLabelText('修正理由（必須）'), '静かな店にしたい')
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    const [request, signal] = generateRevisions.mock.calls[0]
+    await showDuring(user)
+    expect(signal?.aborted).toBe(true)
+    const response = await generateRevisions.getMockImplementation()!(
+      request,
+      new AbortController().signal,
+    )
+    await act(async () => pending.resolve(response))
+    await showBefore(user)
+    expect(screen.queryByRole('button', { name: '変更内容を確認する' })).toBeNull()
+    expect(screen.getByLabelText<HTMLTextAreaElement>('修正理由（必須）').value).toBe(
+      '静かな店にしたい',
+    )
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    await user.click(await screen.findByRole('button', { name: '詳しく比較' }))
+    expect(screen.getByRole('heading', { name: '詳しく比較' })).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: '比較から戻る' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: '詳しく比較' }))
+    expect(generateRevisions).toHaveBeenCalledTimes(2)
+    expect(applyRevision).not.toHaveBeenCalled()
+  })
+
+  it('振り返りを閉じたまま旅程の版が進んでも、履歴や保存済み学びの取得を始めない', async () => {
+    const { backend } = setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await saveTripFromScreen(user)
+    await openReflection(user)
+    await screen.findByText('保存済みの学びはありません。')
+    await backToTrip(user)
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: '保存した旅行を振り返る' }),
+    )
+    const readCount = () => backend.calls.filter(({ method }) => method === 'GET').length
+    const before = readCount()
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
+    await user.type(screen.getByLabelText('修正理由（必須）'), '別の店にしたい')
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
+    await user.click(approve())
+    await within(await screen.findByRole('list', { name: '旅程の路線図' })).findByText(after.name)
+    expect(readCount()).toBe(before)
+    await openReflection(user)
+    await screen.findByText('保存済みの学びはありません。')
+    expect(readCount()).toBeGreaterThan(before)
+  })
+
+  it('旅行中に切り替えてから旅行前の適用が完了しても、報告を開ける', async () => {
+    setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await saveTripFromScreen(user)
+    const pending = Promise.withResolvers<Awaited<ReturnType<ApplyRevision>>>()
+    applyRevision.mockImplementationOnce(() => pending.promise)
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
+    await user.type(screen.getByLabelText('修正理由（必須）'), '別のお店にしたい')
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
+    await user.click(approve())
+    const [decision, signal] = applyRevision.mock.calls[0]
+    await showDuring(user)
+    const applied = await applyRevision.getMockImplementation()!(decision, signal)
+    await act(async () => pending.resolve(applied))
+    expect(readUnresolvedApply(A, generatedTrip.id).status).toBe('clear')
+    await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
+    await user.click(screen.getByRole('button', { name: '予定が変わった？この予定だけ変更する' }))
+    expect(screen.getByRole('heading', { name: '現地の状況を報告する' })).toBeTruthy()
+  })
+
+  it('現地報告から進行画面に戻り、同じ予定で開き直すと入力が残る', async () => {
+    setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await saveTripFromScreen(user)
+    await goToLunch(user)
+    await user.click(screen.getByRole('radio', { name: /閉店・臨時休業だった/ }))
+    await user.type(screen.getByRole('textbox', { name: /補足/ }), '入口に休業の掲示')
+    await user.click(screen.getByRole('button', { name: '旅行中の画面に戻る' }))
+    await user.click(screen.getByRole('button', { name: '予定が変わった？この予定だけ変更する' }))
+    expect(
+      screen.getByRole<HTMLInputElement>('radio', { name: /閉店・臨時休業だった/ }).checked,
+    ).toBe(true)
+    expect(screen.getByRole<HTMLTextAreaElement>('textbox', { name: /補足/ }).value).toBe(
+      '入口に休業の掲示',
+    )
+    expect(generateRevisions).not.toHaveBeenCalled()
   })
 })
 
@@ -1173,7 +1307,7 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
   })
 
   it('保存した学びを次の生成で使い、元の保存済み旅程を開いて旅行前に部分修正できる', async () => {
-    const { generateCalls, state } = setup({ [A]: {} }, [candidate])
+    const { backend, generateCalls, state } = setup({ [A]: {} }, [candidate])
     const user = userEvent.setup()
     renderHome()
 
@@ -1186,7 +1320,10 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
     await user.click(screen.getByRole('button', { name: '学びの候補を作る' }))
     await screen.findByRole('heading', { name: /学びの候補（/ })
     await user.click(screen.getByRole('button', { name: '承認する' }))
+    const readLearnings = () => backend.calls.filter(isListLearnings).length
+    const beforeSave = readLearnings()
     await user.click(screen.getByRole('button', { name: /保存する|保存しています/ }))
+    await waitFor(() => expect(readLearnings()).toBe(beforeSave + 3))
 
     await backToTrip(user)
     await editInput(user)
@@ -1213,7 +1350,7 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
     await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
     await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     expect(generateRevisions.mock.calls[0][0]).toMatchObject({
       context: { phase: 'planning' },
       trip: { id: generatedTrip.id },

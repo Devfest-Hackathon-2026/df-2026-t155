@@ -41,7 +41,7 @@ const submitReport = async (
   )
   await user.click(
     screen.getByRole('button', {
-      name: kind === 'actual' ? '実際の報告として送る' : '模擬報告として送る',
+      name: kind === 'actual' ? '実際の報告で候補検索へ' : '模擬報告で候補検索へ',
     }),
   )
 }
@@ -155,7 +155,7 @@ const openCandidates = async (
   await submitReport(user, kind, preset)
   await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
   await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-  await screen.findByRole('table')
+  await screen.findByRole('button', { name: '承認して適用を依頼' })
 }
 
 const approve = () => screen.getByRole<HTMLButtonElement>('button', { name: '承認して適用を依頼' })
@@ -312,7 +312,7 @@ describe('現地報告から再計画', () => {
     expect(screen.getByText(/デモ用の想定です。現地で実際に起きたことではありません/)).toBeTruthy()
     await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
-    await screen.findByRole('table')
+    await screen.findByRole('button', { name: '承認して適用を依頼' })
     expect(generate.mock.calls[0][0].context).toEqual({
       phase: 'on_site',
       report: {
@@ -494,12 +494,12 @@ describe('旅程が変わったあとの古い報告・比較は、元の内容�
 
     rerender(<OnSiteReplanningFlow trip={{ ...sampleTrip, version: 1 }} {...props} />)
     expect(screen.getByRole('alert').textContent).toContain('古い報告からの再計画を中止しました')
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
 
     // 親の旅程が中身まで元と同じに戻っても、中止した比較・承認の操作は戻らない。
     rerender(<OnSiteReplanningFlow trip={structuredClone(sampleTrip)} {...props} />)
     expect(screen.getByRole('alert').textContent).toContain('古い報告からの再計画を中止しました')
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
     expect(screen.queryByRole('button', { name: '承認して適用を依頼' })).toBeNull()
     expect(screen.queryByRole('button', { name: '変更候補を探す' })).toBeNull()
     expect(generate).toHaveBeenCalledTimes(1)
@@ -509,7 +509,7 @@ describe('旅程が変わったあとの古い報告・比較は、元の内容�
     await user.click(screen.getByRole('button', { name: '旅行中の画面に戻る' }))
     await user.click(replanButton())
     expect((screen.getByRole('textbox', { name: /補足/ }) as HTMLTextAreaElement).value).toBe('')
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
   })
 
   it('適用を送った比較が v0→v1→v0 で中止されても、遅れて届いた応答は旅程を置き換えない', async () => {
@@ -527,7 +527,7 @@ describe('旅程が変わったあとの古い報告・比較は、元の内容�
     await act(async () => pending.resolve({ status: 'applied', trip: savedTrip() }))
 
     expect(onTripChange).not.toHaveBeenCalled()
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
     expect(screen.getByRole('alert').textContent).toContain('適用結果を確認できませんでした')
   })
 
@@ -766,14 +766,14 @@ describe('報告の入力中に対象の予定が変わった場合', () => {
       // 対象を選ばないまま送ろうとしても、別の予定への報告にはならない。
       await user.click(screen.getByRole('radio', { name: closedPreset }))
       await user.click(screen.getByRole('radio', { name: /いまの現地の状況（実際の報告）/ }))
-      await user.click(screen.getByRole('button', { name: '実際の報告として送る' }))
+      await user.click(screen.getByRole('button', { name: '実際の報告で候補検索へ' }))
       expect(screen.getByText(/どの予定の状況かを選んでください/)).toBeTruthy()
       expect(screen.queryByRole('button', { name: '変更候補を探す' })).toBeNull()
       expect(generate).not.toHaveBeenCalled()
 
       // 利用者が対象を選び直せば、その予定として進められる。
       await user.click(screen.getByRole('radio', { name: /カフェC（架空）/ }))
-      await user.click(screen.getByRole('button', { name: '実際の報告として送る' }))
+      await user.click(screen.getByRole('button', { name: '実際の報告で候補検索へ' }))
       await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
       await waitFor(() => expect(generate).toHaveBeenCalledTimes(1))
       expect(generate.mock.calls[0][0].targetStopId).toBe('stop-cafe')
@@ -992,7 +992,7 @@ describe('候補生成サービスが一時的に利用できなくなった場�
 
     expect(apply).not.toHaveBeenCalled()
     rerender(<Flow available />)
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
   })
 
   it('適用の応答待ちにサービスが外れて戻っても、適用中状態を保ち二重送信しない', async () => {
@@ -1036,7 +1036,7 @@ describe('候補生成サービスが一時的に利用できなくなった場�
     rerender(<OnSiteReplanningFlow trip={sampleTrip} generate={undefined} {...props} />)
     rerender(<OnSiteReplanningFlow trip={sampleTrip} generate={propose} {...props} />)
 
-    expect(screen.getByRole('table')).toBeTruthy()
+    expect(screen.getByText('詳細な比較・根拠を見る')).toBeTruthy()
     expect(approve().getAttribute('aria-disabled')).toBe('true')
     await user.click(approve())
     expect(apply).toHaveBeenCalledTimes(1)
@@ -1057,7 +1057,7 @@ describe('候補生成サービスが一時的に利用できなくなった場�
     await act(async () => pending.resolve({ status: 'uncertain' }))
     rerender(<OnSiteReplanningFlow trip={sampleTrip} generate={propose} {...props} />)
 
-    expect(screen.getByRole('table')).toBeTruthy()
+    expect(screen.getByText('詳細な比較・根拠を見る')).toBeTruthy()
     expect(approve().getAttribute('aria-disabled')).toBe('true')
     await user.click(approve())
     expect(apply).toHaveBeenCalledTimes(1)
@@ -1083,7 +1083,7 @@ describe('候補生成サービスが一時的に利用できなくなった場�
     await act(async () => pending.resolve({ status: 'applied', trip: savedTrip() }))
 
     expect(onTripChange).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
   })
 
   it('サービスが外れている間に明確な失敗が届いたら、戻った後に新しい比較で再操作できる', async () => {

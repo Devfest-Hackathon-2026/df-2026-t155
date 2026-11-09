@@ -19,7 +19,9 @@ import {
   travelBasesOf,
   type StopProgress,
 } from './progress-model'
-import { CheckIcon, FixedChip, ProgressChip, StatusLine } from './progress-parts'
+import { CheckIcon, ProgressChip, StatusLine } from './progress-parts'
+import { LockIcon } from '@/features/trip-map/icons'
+import { FixedChip } from '@/features/trip-map/route-map'
 
 interface TripProgressViewProps {
   trip: Trip
@@ -39,9 +41,8 @@ interface ProgressState {
 }
 
 const wrapClass = 'min-w-0 [overflow-wrap:anywhere]'
-const cardBase = 'rounded-xl border-2 p-4'
-const buttonBase =
-  'inline-flex min-h-11 w-full items-center justify-center rounded-lg border-2 px-4 py-2 text-center text-base font-bold focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-(color:--tp-ink)'
+const secondaryAction =
+  'gt-button-secondary min-h-[46px] w-full border-2 border-gt-ink text-base font-bold'
 
 const formatStopLabel = (stop: Stop) => `${stop.name}（${stop.plannedStartTime}）`
 
@@ -74,11 +75,7 @@ export function TripProgressView({ trip, initialIndex = 0, onReplan }: TripProgr
 
   if (!current) {
     return (
-      <section
-        style={paletteStyle}
-        aria-label="旅行中の進行状況"
-        className="mx-auto w-full max-w-xl bg-(color:--tp-page) p-4 text-(color:--tp-ink)"
-      >
+      <section style={paletteStyle} aria-label="旅行中の進行状況" className="text-gt-ink">
         <p className="text-sm">表示できる予定がありません。</p>
       </section>
     )
@@ -106,73 +103,81 @@ export function TripProgressView({ trip, initialIndex = 0, onReplan }: TripProgr
   }
 
   return (
-    <section
-      style={paletteStyle}
-      aria-labelledby="trip-progress-heading"
-      className="mx-auto w-full max-w-xl bg-(color:--tp-page) p-4 text-(color:--tp-ink)"
-    >
-      <h2 id="trip-progress-heading" className="text-xl font-black">
+    <section style={paletteStyle} aria-labelledby="trip-progress-heading" className="text-gt-ink">
+      <h2 id="trip-progress-heading" className="sr-only">
         旅行中の進行状況
       </h2>
-      <p className={`mt-1 text-sm text-(color:--tp-muted) ${wrapClass}`}>
-        位置情報は使っていません。進行状況は、ボタンで更新します。この状況は保存されません。
-      </p>
 
-      <CurrentCard stop={current} onReplan={onReplan} />
+      <CurrentCard stop={current} showReplanRestriction={Boolean(onReplan)} />
       <NextCard current={current} next={next} />
+      <Route stops={stops} currentIndex={currentIndex} />
 
-      <div role="group" aria-label="進行状況の更新" className="mt-4 grid gap-3">
+      <div role="group" aria-label="進行状況の更新" className="mt-4 grid gap-2.5">
         <button
           type="button"
           onClick={handleForward}
-          className={`${buttonBase} border-(color:--tp-accent) bg-(color:--tp-accent) text-white`}
+          className="gt-button-primary min-h-[52px] w-full text-base font-bold"
         >
           次の予定へ進む
         </button>
-        <button
-          type="button"
-          onClick={handleBack}
-          className={`${buttonBase} border-(color:--tp-edge) bg-(color:--tp-card) text-(color:--tp-ink)`}
-        >
+        <button type="button" onClick={handleBack} className={secondaryAction}>
           ひとつ前に戻す
         </button>
+        {onReplan && revisionTargetRestriction(current) === null && (
+          <button
+            type="button"
+            onClick={() => onReplan(current.id)}
+            className={`${secondaryAction} text-sm`}
+          >
+            予定が変わった？この予定だけ変更する
+          </button>
+        )}
       </div>
 
-      {/* 操作の結果を、常設のライブリージョンで伝える。フォーカスは押したボタンに残す。 */}
       <p
         role="status"
-        className={`mt-3 min-h-6 border-l-4 border-(color:--tp-edge) pl-3 text-sm font-bold ${wrapClass}`}
+        className={`text-sm font-semibold not-empty:mt-2 not-empty:border-l-4 not-empty:border-gt-muted not-empty:pl-3 ${wrapClass}`}
       >
-        {/* 更新のたびに中の要素を作り直し、同じ文言でもテキスト内容の更新として通知させる。 */}
         <span key={view.tick}>{view.notice}</span>
       </p>
-
-      <Route stops={stops} currentIndex={currentIndex} />
+      <p className={`mt-2 text-xs text-gt-muted ${wrapClass}`}>
+        位置情報は使っていません。進行状況は、ボタンで更新します。この状況は保存されません。
+      </p>
     </section>
   )
 }
 
-function CurrentCard({ stop, onReplan }: { stop: Stop; onReplan?: (stopId: string) => void }) {
+function CurrentCard({
+  stop,
+  showReplanRestriction,
+}: {
+  stop: Stop
+  showReplanRestriction: boolean
+}) {
   const lines = evidenceLines(stop)
   const restriction = revisionTargetRestriction(stop)
   return (
     <section
       aria-labelledby="trip-progress-current"
-      className={`${cardBase} mt-4 border-(color:--tp-accent) bg-(color:--tp-tint)`}
+      className="rounded-[14px] border-[3px] border-gt-line bg-gt-line-tint px-3.5 py-2.5"
     >
-      <h3 id="trip-progress-current" className="text-sm font-black text-(color:--tp-accent)">
-        いまの予定
-      </h3>
-      {stop.isFixed && (
-        <p className="mt-2">
-          <FixedChip />
+      <div className="flex flex-wrap items-center justify-between gap-1.5">
+        <h3 id="trip-progress-current" className="text-xs font-bold text-gt-line-strong">
+          いまの予定
+        </h3>
+        <ProgressChip progress="current" compact />
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-x-2">
+        <p className="text-xs font-bold">
+          <span aria-hidden="true">{stop.plannedStartTime}</span>
+          <span className="sr-only">
+            {stop.plannedStartTime}〜{stopEndTime(stop)}・滞在{stop.durationMinutes}分
+          </span>
         </p>
-      )}
-      <p className="mt-2 font-mono text-sm font-semibold text-(color:--tp-muted)">
-        {stop.plannedStartTime}〜{stopEndTime(stop)}・滞在{stop.durationMinutes}分
-      </p>
-      <p className={`text-2xl font-black leading-snug ${wrapClass}`}>{stop.name}</p>
-      <ul aria-label="根拠の状態" className="mt-3 grid gap-1.5">
+        {stop.isFixed && <FixedChip />}
+      </div>
+      <p className={`text-xl leading-tight font-bold ${wrapClass}`}>{stop.name}</p>
+      <ul aria-label="根拠の状態" className="mt-1.5 grid gap-1">
         {lines.length === 0 ? (
           <li>
             <StatusLine kind="unchecked">根拠：未照合（まだ確認していません）</StatusLine>
@@ -211,22 +216,12 @@ function CurrentCard({ stop, onReplan }: { stop: Stop; onReplan?: (stopId: strin
           「デモ用の想定」は、{simulatedNote}。
         </p>
       )}
-      {restriction === 'transport' || (onReplan && restriction === 'fixed') ? (
-        <p className={`mt-3 text-sm text-(color:--tp-muted) ${wrapClass}`}>
+      {(restriction === 'transport' || (showReplanRestriction && restriction === 'fixed')) && (
+        <p className={`mt-2 text-sm text-gt-muted ${wrapClass}`}>
           {restriction === 'transport'
             ? TRANSPORT_REVISION_UNAVAILABLE
             : '固定予定のため、固定を解除するまで、変更の対象にできません。'}
         </p>
-      ) : (
-        onReplan && (
-          <button
-            type="button"
-            onClick={() => onReplan(stop.id)}
-            className={`${buttonBase} mt-3 border-(color:--tp-ink) bg-(color:--tp-card) text-(color:--tp-ink)`}
-          >
-            予定が変わった？この予定だけ変更する
-          </button>
-        )
       )}
     </section>
   )
@@ -236,9 +231,9 @@ function NextCard({ current, next }: { current: Stop; next: Stop | undefined }) 
   return (
     <section
       aria-labelledby="trip-progress-next"
-      className={`${cardBase} mt-3 border-(color:--tp-edge) bg-(color:--tp-card)`}
+      className="mt-2.5 rounded-[14px] border border-gt-rail bg-gt-paper px-3.5 py-2.5"
     >
-      <h3 id="trip-progress-next" className="text-sm font-black text-(color:--tp-muted)">
+      <h3 id="trip-progress-next" className="text-xs font-bold text-gt-muted">
         次の予定
       </h3>
       {next ? (
@@ -255,17 +250,15 @@ function NextBody({ current, next }: { current: Stop; next: Stop }) {
   const gap = gapMinutes(current, next)
   return (
     <>
-      {next.isFixed && (
-        <p className="mt-2">
-          <FixedChip />
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-1">
+        <p className={`text-base leading-tight font-bold ${wrapClass}`}>
+          <span aria-hidden="true">{next.plannedStartTime}</span>
+          <span className="sr-only">{next.plannedStartTime}から</span> <span>{next.name}</span>
         </p>
-      )}
-      <p className="mt-2 font-mono text-sm font-semibold text-(color:--tp-muted)">
-        {next.plannedStartTime}から
-      </p>
-      <p className={`text-xl font-black leading-snug ${wrapClass}`}>{next.name}</p>
-      <div className="mt-3 grid gap-1.5">
-        <p className="text-xs font-bold text-(color:--tp-muted)">次の予定までの移動</p>
+        {next.isFixed && <FixedChip />}
+      </div>
+      <div className="mt-1.5 grid gap-1">
+        <p className="sr-only">次の予定までの移動</p>
         {bases.map((basis) => {
           const source = next.evidence.find(
             (item) =>
@@ -302,69 +295,61 @@ function NextBody({ current, next }: { current: Stop; next: Stop }) {
 }
 
 const nodeStyles: Record<StopProgress, string> = {
-  visited: 'border-(color:--tp-edge) bg-(color:--tp-visited) text-(color:--tp-muted)',
-  current: 'border-(color:--tp-accent) bg-(color:--tp-accent) text-white',
-  upcoming: 'border-(color:--tp-edge) bg-(color:--tp-card) text-(color:--tp-muted)',
+  visited: 'border-gt-muted bg-gt-muted text-white',
+  current: 'border-gt-action bg-gt-action text-white',
+  upcoming: 'border-gt-rail bg-gt-paper text-gt-muted',
 }
 
-const itemStyles: Record<StopProgress, string> = {
-  visited: 'border-(color:--tp-edge) bg-(color:--tp-visited) text-(color:--tp-muted)',
-  current: 'border-(color:--tp-accent) bg-(color:--tp-tint)',
-  upcoming: 'border-(color:--tp-edge) bg-(color:--tp-card)',
-}
-
-// 縦の路線。訪問済み＝グレー、いま＝オレンジ、先＝グレーの枠線。訪問順の模式図で、地図ではない。
 function Route({ stops, currentIndex }: { stops: readonly Stop[]; currentIndex: number }) {
   return (
-    <div className="mt-6">
-      <h3 className="text-base font-black">今日の路線</h3>
-      <p className={`mt-1 text-xs text-(color:--tp-muted) ${wrapClass}`}>
-        訪問順を示す模式図です。地図上の位置ではありません。
-      </p>
-      <ol aria-label="旅程の進行" className="mt-3">
-        {stops.map((stop, index) => {
-          const progress = progressOf(index, currentIndex)
-          const last = index === stops.length - 1
-          return (
-            <li
-              key={stop.id}
-              aria-current={progress === 'current' ? 'step' : undefined}
-              className={`relative flex gap-3 ${last ? '' : 'pb-4'}`}
-            >
-              {!last && (
-                <span
-                  aria-hidden="true"
-                  className={`absolute bottom-0 left-[18px] top-10 w-0 border-l-[3px] ${
-                    progress === 'current'
-                      ? 'border-(color:--tp-accent)'
-                      : progress === 'visited'
-                        ? 'border-(color:--tp-edge)'
-                        : 'border-dashed border-(color:--tp-edge)'
-                  }`}
-                />
-              )}
+    <ol aria-label="旅程の進行" className="mt-4">
+      {stops.map((stop, index) => {
+        const progress = progressOf(index, currentIndex)
+        const last = index === stops.length - 1
+        return (
+          <li
+            key={stop.id}
+            aria-current={progress === 'current' ? 'step' : undefined}
+            className={`relative grid min-h-[76px] grid-cols-[49px_minmax(0,1fr)] ${last ? '' : 'pb-3'}`}
+          >
+            {!last && (
               <span
                 aria-hidden="true"
-                className={`relative z-10 flex size-10 shrink-0 items-center justify-center rounded-full border-2 font-mono text-sm font-black ${nodeStyles[progress]}`}
+                className={`absolute -bottom-px left-[14px] top-6 w-[6px] rounded-full ${progress === 'visited' ? 'bg-gt-rail/60' : 'bg-gt-line'}`}
+              />
+            )}
+            <div aria-hidden="true" className="relative z-10 flex items-start gap-[3px] pl-[4px]">
+              <span
+                data-station-number={stop.isFixed || progress !== 'visited' ? '' : undefined}
+                className={`grid size-[26px] shrink-0 place-items-center rounded-full border-[3px] text-[11px] font-bold ${nodeStyles[progress]}`}
               >
-                {progress === 'visited' ? <CheckIcon size={18} /> : index + 1}
+                {progress === 'visited' && !stop.isFixed ? <CheckIcon size={14} /> : index + 1}
               </span>
-              <div
-                className={`${wrapClass} flex-1 rounded-lg border-2 p-3 ${itemStyles[progress]}`}
-              >
-                <p className="flex flex-wrap items-center gap-1.5">
-                  <ProgressChip progress={progress} />
-                  {stop.isFixed && <FixedChip />}
-                </p>
-                <p className="mt-1.5 font-mono text-sm font-semibold">
-                  {stop.plannedStartTime}〜{stopEndTime(stop)}・{stop.durationMinutes}分
-                </p>
-                <p className="text-base font-black leading-snug">{stop.name}</p>
-              </div>
-            </li>
-          )
-        })}
-      </ol>
-    </div>
+              {stop.isFixed && (
+                <span
+                  data-fixed-mark
+                  className="mt-[6px] grid size-[14px] shrink-0 place-items-center rounded bg-gt-ink text-white"
+                >
+                  <LockIcon size={10} />
+                </span>
+              )}
+            </div>
+            <div className={`${wrapClass} ${progress === 'visited' ? 'text-gt-muted' : ''}`}>
+              <p className="text-xs font-semibold text-gt-muted">
+                {stop.plannedStartTime}
+                <span className="sr-only">
+                  〜{stopEndTime(stop)}・{stop.durationMinutes}分
+                </span>
+              </p>
+              <p className="text-xl leading-tight font-bold">{stop.name}</p>
+              <p className="mt-1 flex flex-wrap items-center gap-1.5">
+                {stop.isFixed && <FixedChip />}
+                <ProgressChip progress={progress} />
+              </p>
+            </div>
+          </li>
+        )
+      })}
+    </ol>
   )
 }

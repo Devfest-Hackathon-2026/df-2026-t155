@@ -1223,6 +1223,8 @@ describe('ReflectionFlow：認証・読み込みの失敗', () => {
     expect(h2s).not.toContain(h1.textContent)
     // 内部の言葉や版番号を、利用者向けの文言に出さない。
     expect(screen.getByRole('button', { name: /振り返る/ }).textContent).not.toMatch(/\d+版/)
-    expect(container.textContent).toContain('保存された修正案は、すべて未承認です')
+    expect(container.textContent).toContain(
+      '未承認の変更や模擬報告は、実際に起きた出来事として学びにしません',
+    )
   })
 })

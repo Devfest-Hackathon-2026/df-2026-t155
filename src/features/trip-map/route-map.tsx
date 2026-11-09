@@ -1,4 +1,4 @@
-import type { Stop, Trip } from '@/domain'
+import { revisionTargetRestriction, type Stop, type Trip } from '@/domain'
 import { GoogleMapsAttribution } from '@/features/legal/google-maps-attribution'
 
 import { EvidenceBadge, UnverifiedBadge } from './evidence-badge'
@@ -23,6 +23,7 @@ interface RouteMapProps {
   meta?: RouteMeta
   selectedStopId?: string | null
   onSelectStop?: (stopId: string) => void
+  onReviseStop?: (stopId: string) => void
   preview?: { stop: Stop; label: string; revisionId: string }
   appliedStopId?: string
   idPrefix?: string
@@ -30,46 +31,52 @@ interface RouteMapProps {
 
 // 予定のボタンのid。詳細シートを閉じたあとのフォーカスの復帰先に使う。
 export const stopButtonId = (stopId: string) => `stop-button-${stopId}`
+export const reviseButtonId = (stopId: string) => `revise-button-${stopId}`
 
 // 路線図の一覧のid。選択中の予定が（親のTripの更新で）無くなったとき、フォーカスの退避先に使う。
 export const ROUTE_LIST_ID = 'trip-route-list'
 
-const RAIL_WIDTH = 68
-const NODE_CENTER_Y = 34
+const NODE_CENTER_Y = 22
 
-// 駅の印。形（輪・二重輪）は予定の「種類」で決め、固定は種類とは別に、ロックの印を重ねて示す。
-function Node({ stop, index, kind }: { stop: Stop; index: number; kind: StopKind }) {
-  const station = kind === 'station'
-  const size = station ? 34 : 28
+// 駅番号に、固定を表す鍵を重ねる。
+function Node({
+  stop,
+  index,
+  muted,
+  center,
+}: {
+  stop: Stop
+  index: number
+  muted: boolean
+  center: number
+}) {
   return (
-    <span
-      aria-hidden="true"
-      className="absolute"
-      style={{ left: station ? 17 : 20, top: NODE_CENTER_Y - size / 2, width: size, height: size }}
-    >
+    <>
       <span
-        className={`flex size-full items-center justify-center rounded-full bg-gt-paper font-mono text-[11px] font-black ${
-          station ? 'border-[6px] border-gt-ink' : 'border-[5px] border-gt-muted'
-        }`}
+        aria-hidden="true"
+        data-station-number
+        style={{ top: center - 13 }}
+        className={`absolute left-[5px] grid size-[27px] place-items-center rounded-full border-[3px] bg-gt-paper text-xs font-bold ${muted || stop.isFixed ? 'border-gt-ink' : 'border-gt-line'}`}
       >
         {index + 1}
       </span>
       {stop.isFixed && (
         <span
+          aria-hidden="true"
           data-fixed-mark
-          className="absolute -right-2.5 -top-2.5 flex size-[18px] items-center justify-center rounded-full border-2 border-gt-bg bg-gt-ink text-white"
+          style={{ top: center - 7 }}
+          className="absolute left-[34px] grid size-3.5 place-items-center rounded bg-gt-ink text-white"
         >
-          <LockIcon size={9} />
+          <LockIcon size={10} />
         </span>
       )}
-    </span>
+    </>
   )
 }
 
-// 「固定予定」のラベル。固定は予約済みを意味しない。表示の形（駅・チケット）とは独立に付ける。
-function FixedChip() {
+export function FixedChip() {
   return (
-    <span className="mb-1 inline-flex items-center gap-1 rounded-[5px] border-[1.5px] border-gt-ink bg-gt-paper py-px pl-1.5 pr-2 text-xs font-semibold text-gt-ink">
+    <span className="inline-flex items-center gap-1 rounded-lg border border-gt-ink bg-gt-paper px-2 py-0.5 text-[11px] leading-tight font-bold text-gt-ink">
       <LockIcon size={11} />
       固定予定
     </span>
@@ -91,7 +98,9 @@ function Evidence({ stop }: { stop: Stop }) {
           <EvidenceBadge evidence={worst} />
         )
       ) : (
-        <UnverifiedBadge />
+        <UnverifiedBadge
+          subject={stop.kind === 'meal' ? '営業時間' : stop.kind === 'sight' ? '施設' : undefined}
+        />
       )}
       {stop.evidence.length > 1 && (
         <span className="text-xs text-gt-muted">ほか{stop.evidence.length - 1}件</span>
@@ -126,7 +135,7 @@ function SegmentLabel({
   }
   return (
     <p
-      className={`mt-2 flex flex-wrap items-center gap-1.5 text-xs text-gt-muted ${travelEvidence ? 'rounded border border-[#5E5E5E] bg-white p-1' : ''}`}
+      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-gt-muted ${travelEvidence ? 'rounded border border-[#5E5E5E] bg-white p-1' : ''}`}
     >
       <svg
         width="12"
@@ -141,8 +150,11 @@ function SegmentLabel({
       >
         <path d="M12 4v15M6 13l6 6 6-6" />
       </svg>
-      <span>{text}</span>
-      {travelEvidence && <GoogleMapsAttribution />}
+      <span className="min-w-0">
+        <span className="block text-[11px]">次の予定までの移動</span>
+        <span className="block font-semibold">{text}</span>
+        {travelEvidence && <GoogleMapsAttribution />}
+      </span>
     </p>
   )
 }
@@ -153,12 +165,14 @@ function StopCard({
   kind,
   selected,
   onSelect,
+  onRevise,
 }: {
   stop: Stop
   meta: RouteStopMeta
   kind: StopKind
   selected?: boolean
   onSelect?: () => void
+  onRevise?: () => void
 }) {
   const worst = worstEvidence(stop.evidence)
   // 読み上げでも、時刻・滞在時間・固定の有無・根拠の代表状態が分かるようにする。
@@ -185,14 +199,17 @@ function StopCard({
       <Card
         {...buttonProps}
         data-variant="station"
-        className={`block min-h-11 w-full rounded-lg py-1 text-left ${selectedRing}`}
+        className={`block min-h-11 w-full rounded-lg text-left ${selectedRing}`}
       >
-        {stop.isFixed && <FixedChip />}
-        <span className="block font-mono text-sm font-semibold text-gt-muted">
+        <span aria-hidden="true" className="block text-xs font-semibold text-gt-muted">
+          {stop.plannedStartTime}
+        </span>
+        <span className="sr-only">
           {stop.plannedStartTime}〜{endTime(stop)}・{stop.durationMinutes}分
         </span>
-        <span className="block wrap-anywhere text-lg font-bold leading-snug">{stop.name}</span>
-        <span className="mt-1 block">
+        <span className="block text-xl leading-tight font-bold wrap-anywhere">{stop.name}</span>
+        <span className="mt-1.5 flex flex-wrap items-center gap-2">
+          {stop.isFixed && <FixedChip />}
           <Evidence stop={stop} />
         </span>
       </Card>
@@ -200,39 +217,48 @@ function StopCard({
   }
 
   return (
-    <Card
-      {...buttonProps}
-      data-variant="ticket"
-      className={`relative flex w-full rounded-[14px] bg-gt-paper text-left shadow-[0_1px_0_rgba(0,0,0,.06),0_8px_18px_-10px_rgba(0,0,0,.35)] ${selectedRing}`}
+    <div
+      className={`gt-food-ticket relative rounded-[14px] border border-gt-rule border-l-[6px] border-l-gt-line bg-gt-paper text-left ${selectedRing}`}
     >
-      <span className="flex w-[70px] flex-none flex-col justify-center gap-1 border-r-2 border-dashed border-gt-rule py-3 pl-3 pr-2">
-        <span className="font-mono text-[18px] font-semibold leading-none">
-          {stop.plannedStartTime}
+      <Card
+        {...buttonProps}
+        data-variant="ticket"
+        className="block w-full rounded-[13px] px-3.5 py-2.5 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-gt-preview"
+      >
+        <span className="flex flex-wrap items-center justify-between gap-x-2">
+          <span className="text-lg leading-tight font-bold">{stop.plannedStartTime}</span>
+          <span className="text-[10px] font-bold tracking-wide text-gt-line-strong">
+            {kind === 'meal' ? 'FOOD TICKET' : 'RESERVATION'}
+          </span>
         </span>
-        <span className="text-xs font-bold text-gt-muted">
-          {kind === 'meal' ? stopKindLabels.meal : stopKindLabels.reserved}
+        <span className="mt-1.5 block text-base leading-snug font-bold wrap-anywhere">
+          {stop.name}
         </span>
-      </span>
-      <span
-        aria-hidden="true"
-        className="absolute -top-2 left-[62px] size-4 rounded-full bg-gt-bg"
-      />
-      <span
-        aria-hidden="true"
-        className="absolute -bottom-2 left-[62px] size-4 rounded-full bg-gt-bg"
-      />
-      <span className="min-w-0 flex-1 px-3 py-2.5">
-        {stop.isFixed && <FixedChip />}
-        <span className="block wrap-anywhere text-base font-bold leading-snug">{stop.name}</span>
-        <span className="mt-0.5 block text-sm text-gt-muted">
+        <span className="sr-only">
           {stop.plannedStartTime}〜{endTime(stop)}・{stop.durationMinutes}分
+        </span>
+        <span className="mt-1 block text-xs text-gt-muted">
+          {stopKindLabels[kind]}・滞在約{stop.durationMinutes}分（予定）
           {meta.price ? `・${meta.price}` : ''}
         </span>
-        <span className="mt-1.5 block">
+        <span className="mt-1.5 flex flex-wrap items-center gap-2">
+          {stop.isFixed && <FixedChip />}
           <Evidence stop={stop} />
         </span>
-      </span>
-    </Card>
+      </Card>
+      {onRevise && (
+        <div className="mx-3.5 border-t border-gt-rule">
+          <button
+            id={reviseButtonId(stop.id)}
+            type="button"
+            onClick={onRevise}
+            className="min-h-11 w-full text-left text-xs font-bold text-gt-line-strong focus-visible:outline-2 focus-visible:outline-gt-preview"
+          >
+            この予定だけ変更して比較
+          </button>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -244,32 +270,40 @@ export function RouteMap({
   meta = {},
   selectedStopId = null,
   onSelectStop,
+  onReviseStop,
   preview,
   appliedStopId,
   idPrefix,
 }: RouteMapProps) {
   const last = trip.stops.length - 1
+  const targetIndex = preview ? trip.stops.findIndex((stop) => stop.id === preview.stop.id) : -1
+  const firstVisible = targetIndex < 0 ? 0 : Math.max(0, targetIndex - 1)
+  const lastVisible = targetIndex < 0 ? last : Math.min(last, targetIndex + 1)
   return (
     // tabIndex=-1：キー操作の順序には入れず、フォーカスを退避できるようにする（outlineは出さない）。
     <ol
       id={idPrefix ? `${idPrefix}-${ROUTE_LIST_ID}` : ROUTE_LIST_ID}
       tabIndex={-1}
       aria-label="旅程の路線図"
-      className="m-0 list-none p-0 outline-none"
+      className={`m-0 list-none p-0 outline-none ${preview ? '' : 'pt-3'}`}
     >
-      {trip.stops.map((stop, index) => {
+      {trip.stops.slice(firstVisible, lastVisible + 1).map((stop, offset) => {
+        const index = firstVisible + offset
         const stopMeta = meta[stop.id] ?? {}
         const kind = routeStopKind(stop, stopMeta) ?? 'other'
         const branch = preview?.stop.id === stop.id ? preview : undefined
+        const center = !preview && (kind === 'meal' || kind === 'reserved') ? 45 : NODE_CENTER_Y
         const nextId = trip.stops[index + 1]?.id
         const nextMeta = nextId ? meta[nextId] : undefined
-        const showSegment = nextId && !branch && preview?.stop.id !== nextId
+        const showSegment = nextId && !preview
         const lineStyle =
-          index === 0
-            ? { top: branch ? 0 : NODE_CENTER_Y, bottom: 0 }
-            : index === last
-              ? { top: 0, height: NODE_CENTER_Y }
-              : { top: 0, bottom: 0 }
+          last === 0
+            ? { display: 'none' }
+            : index === firstVisible
+              ? { top: center, bottom: 0 }
+              : index === lastVisible
+                ? { top: 0, height: center }
+                : { top: 0, bottom: 0 }
         return (
           <li
             key={stop.id}
@@ -277,57 +311,68 @@ export function RouteMap({
             tabIndex={branch ? -1 : undefined}
             className="relative flex scroll-mt-4"
           >
-            <div className="relative flex-none" style={{ width: RAIL_WIDTH }} aria-hidden="true">
+            <div className="relative w-[49px] flex-none" aria-hidden="true">
               <span
-                className="absolute left-[30px] w-2 rounded-sm bg-gt-muted/55"
+                className={`absolute left-4 w-[6px] ${preview ? 'bg-gt-rail' : 'bg-gt-line'}`}
                 style={lineStyle}
               />
               {branch && (
-                <span
-                  key={branch.revisionId}
-                  className="gt-branch-enter absolute inset-y-0 left-[34px] w-6"
+                <svg
+                  aria-hidden="true"
+                  className="gt-branch-enter absolute inset-y-0 left-[19px] h-full w-[66px] overflow-visible text-gt-preview"
+                  viewBox="0 0 55 100"
+                  preserveAspectRatio="none"
                 >
-                  <svg
-                    className="absolute left-0 top-0 text-gt-preview"
-                    width="26"
-                    height="20"
-                    viewBox="0 0 26 20"
+                  <path
+                    d="M0 0 C0 11 49 14 49 30 V70 C49 86 0 89 0 100"
                     fill="none"
-                  >
-                    <path d="M0 0C0 9 24 9 24 20" stroke="currentColor" strokeWidth="3" />
-                  </svg>
-                  <span
-                    className={`absolute left-[22.5px] top-[19px] w-[3px] bg-gt-preview ${index < last ? 'bottom-[19px]' : 'bottom-10'}`}
+                    stroke="currentColor"
+                    strokeWidth="4"
+                    vectorEffect="non-scaling-stroke"
                   />
-                  {index < last && (
-                    <svg
-                      className="absolute bottom-0 left-0 text-gt-preview"
-                      width="26"
-                      height="20"
-                      viewBox="0 0 26 20"
-                      fill="none"
-                    >
-                      <path d="M24 0C24 11 0 11 0 20" stroke="currentColor" strokeWidth="3" />
-                    </svg>
-                  )}
-                </span>
+                </svg>
               )}
-              <Node stop={stop} index={index} kind={kind} />
+              {branch ? (
+                <span className="absolute top-[24px] left-2 size-[22px] rounded-full border-2 border-dotted border-gt-rail bg-gt-bg" />
+              ) : (
+                <Node
+                  stop={stop}
+                  index={index}
+                  muted={Boolean(preview) || index === last}
+                  center={center}
+                />
+              )}
             </div>
-            <div className={`min-w-0 flex-1 pb-5 pt-2 ${preview ? '' : 'pr-3'}`}>
-              {branch && <p className="mb-1 text-sm font-semibold text-gt-muted">現在の予定</p>}
+            <div className={`min-w-0 flex-1 pt-1.5 ${preview ? 'pb-3' : 'pb-6'}`}>
               {appliedStopId === stop.id && (
                 <p className="gt-enter mb-2 border-l-2 border-gt-line pl-2 text-sm font-semibold text-gt-line-strong">
                   変更を反映済み
                 </p>
               )}
-              <StopCard
-                stop={stop}
-                meta={stopMeta}
-                kind={kind}
-                selected={selectedStopId === stop.id}
-                onSelect={onSelectStop ? () => onSelectStop(stop.id) : undefined}
-              />
+              {preview ? (
+                <div
+                  data-variant="station"
+                  className={`flex flex-wrap items-center gap-x-2 text-sm font-bold ${branch ? 'ml-12 font-normal text-gt-muted' : ''}`}
+                >
+                  {branch && <p className="w-full text-xs">元の予定（承認まで維持）</p>}
+                  <span>{stop.plannedStartTime}</span>
+                  <span className="wrap-anywhere">{stop.name}</span>
+                  {stop.isFixed && <FixedChip />}
+                </div>
+              ) : (
+                <StopCard
+                  stop={stop}
+                  meta={stopMeta}
+                  kind={kind}
+                  selected={selectedStopId === stop.id}
+                  onSelect={onSelectStop ? () => onSelectStop(stop.id) : undefined}
+                  onRevise={
+                    onReviseStop && revisionTargetRestriction(stop) === null
+                      ? () => onReviseStop(stop.id)
+                      : undefined
+                  }
+                />
+              )}
               {showSegment && (
                 <SegmentLabel
                   segment={nextMeta?.segmentFromPrevious}
@@ -337,18 +382,23 @@ export function RouteMap({
               {branch && (
                 <div
                   key={branch.revisionId}
-                  className="gt-branch-enter relative mt-3 rounded-xl bg-gt-preview-bg p-2 ring-1 ring-gt-preview/40"
+                  data-variant={kind === 'meal' || kind === 'reserved' ? 'ticket' : 'station'}
+                  className="gt-branch-enter relative mt-2 ml-11 rounded-xl border-2 border-gt-preview bg-gt-paper p-2.5"
                 >
                   <span
                     aria-hidden="true"
-                    className={`absolute -left-[18px] size-4 rounded-full border-[3px] border-gt-preview bg-gt-paper ${index < last ? 'top-3' : 'bottom-3'}`}
-                  />
-                  <p className="mb-1 text-sm font-semibold text-gt-preview">
-                    {branch.label}・変更案
-                  </p>
-                  <StopCard stop={branch.stop} kind={kind} meta={{}} />
+                    className="absolute top-1/2 -left-8 grid size-7 -translate-y-1/2 place-items-center rounded-full border-[3px] border-gt-preview bg-gt-paper text-[11px] font-bold text-gt-preview"
+                  >
+                    {branch.label.split(' ').at(-1)}
+                  </span>
+                  <div className="flex flex-wrap justify-between gap-x-1 text-xs font-bold">
+                    <span>{branch.stop.plannedStartTime}</span>
+                    <span className="text-[11px] text-gt-preview">{branch.label}・未承認</span>
+                  </div>
+                  <p className="mt-1 text-sm font-bold wrap-anywhere">{branch.stop.name}</p>
+                  <p className="mt-1 text-[11px] text-gt-muted">変更は未適用</p>
                   {index < last && (
-                    <p className="mt-2 text-sm text-gt-muted">この先は元の旅程に合流</p>
+                    <p className="mt-1 text-[11px] text-gt-muted">この先は元の旅程に合流</p>
                   )}
                 </div>
               )}

@@ -25,12 +25,14 @@ function useSettled(value: string, delayMs: number): string {
 // 旅行先は入力が落ち着いてから反映する。選んだ学びは地域ごとに有効なため、旅行先が変わると選択は解除される。
 export function HomeLearningPicker({
   region,
+  active = true,
   session,
   load,
   delayMs,
   onSelectionChange,
 }: {
   region: string
+  active?: boolean
   session: SessionScopeState
   load?: LoadLearningOptions
   delayMs: number
@@ -57,6 +59,7 @@ export function HomeLearningPicker({
   return (
     <LearningReusePicker
       region={settledRegion}
+      active={active}
       session={session}
       load={load}
       onSelectionChange={onSelectionChange}

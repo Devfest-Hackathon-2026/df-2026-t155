@@ -26,6 +26,7 @@ export type LearningReuseSelection = ScopedLearningSelection & {
 
 interface LearningReusePickerProps {
   region: string
+  active?: boolean
   // 親が useSessionScope() で得た認証状態。一覧・選択・進行中の読み込みは、UIDと認証世代に
   // 結び付ける。親が選択を保持するときも、同じ状態を使って古い選択を捨てる。
   session: SessionScopeState
@@ -95,6 +96,7 @@ function statusMessage(view: PickerView): string {
 // （サーバーで本人の保存データを再取得し、版を照合する）。
 export function LearningReusePicker({
   region,
+  active = true,
   session,
   onSelectionChange,
   load = defaultLoad,
@@ -129,10 +131,15 @@ export function LearningReusePicker({
     return notify
   }, [])
 
+  // 表示中に読み終えた一覧と選択は、同じ条件へ戻ったときにも使う。
+  const completed = useRef<{ key: ViewKey; attempt: number } | null>(null)
   useEffect(() => {
+    if (!active) return
     const controller = new AbortController()
     const key: ViewKey = { region: normalizedRegion, uid, epoch }
     // 地域・UID・認証世代が変わった、または再読み込みした。前の一覧・選択・進行中の読み込みは使わない。
+    if (completed.current?.attempt === attempt && sameKey(completed.current.key, key)) return
+    completed.current = null
     setState({ key, view: { status: 'loading' } })
     setNotice(selectedCountRef.current > 0 ? clearedNotice : '')
     selectedCountRef.current = 0
@@ -147,7 +154,10 @@ export function LearningReusePicker({
       return () => controller.abort()
     }
 
-    const fail = (message: string) => setState({ key, view: { status: 'error', message } })
+    const fail = (message: string) => {
+      completed.current = { key, attempt }
+      setState({ key, view: { status: 'error', message } })
+    }
     void loadRef.current(scope, controller.signal).then(
       (result) => {
         // 条件が変わった後に届いた応答（古い応答）は採用しない。
@@ -167,6 +177,7 @@ export function LearningReusePicker({
           normalizedRegion,
         )
         const ids = new Set(applicable.map(({ id }) => id))
+        completed.current = { key, attempt }
         setState({
           key,
           view: {
@@ -184,7 +195,7 @@ export function LearningReusePicker({
       },
     )
     return () => controller.abort()
-  }, [normalizedRegion, scope, uid, epoch, attempt])
+  }, [active, normalizedRegion, scope, uid, epoch, attempt])
 
   let visible: PickerView
   if (session.status === 'restoring') {

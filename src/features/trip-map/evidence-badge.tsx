@@ -8,10 +8,10 @@ import { evidenceSourceLabels, evidenceSubjectLabels } from './model'
 type StatusTone = EvidenceStatus | 'unverified'
 
 const styles: Record<StatusTone, string> = {
-  consistent: 'bg-gt-ok-bg text-gt-ok',
-  conflicting: 'bg-gt-warn-bg text-gt-warn',
-  unverifiable: 'bg-gt-unk-bg text-gt-unk',
-  unverified: 'bg-gt-rule/40 text-gt-muted',
+  consistent: 'border-gt-ok/35 bg-gt-ok-bg text-gt-ok',
+  conflicting: 'border-gt-warn/35 bg-gt-warn-bg text-gt-warn',
+  unverifiable: 'border-gt-unk/35 bg-gt-unk-bg text-gt-unk',
+  unverified: 'border-gt-rail/40 bg-gt-unchecked text-gt-muted',
 }
 
 const marks: Record<StatusTone, string> = {
@@ -42,7 +42,7 @@ function Mark({ status }: { status: StatusTone }) {
 export function StatusBadge({ tone, children }: { tone: StatusTone; children: ReactNode }) {
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-semibold leading-snug ${styles[tone]}`}
+      className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[11px] font-semibold leading-snug ${styles[tone]}`}
     >
       <Mark status={tone} />
       {children}
@@ -59,8 +59,8 @@ export function EvidenceBadge({ evidence }: { evidence: Pick<Evidence, 'subject'
 }
 
 // まだ照合していない（evidenceが空）。「確認できない」とは別の状態として示す。
-export function UnverifiedBadge() {
-  return <StatusBadge tone="unverified">未照合</StatusBadge>
+export function UnverifiedBadge({ subject }: { subject?: string }) {
+  return <StatusBadge tone="unverified">{subject ? `${subject}：未照合` : '未照合'}</StatusBadge>
 }
 
 export const checkedAtFormat = new Intl.DateTimeFormat('ja-JP', {

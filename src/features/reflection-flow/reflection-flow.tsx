@@ -2,7 +2,15 @@
 
 import Link from 'next/link'
 
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from 'react'
 
 import type { ApprovedLearning, Trip } from '@/domain'
 import {
@@ -59,6 +67,7 @@ interface ReflectionFlowProps {
   initialTripId?: string
   // 旅程から振り返り画面を開いた場合は、親がページ見出しと戻る操作を出す。
   embedded?: boolean
+  active?: boolean
   // 学びの保存を試みたあとに呼ぶ（成功・失敗にかかわらず）。次の旅の学びの選択を読み込み直すために使う。
   onLearningsChanged?: () => void
 }
@@ -66,9 +75,14 @@ interface ReflectionFlowProps {
 export function ReflectionFlow({
   initialTripId,
   embedded = false,
+  active = true,
   onLearningsChanged,
 }: ReflectionFlowProps) {
   const auth = useSessionScope()
+  const activeRef = useRef(active)
+  useLayoutEffect(() => {
+    activeRef.current = active
+  }, [active])
   const [bootError, setBootError] = useState<TopError | null>(null)
   // 直近に認証済みだったセッション。認証の確認中・失敗の間も、UIDが同じなら画面の内容を保つ。
   // UIDまたは世代が変わったら、新しいセッションに置き換わり、前のセッションの内容は見えなくなる。
@@ -99,6 +113,8 @@ export function ReflectionFlow({
   const [tripsGate] = useState(createRequestGate)
   const [historyGate] = useState(createRequestGate)
   const [savedGate] = useState(createRequestGate)
+  const tripsLoaded = useRef<{ session: HeldSession; key: string } | null>(null)
+  const historyLoaded = useRef<{ session: HeldSession; key: string } | null>(null)
   // いま画面で承認済みの学び（LearningReviewから通知される）。未保存かどうかの判定に使う。
   const approvedRef = useRef<ApprovedLearning[]>(NO_APPROVED)
   const confirmRef = useRef<HTMLDivElement>(null)
@@ -140,25 +156,29 @@ export function ReflectionFlow({
   }, [])
 
   useEffect(() => {
-    void openSession(false)
+    if (active) void openSession(false)
     return () => {
       bootRequestRef.current += 1
     }
-  }, [openSession])
+  }, [active, openSession])
 
   // 保存済みの旅行の取得。認証済みのセッションごとに、そのセッションのトークンで取得する。
   useEffect(() => {
-    if (!visibleHeld) return
+    if (!active || !visibleHeld) return
+    const key = JSON.stringify([tripsAttempt, initialTripId])
+    if (tripsLoaded.current?.session === visibleHeld && tripsLoaded.current.key === key) return
+    tripsLoaded.current = null
     const ticket = tripsGate.begin()
     loadSavedTrips(visibleHeld.scope, { signal: ticket.signal }).then(
       (list) => {
         if (!ticket.isCurrent()) return
+        tripsLoaded.current = { session: visibleHeld, key }
         const warning = isCompleteList(list.listInfo, list.trips.length)
           ? ''
           : '一部の旅程を表示できません。保存データの状態を確認してください。'
         setTripsBound(bind(visibleHeld, { kind: 'ready', trips: list.trips, warning }))
         if (initialTripId && list.trips.some((trip) => trip.id === initialTripId)) {
-          setSelectedTripId(initialTripId)
+          setSelectedTripId((current) => current ?? initialTripId)
         }
       },
       (error: unknown) => {
@@ -167,21 +187,26 @@ export function ReflectionFlow({
       },
     )
     return () => tripsGate.cancel()
-  }, [visibleHeld, tripsAttempt, initialTripId, tripsGate])
+  }, [active, visibleHeld, tripsAttempt, initialTripId, tripsGate])
 
   const trips = valueIn(tripsBound, visibleHeld)
   const tripsReady = trips?.kind === 'ready'
 
   // 選んだ旅行と変更履歴の取得。旅行を選び直したときは、古い応答を採用しない。
   useEffect(() => {
-    if (!visibleHeld || !selectedTripId || !tripsReady) return
+    if (!active || !visibleHeld || !selectedTripId || !tripsReady) return
     const tripId = selectedTripId
+    const key = JSON.stringify([tripId, reloadAttempt])
+    if (historyLoaded.current?.session === visibleHeld && historyLoaded.current.key === key) return
+    historyLoaded.current = null
     const ticket = historyGate.begin()
     setHistoryBound(bind(visibleHeld, { tripId, kind: 'loading' }))
     loadReflectionHistory(visibleHeld.scope, tripId, { signal: ticket.signal }).then(
       (history) => {
-        if (ticket.isCurrent())
+        if (ticket.isCurrent()) {
+          historyLoaded.current = { session: visibleHeld, key }
           setHistoryBound(bind(visibleHeld, { tripId, kind: 'ready', history }))
+        }
       },
       (error: unknown) => {
         if (ticket.isCurrent()) {
@@ -192,14 +217,14 @@ export function ReflectionFlow({
       },
     )
     return () => historyGate.cancel()
-  }, [visibleHeld, selectedTripId, tripsReady, reloadAttempt, historyGate])
+  }, [active, visibleHeld, selectedTripId, tripsReady, reloadAttempt, historyGate])
 
   const historyValue = valueIn(historyBound, visibleHeld)
   const history = selectedTripId && historyValue?.tripId === selectedTripId ? historyValue : null
 
   // 保存済みの学びの取得。保存直後の再取得と重なっても、古い応答が新しい一覧を上書きしない。
   const refreshSaved = useCallback(async () => {
-    if (!visibleHeld) return
+    if (!activeRef.current || !visibleHeld) return
     const ticket = savedGate.begin()
     try {
       const result = await loadSavedLearnings(visibleHeld.scope, { signal: ticket.signal })
@@ -218,12 +243,12 @@ export function ReflectionFlow({
     }
   }, [visibleHeld, savedGate])
   // セッションが変わるとき、画面を閉じるときは、進行中の取得を中止し、結果を採用しない。
-  useEffect(() => () => savedGate.cancel(), [visibleHeld, savedGate])
+  useEffect(() => () => savedGate.cancel(), [active, visibleHeld, savedGate])
 
   const loadedTripId = history?.kind === 'ready' ? history.history.trip.id : null
   useEffect(() => {
-    if (loadedTripId) void refreshSaved()
-  }, [loadedTripId, refreshSaved])
+    if (active && loadedTripId) void refreshSaved()
+  }, [active, loadedTripId, refreshSaved])
 
   const savedValue = valueIn(savedBound, visibleHeld)
   const saved = savedValue?.kind === 'ready' ? savedValue.list : null
@@ -321,7 +346,7 @@ export function ReflectionFlow({
         {!embedded && <h1 className="gt-screen-title">保存した旅行を振り返る</h1>}
         <p className="text-sm">
           保存した旅程を選び、感想と変更履歴から次の旅のための学びを作ります。
-          学びは本人が確認・承認して保存した学びは、次の旅程を作るときに選べます。
+          自分で確認して保存した学びは、次の旅程を作るときに選べます。
         </p>
       </header>
       {sessionNotice && (
@@ -460,7 +485,7 @@ export function ReflectionFlow({
         <section className="space-y-4">
           <p className="gt-card text-sm">
             {history.history.trip.region}（{history.history.trip.date}
-            ）の保存済みデータを表示しています。 保存された修正案は、すべて未承認です。
+            ）の保存済みデータを表示しています。
             未承認の変更や模擬報告は、実際に起きた出来事として学びにしません。
           </p>
           <LearningReview

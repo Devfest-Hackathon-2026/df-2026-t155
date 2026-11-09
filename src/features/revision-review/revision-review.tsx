@@ -3,8 +3,10 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 
 import { MAX_REVISION_REASON_LENGTH, type Revision, type Stop, type Trip } from '@/domain'
+import { ScreenHeader } from '@/features/screen-chrome/screen-header'
+import { LockIcon } from '@/features/trip-map/icons'
 import { StatusBadge } from '@/features/trip-map/evidence-badge'
-import type { RouteMeta } from '@/features/trip-map/model'
+import { routeStopKind, type RouteMeta } from '@/features/trip-map/model'
 import { RouteMap } from '@/features/trip-map/route-map'
 import type { ApplyRevisionResult } from '@/server/persistence/contracts'
 
@@ -54,8 +56,8 @@ const applyMessages = {
 }
 
 const inputClass = 'gt-field px-3 py-2'
-const primaryClass = 'gt-button-primary'
-const secondaryClass = 'gt-button-secondary'
+const primaryClass = 'gt-button-primary min-h-[52px] text-base font-bold'
+const secondaryClass = 'gt-button-secondary border-2 border-gt-ink text-sm font-bold'
 
 function ProgressMark() {
   return (
@@ -77,6 +79,7 @@ const composeReason = (reason: string, preferences: string) =>
 
 interface RevisionReviewProps {
   trip: Trip
+  active?: boolean
   target: Stop
   meta?: RouteMeta
   generate: GenerateRevisions
@@ -102,6 +105,7 @@ const candidateLabel = (index: number) =>
 
 export function RevisionReview({
   trip,
+  active = true,
   target,
   meta,
   generate,
@@ -114,9 +118,12 @@ export function RevisionReview({
   onApplyUnresolvedChange,
   onSiteReport,
 }: RevisionReviewProps) {
+  const isMeal = routeStopKind(target, meta?.[target.id]) === 'meal'
+  const [mealPreference, setMealPreference] = useState('')
   const [reason, setReason] = useState(onSiteReport?.reason ?? '')
   const [preferences, setPreferences] = useState('')
   const [canDrive, setCanDrive] = useState(false)
+  const reasonRequired = !mealPreference
   const [invalidReason, setInvalidReason] = useState(false)
   // 理由と希望条件の合計が上限を超えたときの、結合後の文字数。
   const [reasonLength, setReasonLength] = useState<number | null>(null)
@@ -126,6 +133,7 @@ export function RevisionReview({
   > | null>(null)
   const [review, setReview] = useState<Review | null>(null)
   const [confirming, setConfirming] = useState(false)
+  const [detailed, setDetailed] = useState(false)
   const id = useId()
   const [isGenerating, setIsGenerating] = useState(false)
   const [isApplying, setIsApplying] = useState(false)
@@ -140,22 +148,56 @@ export function RevisionReview({
   const preferencesField = useRef<HTMLTextAreaElement>(null)
   const submitButton = useRef<HTMLButtonElement>(null)
   const cancelButton = useRef<HTMLButtonElement>(null)
-  const stage = !review ? 'reason' : confirming ? 'confirm' : 'preview'
+  const stage = !review ? 'reason' : detailed ? 'detail' : confirming ? 'confirm' : 'preview'
 
-  useEffect(() => {
-    heading.current?.focus()
-  }, [stage])
+  const previewReturn = useRef<{ control: 'detail' | 'confirm'; top: number } | null>(null)
+  const previewDetail = useRef<HTMLButtonElement>(null)
+  const previewConfirm = useRef<HTMLButtonElement>(null)
+  const shownStage = useRef<typeof stage | null>(null)
 
   useLayoutEffect(() => {
-    if (!generationFailure) return
+    if (!active && activeGeneration.current) {
+      activeGeneration.current.abort()
+      activeGeneration.current = null
+      setIsGenerating(false)
+      setGenerationFailure({ status: 'interrupted' })
+    }
+  }, [active])
+
+  useEffect(() => {
+    if (!active) {
+      shownStage.current = null
+      return
+    }
+    if (shownStage.current === stage) return
+    shownStage.current = stage
+    if (stage === 'preview' && previewReturn.current) {
+      const { control, top } = previewReturn.current
+      previewReturn.current = null
+      const trigger = control === 'detail' ? previewDetail.current : previewConfirm.current
+      trigger?.focus({ preventScroll: true })
+      if (window.scrollY !== top) window.scrollTo({ top, behavior: 'instant' })
+      return
+    }
+    heading.current?.focus()
+  }, [active, stage])
+
+  const openPreviewStep = (control: 'detail' | 'confirm') => {
+    previewReturn.current = { control, top: window.scrollY }
+    if (control === 'detail') setDetailed(true)
+    else setConfirming(true)
+  }
+
+  useLayoutEffect(() => {
+    if (!active || !generationFailure) return
     // disabledが反映されたDOMで判定し、待機中に移したフォーカスを維持する。
-    const active = document.activeElement
-    if (active && active !== document.body && !active.matches(':disabled')) return
+    const focused = document.activeElement
+    if (focused && focused !== document.body && !focused.matches(':disabled')) return
 
     const submit = submitButton.current
     const destination = submit && !submit.disabled ? submit : cancelButton.current
     destination?.focus()
-  }, [generationFailure])
+  }, [active, generationFailure])
 
   // 親はTrip差し替え時にこのセッションを閉じる。コミット時点で古い応答を無効にする。
   useLayoutEffect(
@@ -192,18 +234,27 @@ export function RevisionReview({
 
   const generateCandidates = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (!active) return
     if (!generationAvailable) {
       setGenerationFailure({ status: 'unavailable' })
       return
     }
     if (activeGeneration.current || generationFailure?.status === 'conflict') return
-    if (!reason.trim()) {
+    const useDefaultReason =
+      !onSiteReport &&
+      event.nativeEvent instanceof SubmitEvent &&
+      event.nativeEvent.submitter?.getAttribute('value') === 'any'
+    const requestedReason = [mealPreference, reason.trim()].filter(Boolean).join('\n')
+    if (!useDefaultReason && !requestedReason) {
       setInvalidReason(true)
       reasonField.current?.focus()
       return
     }
     // PR #28のリクエストでは、理由と希望条件を一つのフィールドで渡す。
-    const requestReason = composeReason(reason, preferences)
+    const requestReason = composeReason(
+      requestedReason || 'おまかせで別の場所を探したい',
+      preferences,
+    )
     if (requestReason.length > MAX_REASON_LENGTH) {
       // 保存契約の上限を超える依頼は作らない。送信は止めず、短くする欄を示して移る。
       setReasonLength(requestReason.length)
@@ -235,6 +286,8 @@ export function RevisionReview({
       const proposal = readRevisionProposal(result, request)
       if (proposal) {
         setConfirming(false)
+        setDetailed(false)
+        previewReturn.current = null
         setReview({ request, proposal, selected: 0 })
       } else {
         setGenerationFailure({ status: 'unexpected' })
@@ -286,6 +339,7 @@ export function RevisionReview({
           ? '車を使える場合は、条件を見直して車での移動も確認できます。'
           : null
   const reviewConditions = () => {
+    previewReturn.current = null
     setReview(null)
     setApplyFailure(null)
   }
@@ -389,33 +443,57 @@ export function RevisionReview({
   }
 
   return (
-    <section
-      aria-labelledby={`${id}-heading`}
-      className="mx-auto max-w-[34rem] space-y-4 rounded-2xl bg-gt-bg p-3 text-gt-ink sm:p-5"
-    >
-      <header className="space-y-2">
-        <p key={stage} className="gt-enter text-sm font-semibold text-gt-muted">
-          部分修正 {stage === 'reason' ? '1' : stage === 'preview' ? '2' : '3'} / 3
-        </p>
-        <h2 id={`${id}-heading`} tabIndex={-1} ref={heading} className="gt-screen-title">
-          {stage === 'reason'
+    <section aria-labelledby={`${id}-heading`} className="space-y-4 text-gt-ink">
+      <ScreenHeader
+        headingId={`${id}-heading`}
+        headingRef={heading}
+        title={
+          stage === 'reason'
             ? 'この予定だけ変更'
             : stage === 'preview'
               ? '候補を選ぶ'
-              : '変更内容の確認'}
-        </h2>
-        <p className="text-sm font-bold wrap-anywhere">
-          {target.plannedStartTime}　{target.name}
-        </p>
-        <p className="text-sm text-gt-muted">
-          開始時刻と滞在時間を維持し、この予定の場所だけを変更します。
-        </p>
-        {stage === 'confirm' && review && (
-          <p className="whitespace-pre-wrap text-sm text-gt-muted wrap-anywhere">
-            {review.request.reason}
+              : stage === 'detail'
+                ? '詳しく比較'
+                : '変更内容の確認'
+        }
+        subtitle={
+          stage === 'reason'
+            ? 'どんな場所に変えたい？'
+            : stage === 'confirm'
+              ? '承認する前の確認です'
+              : review?.request.reason
+        }
+        backLabel={
+          stage === 'confirm'
+            ? '候補の選択へ戻る'
+            : stage === 'detail'
+              ? '比較から戻る'
+              : '部分修正を閉じる'
+        }
+        onBack={
+          stage === 'confirm'
+            ? () => setConfirming(false)
+            : stage === 'detail'
+              ? () => setDetailed(false)
+              : onCancel
+        }
+        disabled={isApplying || ((stage === 'confirm' || stage === 'detail') && requiresLatestTrip)}
+      />
+
+      {stage === 'reason' && (
+        <div className="space-y-2.5">
+          <div className="rounded-[14px] border border-gt-line border-l-[6px] bg-gt-paper px-3.5 py-2.5">
+            <p className="text-xs font-bold text-gt-line-strong">変える予定（1つだけ）</p>
+            <p className="text-lg font-bold wrap-anywhere">
+              {target.plannedStartTime}　{target.name}
+            </p>
+          </div>
+          <p className="flex items-start gap-1.5 text-xs font-semibold">
+            <LockIcon size={14} />
+            <span>他の予定・固定時刻は変わりません。開始時刻と滞在時間を維持します。</span>
           </p>
-        )}
-      </header>
+        </div>
+      )}
 
       <p role="status" aria-atomic="true" className="sr-only">
         {review
@@ -426,17 +504,74 @@ export function RevisionReview({
       </p>
 
       {!review && (
-        <form className="gt-card gt-enter space-y-4" onSubmit={generateCandidates} noValidate>
+        <form className="gt-enter space-y-4" onSubmit={generateCandidates} noValidate>
           <fieldset
             disabled={isGenerating || generationFailure?.status === 'conflict'}
             className="min-w-0 space-y-3"
           >
             <legend className="sr-only">部分修正の条件</legend>
+            {!onSiteReport && isMeal && (
+              <div className="grid gap-2.5" role="group" aria-label="食事の希望">
+                {[
+                  {
+                    label: '安い',
+                    icon: '¥',
+                    value: 'もっと安いお店にしたい',
+                    hint: '予算を抑えたいという希望を候補探しに使います',
+                  },
+                  {
+                    label: '早い',
+                    icon: '◷',
+                    value: '移動時間を短くしたい',
+                    hint: '確認できた移動時間で比べます',
+                  },
+                  {
+                    label: 'うまい',
+                    icon: '♨',
+                    value: '料理の好みを重視したい',
+                    hint: '料理の好みを重視します。おいしさを保証するものではありません',
+                  },
+                ].map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    aria-pressed={mealPreference === option.value}
+                    className="flex min-h-[70px] items-center gap-3 rounded-[14px] border border-gt-rail bg-gt-paper px-3.5 py-2.5 text-left aria-pressed:border-gt-action aria-pressed:bg-gt-line-tint focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview"
+                    onClick={() => {
+                      setMealPreference((current) => (current === option.value ? '' : option.value))
+                      setInvalidReason(false)
+                      setReasonLength(null)
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="grid size-10 shrink-0 place-items-center rounded-full border-2 border-gt-action bg-gt-line-tint text-xl font-bold text-gt-line-strong"
+                    >
+                      {option.icon}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-lg font-bold">{option.label}</span>
+                      <span className="block text-xs text-gt-muted">{option.hint}</span>
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className={`size-5 shrink-0 rounded-full border-2 ${mealPreference === option.value ? 'border-gt-action bg-gt-action ring-2 ring-white ring-inset' : 'border-gt-muted'}`}
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
             <label className="block space-y-1 text-sm font-semibold">
-              <span>{onSiteReport ? '現地の報告内容' : '修正理由（必須）'}</span>
+              <span>
+                {onSiteReport
+                  ? '現地の報告内容'
+                  : reasonRequired
+                    ? '修正理由（必須）'
+                    : '修正理由（任意）'}
+              </span>
               <textarea
                 ref={reasonField}
-                required
+                required={reasonRequired}
                 rows={2}
                 maxLength={500}
                 className={inputClass}
@@ -463,7 +598,8 @@ export function RevisionReview({
               <span>希望条件（任意）</span>
               <textarea
                 ref={preferencesField}
-                rows={2}
+                placeholder={isMeal ? '例：あたたかい麺、和食' : undefined}
+                rows={1}
                 maxLength={500}
                 className={inputClass}
                 value={preferences}
@@ -490,27 +626,6 @@ export function RevisionReview({
               車を利用できる（通常は徒歩で確認）
             </label>
           </fieldset>
-          <div className="flex flex-wrap gap-2">
-            <button ref={cancelButton} type="button" className={secondaryClass} onClick={onCancel}>
-              {cancelLabel}
-            </button>
-            <button
-              ref={submitButton}
-              type="submit"
-              className={`flex-1 ${primaryClass}`}
-              disabled={
-                !generationAvailable || isGenerating || generationFailure?.status === 'conflict'
-              }
-            >
-              {isGenerating ? '候補を生成中…' : '変更候補を探す'}
-            </button>
-          </div>
-          {isGenerating && (
-            <p aria-hidden="true" className="gt-enter flex items-center gap-2 text-sm">
-              <ProgressMark />
-              候補を探し、営業時間や移動にかかる時間を確認しています。
-            </p>
-          )}
           {generationFailure && (
             <div role="alert" className="gt-notice gt-enter space-y-1" data-tone="error">
               <p className="font-bold text-gt-warn">
@@ -520,160 +635,283 @@ export function RevisionReview({
               <p>元の旅程を表示しています。</p>
             </div>
           )}
+          <div className="grid gap-2.5">
+            <button
+              ref={submitButton}
+              type="submit"
+              className={primaryClass}
+              disabled={
+                !generationAvailable || isGenerating || generationFailure?.status === 'conflict'
+              }
+            >
+              {isGenerating ? '候補を生成中…' : '変更候補を探す'}
+            </button>
+            {!onSiteReport && !mealPreference && !reason.trim() && (
+              <button
+                type="submit"
+                value="any"
+                className={`${secondaryClass} min-h-[52px]`}
+                disabled={
+                  !generationAvailable || isGenerating || generationFailure?.status === 'conflict'
+                }
+              >
+                {preferences.trim() ? '入力した希望で探す' : 'こだわらない（おまかせで探す）'}
+              </button>
+            )}
+            <button
+              ref={cancelButton}
+              type="button"
+              className="min-h-11 justify-self-start text-sm font-bold underline"
+              onClick={onCancel}
+            >
+              {cancelLabel}
+            </button>
+          </div>
+          <p className="gt-card px-3 py-2 text-xs text-gt-muted">
+            選んだ条件は、探すときの希望です。確認できない情報は、確認できないと表示します。
+          </p>
+          {isGenerating && (
+            <p aria-hidden="true" className="gt-enter flex items-center gap-2 text-sm">
+              <ProgressMark />
+              候補を探し、営業時間や移動にかかる時間を確認しています。
+            </p>
+          )}
         </form>
       )}
 
       {stage === 'preview' && review && candidate && (
-        <div className="gt-enter space-y-3">
-          <p className="text-sm font-semibold" role="status">
-            {approvableCount === 0 ? '承認できる候補はありません' : `承認可能 ${approvableCount}件`}
-            {review.proposal.revisions.length > approvableCount &&
-              ` ／ 承認不可 ${review.proposal.revisions.length - approvableCount}件`}
-          </p>
-          <div
-            role="group"
-            aria-label="変更候補を切り替える"
-            className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] gap-2"
-          >
-            {review.proposal.revisions.map((revision, index) => (
-              <button
-                key={revision.id}
-                type="button"
-                aria-pressed={review.selected === index}
-                disabled={isApplying}
-                data-approvable={isApprovable(revision)}
-                className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border border-gt-muted bg-gt-paper p-2 text-sm font-semibold aria-pressed:border-gt-preview aria-pressed:outline-2 aria-pressed:outline-gt-preview aria-pressed:data-[approvable=true]:bg-gt-preview-bg"
-                onClick={() => {
-                  setReview({ ...review, selected: index })
-                  if (!requiresLatestTrip) setApplyFailure(null)
-                }}
-              >
-                <span>{candidateLabel(index)}</span>
-                <span className={isApprovable(revision) ? 'text-gt-ok' : 'text-gt-muted'}>
-                  {isApprovable(revision) ? '承認可能' : '承認不可'}
-                </span>
-              </button>
-            ))}
+        <>
+          <div className="space-y-2">
+            <p className="text-xs font-bold">他の予定・固定時刻は変わりません</p>
+            <RouteMap
+              idPrefix={id}
+              trip={trip}
+              meta={meta}
+              preview={{ stop: candidate.diff.after, label, revisionId: candidate.id }}
+            />
           </div>
-          <section className="gt-card space-y-3" aria-label="選択中の候補の概要">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="font-bold">
-                {label}　{candidate.diff.after.name}
-              </h3>
-              <ConstraintBadge status={candidate.constraintCheck.status} />
-              <StatusBadge tone="unverified">{approvalStatus}</StatusBadge>
+          <div className="gt-enter gt-preview-panel space-y-3 pt-2 pb-3">
+            <div aria-hidden="true" className="mx-auto h-1 w-11 rounded-full bg-gt-rule" />
+            <h3 className="text-lg font-bold">変える前に、根拠を比較</h3>
+            <p className="text-sm font-semibold" role="status">
+              {approvableCount === 0
+                ? '承認できる候補はありません'
+                : `承認可能 ${approvableCount}件`}
+              {review.proposal.revisions.length > approvableCount &&
+                ` ／ 承認不可 ${review.proposal.revisions.length - approvableCount}件`}
+            </p>
+            <div
+              role="group"
+              aria-label="変更候補を切り替える"
+              className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] gap-2"
+            >
+              {review.proposal.revisions.map((revision, index) => (
+                <button
+                  key={revision.id}
+                  type="button"
+                  aria-pressed={review.selected === index}
+                  disabled={isApplying}
+                  aria-label={`${candidateLabel(index)} ${isApprovable(revision) ? '承認可能' : '承認不可'}`}
+                  className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border border-gt-rule bg-gt-paper p-2 text-xs font-semibold aria-pressed:border-gt-preview aria-pressed:bg-gt-preview-bg focus-visible:outline-2 focus-visible:outline-gt-preview"
+                  onClick={() => {
+                    setReview({ ...review, selected: index })
+                    if (!requiresLatestTrip) setApplyFailure(null)
+                  }}
+                >
+                  <span className="text-lg">{candidateLabel(index).slice(3)}</span>
+                  <span className={isApprovable(revision) ? 'text-gt-ok' : 'text-gt-muted'}>
+                    {isApprovable(revision) ? '承認可能' : '承認不可'}
+                  </span>
+                </button>
+              ))}
             </div>
-            {blockers.length > 0 && (
-              <div className="gt-notice space-y-1" data-tone="error">
-                <ul className="list-disc space-y-1 pl-5">
-                  {blockers.map((blocker) => (
-                    <li key={blocker}>{blocker}</li>
-                  ))}
-                </ul>
-                <p>この確認は候補に共通します。候補を切り替えるだけでは解消しません。</p>
+            <section className="space-y-3" aria-label="選択中の候補の概要">
+              <div
+                className={`flex flex-wrap items-center gap-2 rounded-xl p-2.5 ${constraintSatisfied ? 'bg-gt-ok-bg' : 'bg-gt-unk-bg'}`}
+              >
+                <h3 className="font-bold">
+                  {label}　{candidate.diff.after.name}
+                </h3>
+                <ConstraintBadge status={candidate.constraintCheck.status} />
+                <StatusBadge tone="unverified">{approvalStatus}</StatusBadge>
               </div>
-            )}
-            {!constraintSatisfied && (
-              <p className="text-sm">{candidate.constraintCheck.explanation}</p>
-            )}
-            {constraintSatisfied && approvalNote && <p className="text-sm">{approvalNote}</p>}
-            <CandidatePreviewSummary trip={trip} revision={candidate} comparison={comparison} />
-            {conditionsHint && (
-              <div className="space-y-1">
-                <p className="text-sm">{conditionsHint}</p>
+              {blockers.length > 0 && (
+                <div className="gt-notice space-y-1" data-tone="error">
+                  <ul className="list-disc space-y-1 pl-5">
+                    {blockers.map((blocker) => (
+                      <li key={blocker}>{blocker}</li>
+                    ))}
+                  </ul>
+                  <p>この確認は候補に共通します。候補を切り替えるだけでは解消しません。</p>
+                </div>
+              )}
+              {!constraintSatisfied && (
+                <p className="text-sm">{candidate.constraintCheck.explanation}</p>
+              )}
+              {constraintSatisfied && approvalNote && <p className="text-sm">{approvalNote}</p>}
+              {(conditionsHint ||
+                (approvableCount === 0 &&
+                  canReviewConditions &&
+                  !requiresLatestTrip &&
+                  !simulated &&
+                  apply)) && (
+                <div className="space-y-1">
+                  <p className="text-sm">
+                    {conditionsHint ??
+                      '条件を見直して別の候補を探すか、元の予定を使い続けられます。'}
+                  </p>
+                  <button
+                    type="button"
+                    className={secondaryClass}
+                    disabled={requiresLatestTrip}
+                    onClick={reviewConditions}
+                  >
+                    条件を見直す
+                  </button>
+                </div>
+              )}
+              <button
+                type="button"
+                className="min-h-11 text-left text-xs font-bold text-gt-line-strong underline underline-offset-2"
+                ref={previewDetail}
+                onClick={() => openPreviewStep('detail')}
+              >
+                詳しく比較
+              </button>
+              <div className="grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2.5">
+                <button type="button" className={secondaryClass} onClick={onCancel}>
+                  {requiresLatestTrip ? '旅程を確認' : cancelLabel}
+                </button>
                 <button
                   type="button"
-                  className={secondaryClass}
-                  disabled={requiresLatestTrip}
-                  onClick={reviewConditions}
+                  ref={previewConfirm}
+                  className={primaryClass}
+                  onClick={() => openPreviewStep('confirm')}
                 >
-                  条件を見直す
+                  変更内容を確認する
                 </button>
               </div>
-            )}
-            <div className="flex flex-wrap gap-2">
-              <button type="button" className={secondaryClass} onClick={onCancel}>
-                {requiresLatestTrip ? '旅程を確認' : cancelLabel}
-              </button>
-              <button
-                type="button"
-                className={canApprove ? primaryClass : secondaryClass}
-                onClick={() => setConfirming(true)}
-              >
-                変更内容を確認する
-              </button>
-            </div>
-          </section>
-          <div className="flex flex-wrap items-center gap-2">
-            <a
-              href={`#${encodeURIComponent(`${id}-stop-${target.id}`)}`}
-              className="inline-flex min-h-11 items-center text-sm font-semibold text-gt-preview underline underline-offset-2"
-            >
-              路線図の分岐を見る
-            </a>
+              <CandidatePreviewSummary trip={trip} revision={candidate} comparison={comparison} />
+            </section>
           </div>
-        </div>
+        </>
       )}
 
-      {(stage === 'preview' || generationFailure) && (
-        <RouteMap
-          idPrefix={id}
-          trip={trip}
-          meta={meta}
-          preview={candidate && { stop: candidate.diff.after, label, revisionId: candidate.id }}
-        />
+      {generationFailure && <RouteMap idPrefix={id} trip={trip} meta={meta} />}
+
+      {stage === 'detail' && candidate && (
+        <>
+          <div className="flex flex-wrap gap-1.5 text-xs font-bold">
+            <span className="rounded-lg border border-gt-preview bg-gt-preview-bg px-2 py-0.5 text-gt-preview">
+              {label}（未承認）
+            </span>
+            <span className="rounded-lg border border-gt-rail bg-gt-bg px-2 py-0.5 text-gt-muted">
+              変更前＝元の予定
+            </span>
+          </div>
+          <CandidateComparison
+            trip={trip}
+            revision={candidate}
+            label={label}
+            comparison={comparison}
+          />
+          <div className="grid grid-cols-2 gap-2.5">
+            <button type="button" className={secondaryClass} onClick={() => setDetailed(false)}>
+              戻る
+            </button>
+            <button
+              type="button"
+              className={primaryClass}
+              onClick={() => {
+                setDetailed(false)
+                setConfirming(true)
+              }}
+            >
+              変更内容を確認する
+            </button>
+          </div>
+        </>
       )}
 
       {stage === 'confirm' && candidate && (
         <>
-          <section className="gt-card space-y-3" aria-labelledby={`${id}-comparison`}>
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 id={`${id}-comparison`} className="text-lg font-bold">
-                {label}の根拠と変更内容
-              </h3>
-              <StatusBadge tone="unverified">{approvalStatus}</StatusBadge>
-            </div>
-            <button
-              type="button"
-              className={secondaryClass}
-              disabled={isApplying || requiresLatestTrip}
-              onClick={() => setConfirming(false)}
-            >
-              候補の選択へ戻る
-            </button>
-            <CandidateComparison
-              key={candidate.id}
-              trip={trip}
-              revision={candidate}
-              label={label}
-              comparison={comparison}
-            />
-            {canReviewConditions && (
-              <button
-                type="button"
-                className="min-h-11 text-sm font-bold underline disabled:opacity-50"
-                disabled={isApplying || requiresLatestTrip}
-                onClick={reviewConditions}
-              >
-                条件を見直す
-              </button>
-            )}
+          <div className="space-y-2">
+            <h3 className="text-xl leading-tight font-bold wrap-anywhere">
+              「{candidate.diff.after.name}」に変更します
+            </h3>
+            <span className="inline-flex rounded-lg border border-gt-preview bg-gt-preview-bg px-2 py-0.5 text-[11px] font-bold text-gt-preview">
+              <span>{approvalStatus}</span>
+              {candidate.approval.status === 'pending' && !isApplying && !requiresLatestTrip
+                ? '・まだ旅程に反映されていません'
+                : ''}
+            </span>
+          </div>
+          <section className="gt-card space-y-2 rounded-[14px] border-[3px] border-gt-line p-3.5">
+            <h3 className="text-sm font-bold text-gt-line-strong">変更されるもの</h3>
+            <p className="border-t border-gt-rule pt-2 text-sm wrap-anywhere">
+              <span className="block text-xs text-gt-muted">{target.plannedStartTime}の予定</span>
+              {target.name} → <strong>{candidate.diff.after.name}</strong>
+            </p>
           </section>
-          <footer className="space-y-2 border-t border-gt-rule bg-gt-bg py-2 pb-[max(8px,env(safe-area-inset-bottom))]">
+          <section className="gt-card space-y-2 rounded-[14px] border-2 border-gt-rail bg-[#ecebe5] p-3.5">
+            <h3 className="flex items-center gap-1.5 text-sm font-bold">
+              <LockIcon size={14} />
+              変更されないもの
+            </h3>
+            <ul className="divide-y divide-gt-rule border-t border-gt-rule text-sm">
+              {trip.stops
+                .filter((stop) => stop.id !== target.id)
+                .map((stop) => (
+                  <li
+                    key={stop.id}
+                    className="flex flex-wrap items-center justify-between gap-x-2 py-1.5 wrap-anywhere"
+                  >
+                    <span>
+                      {stop.plannedStartTime} {stop.name}
+                    </span>
+                    {stop.isFixed && (
+                      <span className="rounded-md border border-gt-ink bg-gt-paper px-1.5 text-[11px] font-bold">
+                        固定・変更なし
+                      </span>
+                    )}
+                  </li>
+                ))}
+            </ul>
+          </section>
+          <CandidateComparison
+            trip={trip}
+            revision={candidate}
+            label={label}
+            comparison={comparison}
+            compact
+          />
+          <footer className="space-y-2 pb-[max(8px,env(safe-area-inset-bottom))]">
             {applyFailure && (
               <div role="alert" className="gt-notice gt-enter font-semibold" data-tone="error">
                 {applyMessages[applyFailure.status]} {applyFailure.message}
               </div>
             )}
             {approvalNote && (
-              <p id={`${id}-approval-note`} className="text-sm text-gt-muted">
+              <p
+                id={`${id}-approval-note`}
+                className="rounded-[14px] border border-gt-unk/60 bg-gt-unk-bg p-3 text-sm text-gt-unk"
+              >
                 {approvalNote}
               </p>
             )}
-            <div className="flex flex-wrap gap-2">
+            <div className="grid gap-2.5">
               <button
                 type="button"
-                className={secondaryClass}
+                className={primaryClass}
+                aria-disabled={!canApprove || !apply || isApplying}
+                aria-describedby={approvalNote ? `${id}-approval-note` : undefined}
+                onClick={() => void approve()}
+              >
+                {isApplying ? '適用を確認中…' : '承認して適用を依頼'}
+              </button>
+              <button
+                type="button"
+                className={`${secondaryClass} min-h-[52px]`}
                 disabled={isApplying}
                 onClick={onCancel}
               >
@@ -681,17 +919,21 @@ export function RevisionReview({
                   ? '旅程を確認'
                   : cancelLabel}
               </button>
-              <button
-                type="button"
-                className={`flex-1 ${primaryClass}`}
-                aria-disabled={!canApprove || !apply || isApplying}
-                aria-describedby={approvalNote ? `${id}-approval-note` : undefined}
-                onClick={() => void approve()}
-              >
-                {isApplying ? '適用を確認中…' : '承認して適用を依頼'}
-              </button>
             </div>
+            <p className="text-xs text-gt-muted">
+              変更する前に、固定予定や時刻の条件をサーバーでもう一度確認します。
+            </p>
           </footer>
+          {canReviewConditions && (
+            <button
+              type="button"
+              className="min-h-11 text-sm font-bold underline disabled:opacity-50"
+              disabled={isApplying || requiresLatestTrip}
+              onClick={reviewConditions}
+            >
+              条件を見直す
+            </button>
+          )}
         </>
       )}
     </section>

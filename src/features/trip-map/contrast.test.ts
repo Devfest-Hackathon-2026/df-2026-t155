@@ -35,6 +35,7 @@ describe('路線図UIの文字のコントラスト（4.5:1以上）', () => {
     ['チケット（白）の上の本文', () => ratio(token('ink'), token('paper'))],
     ['地の上の補足（muted）', () => ratio(token('muted'), token('bg'))],
     ['チケット（白）の上の補足', () => ratio(token('muted'), token('paper'))],
+    ['主操作の白い文字', () => ratio(WHITE, token('action'))],
     ['ロックの印（白い印）', () => ratio(WHITE, token('ink'))],
     ['部分修正ボタン（白い文字）', () => ratio(WHITE, token('ink'))],
     ['選択中の変更候補（路線図の地）', () => ratio(token('preview'), token('bg'))],
@@ -49,9 +50,12 @@ describe('路線図UIの文字のコントラスト（4.5:1以上）', () => {
     expect(compute()).toBeGreaterThanOrEqual(4.5)
   })
 
-  it.each(['muted', 'ok', 'warn'])('通知の境界線（%s）はページの地色と区別できる', (name) => {
-    expect(ratio(token(name), token('bg'))).toBeGreaterThanOrEqual(3)
-  })
+  it.each(['muted', 'ok', 'warn', 'rail'])(
+    '通知の境界線（%s）はページの地色と区別できる',
+    (name) => {
+      expect(ratio(token(name), token('bg'))).toBeGreaterThanOrEqual(3)
+    },
+  )
 
   it.each([
     ['空欄・disabled', 'muted'],

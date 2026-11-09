@@ -1,6 +1,9 @@
 import type { ConstraintCheck, Revision, Stop, Trip } from '@/domain'
 
-import { GoogleMapsSourceBox } from '@/features/legal/google-maps-attribution'
+import {
+  GoogleMapsAttribution,
+  GoogleMapsSourceBox,
+} from '@/features/legal/google-maps-attribution'
 import {
   EvidenceDetail,
   StatusBadge,
@@ -95,12 +98,14 @@ function TravelValue({
   compare = false,
   inline = false,
   showCheckedAt = true,
+  showSource = !inline,
 }: {
   slot?: TravelSlot
   baseline?: TravelSlot
   compare?: boolean
   inline?: boolean
   showCheckedAt?: boolean
+  showSource?: boolean
 }) {
   if (slot?.presence === 'none') return <>該当区間なし</>
   const segment = slot?.segment
@@ -125,7 +130,7 @@ function TravelValue({
           {travelDifference(baseline, slot) ?? '時間差：未確認'}
         </span>
       )}
-      {!inline && segment?.status === 'known' && (
+      {showSource && segment?.status === 'known' && (
         <span className="block text-xs text-gt-muted">{segment.source.label}</span>
       )}
       {checkedAt && showCheckedAt && (
@@ -138,9 +143,14 @@ function TravelValue({
     </>
   )
   return segment?.status === 'known' && segment.source.kind === 'routes' ? (
-    <GoogleMapsSourceBox caption="Google Mapsの移動時間" compact>
-      {content}
-    </GoogleMapsSourceBox>
+    <div
+      role="group"
+      aria-label="Google Mapsの移動時間"
+      className="rounded border border-[#5e5e5e] bg-white px-[3px] py-1 text-gt-ink"
+    >
+      <div>{content}</div>
+      <GoogleMapsAttribution />
+    </div>
   ) : (
     content
   )
@@ -151,20 +161,28 @@ function VerificationScope({
   previous,
   next,
   comparison,
+  compact = false,
 }: {
   stop: Stop
   previous?: Stop
   next?: Stop
   comparison?: TravelComparison
+  compact?: boolean
 }) {
   const items = [
     { label: '施設の特定', evidence: checkStopEvidence(stop, 'place_identity') },
     { label: '営業時間', evidence: checkStopEvidence(stop, 'opening_hours') },
   ]
-  const googleEvidence = stop.evidence.filter(
-    (item) =>
-      item.source.kind === 'places' &&
-      (item.subject === 'place_identity' || item.subject === 'opening_hours'),
+  const placeEvidence = stop.evidence.filter(
+    ({ subject }) => subject === 'place_identity' || subject === 'opening_hours',
+  )
+  const googleEvidence = placeEvidence.filter(({ source }) => source.kind === 'places')
+  const otherSources = new Set(
+    placeEvidence
+      .filter(({ source }) => source.kind !== 'places')
+      .map(({ source }) =>
+        source.kind === 'simulation' ? `${source.label}（模擬）` : source.label,
+      ),
   )
   return (
     <div className="space-y-1 text-sm leading-relaxed text-gt-muted">
@@ -183,24 +201,46 @@ function VerificationScope({
         {previous && (
           <li>
             前の予定から：
-            <TravelValue slot={comparison?.after.fromPrevious} inline />
+            <TravelValue
+              slot={comparison?.after.fromPrevious}
+              baseline={comparison?.before.fromPrevious}
+              compare={compact}
+              showSource={compact}
+              inline
+            />
           </li>
         )}
         {next && (
           <li>
             次の予定まで：
-            <TravelValue slot={comparison?.after.toNext} inline />
+            <TravelValue
+              slot={comparison?.after.toNext}
+              baseline={comparison?.before.toNext}
+              compare={compact}
+              showSource={compact}
+              inline
+            />
           </li>
         )}
       </ul>
-      {googleEvidence.length > 0 && (
-        <GoogleMapsSourceBox caption="候補のGoogle Maps照合">
-          {googleEvidence.map((evidence) => (
-            <EvidenceDetail key={evidence.id} evidence={evidence} />
-          ))}
-        </GoogleMapsSourceBox>
-      )}
-      <p>臨時休業・渋滞・遅延は確認の対象外です。</p>
+      {googleEvidence.length > 0 &&
+        (compact ? (
+          <div className="flex flex-wrap items-center justify-between gap-x-2 rounded border border-[#5e5e5e] bg-white px-2 py-1">
+            <span>
+              候補の照合に使った出典：
+              {[...new Set(googleEvidence.map(({ source }) => source.label))].join('、')}
+            </span>
+            <GoogleMapsAttribution />
+          </div>
+        ) : (
+          <GoogleMapsSourceBox caption="候補のGoogle Maps照合">
+            {googleEvidence.map((evidence) => (
+              <EvidenceDetail key={evidence.id} evidence={evidence} />
+            ))}
+          </GoogleMapsSourceBox>
+        ))}
+      {compact && otherSources.size > 0 && <p>その他の出典：{[...otherSources].join('、')}</p>}
+      <p>臨時休業・渋滞・遅延は確認の対象外です。{compact && '混雑も確認していません。'}</p>
     </div>
   )
 }
@@ -248,7 +288,7 @@ export function CandidatePreviewSummary({
   const index = trip.stops.findIndex(({ id }) => id === revision.targetStopId)
   const fixedStops = trip.stops.filter(({ isFixed }) => isFixed)
   return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+    <dl className="grid grid-cols-[minmax(0,32%)_minmax(0,1fr)] gap-x-3 gap-y-2 text-sm wrap-anywhere">
       <dt className="font-semibold">時刻・滞在</dt>
       <dd>
         {after.plannedStartTime}〜{endTime(after)}（{after.durationMinutes}分）
@@ -295,11 +335,13 @@ export function CandidateComparison({
   revision,
   label,
   comparison,
+  compact = false,
 }: {
   trip: Trip
   revision: Revision
   label: string
   comparison?: TravelComparison
+  compact?: boolean
 }) {
   const { before, after } = revision.diff
   const index = trip.stops.findIndex((stop) => stop.id === revision.targetStopId)
@@ -340,14 +382,54 @@ export function CandidateComparison({
       ),
     },
   ]
+  const table = (
+    <div className="overflow-hidden rounded-[14px] border border-gt-rule">
+      <table className="w-full table-fixed border-collapse text-left text-xs leading-relaxed wrap-anywhere">
+        <caption className="sr-only">現在の予定と選択中の候補の差分</caption>
+        <thead>
+          <tr>
+            <th scope="col" className="w-[20%] px-[5px] py-2">
+              項目
+            </th>
+            <th scope="col" className="w-[40%] px-[5px] py-2">
+              変更前
+            </th>
+            <th scope="col" className="px-[5px] py-2 text-gt-preview">
+              {label}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.label} className="border-t border-gt-rule bg-gt-paper">
+              <th scope="row" className="px-[5px] py-2 align-top text-xs text-gt-muted">
+                {row.label}
+              </th>
+              <td className="px-[5px] py-2 align-top">{row.before}</td>
+              <td className="bg-gt-preview-bg/50 px-[5px] py-2 align-top font-semibold text-gt-preview">
+                {row.after}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
   return (
     <div className="gt-enter space-y-4">
-      <section aria-label="予定への影響" className="space-y-2 border-t border-gt-rule pt-4">
+      {!compact && table}
+      <section aria-label="予定への影響" className="gt-card space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <h4 className="font-bold">予定への影響</h4>
           <ConstraintBadge status={revision.constraintCheck.status} />
         </div>
-        <VerificationScope stop={after} previous={previous} next={next} comparison={comparison} />
+        <VerificationScope
+          stop={after}
+          previous={previous}
+          next={next}
+          comparison={comparison}
+          compact={compact}
+        />
         {arrivesInTime && (
           <p className="text-base font-semibold">
             {next.plannedStartTime}の予定に間に合う見込みです。
@@ -359,62 +441,54 @@ export function CandidateComparison({
           </p>
         )}
         <p className="text-sm leading-relaxed wrap-anywhere">{revision.impactSummary}</p>
-        {fixedStops.length > 0 ? (
-          <>
-            <p className="flex items-center gap-1.5 text-sm font-semibold">
-              <LockIcon size={14} />
-              場所・時刻が変わらない固定予定
-            </p>
-            <ul className="space-y-1 pl-5 text-sm wrap-anywhere">
-              {fixedStops.map((stop) => (
-                <li key={stop.id}>
-                  {stop.plannedStartTime} {stop.name}
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : (
-          <p className="text-sm text-gt-muted">この旅程に固定予定はありません。</p>
-        )}
-      </section>
-      <table className="w-full table-fixed border-collapse text-left text-sm leading-relaxed wrap-anywhere">
-        <caption className="sr-only">現在の予定と選択中の候補の差分</caption>
-        <thead>
-          <tr>
-            <th scope="col" className="w-[26%] p-1.5">
-              項目
-            </th>
-            <th scope="col" className="w-[37%] p-1.5">
-              今の予定
-            </th>
-            <th scope="col" className="p-1.5 text-gt-preview">
-              {label}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.label} className="border-t border-gt-rule">
-              <th scope="row" className="p-1.5 align-top text-sm">
-                {row.label}
-              </th>
-              <td className="p-1.5 align-top">{row.before}</td>
-              <td className="p-1.5 align-top">{row.after}</td>
-            </tr>
+        {!compact &&
+          (fixedStops.length > 0 ? (
+            <>
+              <p className="flex items-center gap-1.5 text-sm font-semibold">
+                <LockIcon size={14} />
+                場所・時刻が変わらない固定予定
+              </p>
+              <ul className="space-y-1 pl-5 text-sm wrap-anywhere">
+                {fixedStops.map((stop) => (
+                  <li key={stop.id}>
+                    {stop.plannedStartTime} {stop.name}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-sm text-gt-muted">この旅程に固定予定はありません。</p>
           ))}
-        </tbody>
-      </table>
-      <section className="space-y-2 border-t border-gt-rule pt-3" aria-label="根拠と照合日時">
-        <details>
-          <summary className="min-h-11 cursor-pointer py-2.5 font-semibold">
-            根拠・情報源を見る
+      </section>
+      {compact ? (
+        <details className="gt-card p-0">
+          <summary className="min-h-11 cursor-pointer px-3 py-2.5 text-sm font-semibold">
+            詳細な比較・根拠を見る
           </summary>
-          <div className="space-y-3 pb-2">
-            <StopEvidence stop={before} label="今の予定" />
-            <StopEvidence stop={after} label={label} />
+          <div className="space-y-3 px-3 pb-3">
+            {table}
+            <section aria-label="根拠と照合日時" className="space-y-3">
+              <StopEvidence stop={before} label="今の予定" />
+              <StopEvidence stop={after} label={label} />
+            </section>
           </div>
         </details>
-      </section>
+      ) : (
+        <section className="gt-card space-y-2" aria-label="根拠と照合日時">
+          <details>
+            <summary className="min-h-11 cursor-pointer py-2.5 font-semibold">
+              根拠・情報源を見る
+            </summary>
+            <div className="space-y-3 pb-2">
+              <StopEvidence stop={before} label="今の予定" />
+              <StopEvidence stop={after} label={label} />
+            </div>
+          </details>
+        </section>
+      )}
+      <p className="rounded-xl border border-gt-unk/50 bg-gt-unk-bg p-2.5 text-xs font-semibold text-gt-unk">
+        ⓘ 整合は、現実の正しさの保証ではありません。
+      </p>
     </div>
   )
 }

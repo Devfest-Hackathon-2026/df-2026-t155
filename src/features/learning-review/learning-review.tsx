@@ -388,29 +388,6 @@ export function LearningReview({
         </p>
       </div>
 
-      <section aria-labelledby="revision-history-heading" className="space-y-2">
-        <h3 id="revision-history-heading" className="text-base font-semibold">
-          変更の履歴
-        </h3>
-        {revisions.length === 0 ? (
-          <p className="text-sm">この旅程の変更履歴はありません。</p>
-        ) : (
-          <ul className="space-y-2 text-sm">
-            {revisions.map((revision) => (
-              <li key={revision.id} className={`gt-card ${wrapClass}`}>
-                <p>
-                  <b>{revision.diff.before.name}</b> → <b>{revision.diff.after.name}</b>
-                </p>
-                <p>理由：{revision.reason}</p>
-                <p>報告の種類：{revisionKindLabel(revision)}</p>
-                <p>承認の状態：{APPROVAL_LABEL[revision.approval.status]}</p>
-                <p>{REVISION_MATERIAL_LABEL[revisionMaterialStatus(revision)]}</p>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
       <form onSubmit={handleSubmit} noValidate className="gt-card space-y-3">
         <div>
           <label htmlFor="reflection-feedback" className="block text-sm font-medium">
@@ -443,6 +420,29 @@ export function LearningReview({
           {generating ? '学びの候補を作っています…' : '学びの候補を作る'}
         </button>
       </form>
+
+      <section aria-labelledby="revision-history-heading" className="space-y-2">
+        <h3 id="revision-history-heading" className="text-base font-semibold">
+          変更の履歴
+        </h3>
+        {revisions.length === 0 ? (
+          <p className="text-sm">この旅程の変更履歴はありません。</p>
+        ) : (
+          <ul className="space-y-2 text-sm">
+            {revisions.map((revision) => (
+              <li key={revision.id} className={`gt-card ${wrapClass}`}>
+                <p>
+                  <b>{revision.diff.before.name}</b> → <b>{revision.diff.after.name}</b>
+                </p>
+                <p>理由：{revision.reason}</p>
+                <p>報告の種類：{revisionKindLabel(revision)}</p>
+                <p>承認の状態：{APPROVAL_LABEL[revision.approval.status]}</p>
+                <p>{REVISION_MATERIAL_LABEL[revisionMaterialStatus(revision)]}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       {/* 常設のライブリージョン（画面に1つ）。中身のテキストを更新して、読み上げる。 */}
       <div role="status" aria-live="polite">

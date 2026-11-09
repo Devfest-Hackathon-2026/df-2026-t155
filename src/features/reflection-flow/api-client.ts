@@ -2,7 +2,6 @@ import { z } from 'zod'
 
 import {
   ApprovedLearningSchema,
-  RevisionSchema,
   TripSchema,
   type ApprovedLearning,
   type Revision,
@@ -26,6 +25,7 @@ import {
   ApproveLearningBodySchema,
   CreateTripBodySchema,
   LearningListResponseSchema,
+  ReflectionRevisionSchema,
   VersionedLearningSchema,
   type VersionedLearning,
 } from '@/server/persistence/contracts'
@@ -43,7 +43,7 @@ const TripListSchema = z.strictObject({
 })
 const TripResponseSchema = z.strictObject({ trip: TripSchema })
 const RevisionListSchema = z.strictObject({
-  revisions: z.array(RevisionSchema),
+  revisions: z.array(ReflectionRevisionSchema),
   listInfo: ListInfoSchema,
 })
 const ErrorSchema = z.object({
@@ -439,7 +439,13 @@ export async function loadReflectionHistory(
   if (
     trip.trip.id !== tripId ||
     !isCompleteList(revisions.listInfo, revisions.revisions.length) ||
-    revisions.revisions.some((revision) => revision.tripId !== tripId)
+    revisions.revisions.some(
+      (revision) =>
+        revision.tripId !== tripId ||
+        (revision.approval.status === 'approved' &&
+          revision.constraintCheck.status === 'not_checked' &&
+          revision.baseTripVersion >= trip.trip.version),
+    )
   ) {
     throw new ReflectionApiError(PARTIAL_LIST_MESSAGE, undefined, undefined, 'not_sent')
   }

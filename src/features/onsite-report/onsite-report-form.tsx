@@ -11,6 +11,8 @@ import {
 } from 'react'
 
 import { revisionTargetRestriction, stopKindLabels, type Trip } from '@/domain'
+import { LockIcon } from '@/features/trip-map/icons'
+import { ScreenHeader } from '@/features/screen-chrome/screen-header'
 import { TRANSPORT_REVISION_UNAVAILABLE } from '@/features/plain-wording/wording'
 
 import { ONSITE_PALETTE as palette } from './palette'
@@ -41,6 +43,7 @@ interface OnSiteReportFormProps {
   onSubmit: (submission: OnSiteReportSubmission) => void
   // 送信の状況（親が指定する）。
   status: OnSiteReportStatus
+  onBack?: () => void
   // 最初に選んでおく予定（固定されていない予定のときだけ使う）。
   initialTargetStopId?: string
   // 選べる予定が1件だけのとき、それを自動で選ぶか（既定は選ぶ）。
@@ -67,9 +70,15 @@ const wrapClass = 'break-words [overflow-wrap:anywhere]'
 const focusClass =
   'focus-visible:outline-3 focus-visible:outline-offset-2 focus-visible:outline-(--of-ink)'
 // 入力枠は、地色に対して3:1以上の境界を常に持つ（空欄・非フォーカスでも編集領域が分かる）。
-const textareaClass = `block w-full min-h-24 rounded-lg border-2 border-(--of-edge) bg-(--of-paper) px-3 py-3 text-base text-(--of-ink) aria-[invalid=true]:border-(--of-warn) ${focusClass}`
+const textareaClass = `block w-full min-h-20 rounded-xl border border-(--of-edge) bg-(--of-paper) px-3 py-3 text-base text-(--of-ink) aria-[invalid=true]:border-(--of-warn) ${focusClass}`
 const groupClass =
-  'min-w-0 space-y-2 rounded-lg border-2 border-transparent p-0 aria-[invalid=true]:border-(--of-warn) aria-[invalid=true]:p-2'
+  'min-w-0 space-y-2 rounded-lg aria-[invalid=true]:outline-2 aria-[invalid=true]:outline-offset-4 aria-[invalid=true]:outline-(--of-warn)'
+
+const optionsClass =
+  'divide-y divide-gt-rule rounded-[14px] border border-gt-rule bg-gt-paper px-3.5 py-0.5'
+const legendClass = 'mb-2 flex items-center gap-2 text-base font-bold'
+const stepClass =
+  'grid size-[22px] shrink-0 place-items-center rounded-full bg-gt-action text-xs font-bold text-white'
 
 const KIND_OPTIONS: ReadonlyArray<{ id: ReportKind; label: string; hint: string }> = [
   {
@@ -87,9 +96,9 @@ const KIND_OPTIONS: ReadonlyArray<{ id: ReportKind; label: string; hint: string 
 const SIMULATED_NOTICE = 'デモ用の想定です。実際の出来事ではなく、学びの材料にもしません'
 
 function submitLabel(kind: ReportFormValues['kind']): string {
-  if (kind === 'actual') return '実際の報告として送る'
-  if (kind === 'simulated') return '模擬報告として送る'
-  return '報告する'
+  if (kind === 'actual') return '実際の報告で候補検索へ'
+  if (kind === 'simulated') return '模擬報告で候補検索へ'
+  return '候補検索へ'
 }
 
 // 現地の状況を、少ない操作で報告するフォーム。
@@ -104,6 +113,7 @@ export function OnSiteReportForm({
   trip,
   onSubmit,
   status,
+  onBack,
   initialTargetStopId,
   autoSelectSingleTarget = true,
 }: OnSiteReportFormProps) {
@@ -207,16 +217,17 @@ export function OnSiteReportForm({
     <section
       aria-labelledby={id('heading')}
       style={rootStyle}
-      className={`mx-auto w-full max-w-xl rounded-xl border-2 border-(--of-edge) bg-(--of-paper) p-4 text-base text-(--of-ink) ${wrapClass}`}
+      className={`text-base text-gt-ink ${wrapClass}`}
     >
-      <h2 id={id('heading')} className="gt-screen-title">
-        現地の状況を報告する
-      </h2>
-      <p className="mt-1 text-sm text-(--of-muted)">
-        報告しただけで、旅程は変わりません。変更は、案を比べて、あなたが承認したときだけ反映されます。
-      </p>
+      <ScreenHeader
+        headingId={id('heading')}
+        title="現地の状況を報告する"
+        subtitle="旅行中"
+        onBack={onBack}
+        backLabel="旅行中の画面に戻る"
+      />
 
-      <form onSubmit={handleSubmit} noValidate className="mt-4 space-y-6">
+      <form onSubmit={handleSubmit} noValidate className="mt-4 space-y-5">
         {/* ① どの予定の状況か */}
         <fieldset
           ref={targetGroupRef}
@@ -227,11 +238,9 @@ export function OnSiteReportForm({
           aria-describedby={errors.target ? id('target-error') : id('target-hint')}
           className={groupClass}
         >
-          <legend className="text-base font-semibold">1. どの予定の状況ですか（必須）</legend>
-          <div id={id('target-hint')} className="text-sm text-(--of-muted)">
-            <p>固定予定は、修正の対象にできないため、選べません。</p>
-            {hasTransport && <p>{TRANSPORT_REVISION_UNAVAILABLE}</p>}
-          </div>
+          <legend className={legendClass}>
+            <span className={stepClass}>1</span>どの予定の状況ですか（必須）
+          </legend>
           <FieldError id={id('target-error')} message={errors.target} />
           {selectable.length === 0 && (
             <p className="rounded-lg border-2 border-(--of-edge) p-3 text-sm">
@@ -239,45 +248,49 @@ export function OnSiteReportForm({
               {fixed.length === trip.stops.length && 'すべて固定予定です。'}
             </p>
           )}
-          <div className="space-y-2">
-            {selectable.map((stop, index) => (
-              <RadioOption
-                key={stop.id}
-                name={id('target')}
-                value={stop.id}
-                checked={targetStopId === stop.id}
-                onChange={() => update('target', { targetStopId: stop.id })}
-                inputRef={
-                  index === 0
-                    ? (element) => {
-                        radioRefs.current.target = element
-                      }
-                    : undefined
-                }
-              >
-                <span className="block font-medium">{stop.name}</span>
-                <span className="block text-sm text-(--of-muted)">
-                  {stop.plannedStartTime} 開始
-                  {stop.kind ? `・${stopKindLabels[stop.kind]}` : ''}
-                </span>
-              </RadioOption>
-            ))}
-          </div>
-          {fixed.length > 0 && (
-            <div className="rounded-lg border-2 border-dashed border-(--of-edge) p-3">
-              <p className="text-sm font-medium">固定予定（修正の対象にできません）</p>
-              <ul className="mt-1 space-y-1 text-sm text-(--of-muted)">
-                {fixed.map((stop) => (
-                  <li key={stop.id}>
-                    <span className="mr-2 rounded border-2 border-(--of-ink) px-1 text-xs font-semibold text-(--of-ink)">
-                      固定
+          <div className={optionsClass}>
+            {trip.stops.map((stop) => {
+              if (stop.isFixed) {
+                return (
+                  <div
+                    key={stop.id}
+                    className="flex min-h-11 items-center gap-2.5 py-2 text-sm text-gt-muted"
+                  >
+                    <span className="grid size-5 shrink-0 place-items-center rounded-full bg-gt-muted text-white">
+                      <LockIcon size={12} />
                     </span>
-                    {stop.plannedStartTime} {stop.name}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+                    <span>
+                      {stop.plannedStartTime} {stop.name} <span className="text-xs">（固定）</span>
+                    </span>
+                  </div>
+                )
+              }
+              if (revisionTargetRestriction(stop)) return null
+              return (
+                <RadioOption
+                  key={stop.id}
+                  name={id('target')}
+                  value={stop.id}
+                  checked={targetStopId === stop.id}
+                  onChange={() => update('target', { targetStopId: stop.id })}
+                  inputRef={
+                    stop.id === selectable[0]?.id
+                      ? (element) => {
+                          radioRefs.current.target = element
+                        }
+                      : undefined
+                  }
+                >
+                  <span className="text-gt-muted">{stop.plannedStartTime}</span> {stop.name}
+                  {stop.kind && <span className="sr-only">・{stopKindLabels[stop.kind]}</span>}
+                </RadioOption>
+              )
+            })}
+          </div>
+          <div id={id('target-hint')} className="text-sm text-(--of-muted)">
+            <p>固定予定は、修正の対象にできないため、選べません。</p>
+            {hasTransport && <p>{TRANSPORT_REVISION_UNAVAILABLE}</p>}
+          </div>
         </fieldset>
 
         {/* ② 何が起きたか */}
@@ -288,9 +301,11 @@ export function OnSiteReportForm({
           aria-describedby={errors.preset ? id('preset-error') : undefined}
           className={groupClass}
         >
-          <legend className="text-base font-semibold">2. 何が起きましたか（必須）</legend>
+          <legend className={legendClass}>
+            <span className={stepClass}>2</span>何が起きましたか（必須）
+          </legend>
           <FieldError id={id('preset-error')} message={errors.preset} />
-          <div className="space-y-2">
+          <div className={optionsClass}>
             {REPORT_PRESETS.map((preset, index) => (
               <RadioOption
                 key={preset.id}
@@ -314,14 +329,18 @@ export function OnSiteReportForm({
 
         {/* ③ 補足 */}
         <div className="space-y-1">
-          <label htmlFor={id('note')} className="block text-base font-semibold">
-            3. 補足{noteRequired ? '（「その他」は必須）' : '（任意）'}
+          <label htmlFor={id('note')} className={legendClass}>
+            <span className={stepClass} aria-hidden="true">
+              3
+            </span>{' '}
+            補足{noteRequired ? '（「その他」は必須）' : '（任意）'}
           </label>
           <FieldError id={id('note-error')} message={errors.note} />
           <textarea
             id={id('note')}
             ref={noteRef}
-            rows={3}
+            rows={2}
+            placeholder="例：入口に「本日休業」の貼り紙がありました"
             value={current.note}
             readOnly={submitting}
             onChange={(event) => update('note', { note: event.target.value })}
@@ -343,12 +362,14 @@ export function OnSiteReportForm({
           aria-describedby={`${errors.kind ? `${id('kind-error')} ` : ''}${id('kind-hint')}`}
           className={groupClass}
         >
-          <legend className="text-base font-semibold">4. 報告の種類（必須）</legend>
+          <legend className={legendClass}>
+            <span className={stepClass}>4</span>報告の種類（必須）
+          </legend>
           <p id={id('kind-hint')} className="text-sm text-(--of-muted)">
             実際の現地の報告と、デモ用の模擬報告は、区別して扱います。
           </p>
           <FieldError id={id('kind-error')} message={errors.kind} />
-          <div className="space-y-2">
+          <div className={optionsClass}>
             {KIND_OPTIONS.map((option, index) => (
               <RadioOption
                 key={option.id}
@@ -396,12 +417,15 @@ export function OnSiteReportForm({
           <button
             type="submit"
             aria-disabled={submitting || undefined}
-            className={`min-h-12 w-full rounded-lg border-2 border-(--of-ink) bg-(--of-accent) px-4 py-3 text-base font-semibold text-white aria-disabled:opacity-70 ${focusClass}`}
+            className="gt-button-primary min-h-[52px] w-full text-base font-bold"
           >
             {submitting ? '送信しています…' : submitLabel(current.kind)}
           </button>
         </div>
       </form>
+      <p className="gt-card mt-3 px-3.5 py-2.5 text-xs text-gt-muted">
+        次の画面で「変更候補を探す」を押すと、報告を使って候補を探します。旅程は、候補を承認して適用したときだけ変わります。
+      </p>
     </section>
   )
 }
@@ -432,9 +456,7 @@ interface RadioOptionProps {
 function RadioOption({ name, value, checked, onChange, inputRef, children }: RadioOptionProps) {
   return (
     <label
-      className={`flex min-h-12 cursor-pointer items-start gap-3 rounded-lg border-2 p-3 has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-(--of-ink) ${
-        checked ? 'border-(--of-ink) bg-(--of-selected)' : 'border-(--of-edge) bg-(--of-paper)'
-      }`}
+      className={`flex min-h-11 cursor-pointer items-start gap-2.5 py-2.5 text-sm has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-gt-preview ${checked ? 'font-bold' : ''}`}
     >
       <input
         type="radio"
@@ -443,7 +465,7 @@ function RadioOption({ name, value, checked, onChange, inputRef, children }: Rad
         checked={checked}
         onChange={onChange}
         ref={inputRef}
-        className="mt-0.5 size-6 shrink-0 accent-(--of-ink)"
+        className="mt-0.5 size-5 shrink-0 appearance-none rounded-full border-2 border-gt-muted checked:border-gt-action checked:bg-gt-action checked:ring-2 checked:ring-white checked:ring-inset"
       />
       <span className="min-w-0 flex-1">{children}</span>
     </label>

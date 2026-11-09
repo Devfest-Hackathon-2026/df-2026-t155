@@ -107,6 +107,27 @@ describe('振り返りの保存済みデータ取得', () => {
       expect(history.revisions).toEqual([sampleRevision])
     })
 
+    it('適用済みの保存履歴は現在の制約が未検証でも表示し、適用後の版がなければ拒否する', async () => {
+      const revision = {
+        ...sampleRevision,
+        approval: { status: 'approved', decidedAt: '2026-11-08T12:10:00+09:00' },
+        constraintCheck: { status: 'not_checked', explanation: '制約は再確認が必要です。' },
+      }
+      const trip = { ...sampleTrip, version: revision.baseTripVersion + 1 }
+      const history = await loadReflectionHistory(scope, trip.id, {
+        fetchFn: serve({ trip, revisions: [revision] }),
+      })
+      expect(history.revisions).toEqual([revision])
+      await expect(
+        loadReflectionHistory(scope, trip.id, {
+          fetchFn: serve({
+            trip: { ...trip, version: revision.baseTripVersion },
+            revisions: [revision],
+          }),
+        }),
+      ).rejects.toThrow('すべて確認できませんでした')
+    })
+
     it('履歴が打ち切られている場合は学び作成に使わない', async () => {
       const fetchFn = serve({ revisions: [], info: { truncated: true, returned: 0 } })
       await expect(loadReflectionHistory(scope, sampleTrip.id, { fetchFn })).rejects.toThrow(

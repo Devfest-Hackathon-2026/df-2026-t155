@@ -293,6 +293,12 @@ export function StopSheet({
               </div>
             ) : (
               <>
+                {kind === 'meal' &&
+                  !stop.evidence.some(({ subject }) => subject === 'opening_hours') && (
+                    <div className="mb-2">
+                      <UnverifiedBadge subject="営業時間" />
+                    </div>
+                  )}
                 {otherEvidence.map((item) => (
                   <EvidenceDetail key={item.id} evidence={item} />
                 ))}

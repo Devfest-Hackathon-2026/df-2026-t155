@@ -3,14 +3,18 @@
 /* ページと旅程で同じ明色テーマを使う。入力欄などのブラウザー標準UIも揃える。 */
 :root {
   color-scheme: light;
-  --gt-bg: #f3f5f7;
+  --gt-bg: #f3f3ee;
   --gt-paper: #ffffff;
-  --gt-ink: #18212b;
+  --gt-action: #c84429;
+  --gt-line-tint: #fdece6;
+  --gt-rail: #7b858b;
+  --gt-unchecked: #eff1f2;
+  --gt-ink: #191d20;
   --gt-muted: #495560;
-  --gt-rule: #cfd6de;
+  --gt-rule: #d7d5cd;
   --gt-line: #e4572e;
   /* 適用済みの変更。候補の青・確認結果の色とは分ける。 */
-  --gt-line-strong: #9e391a;
+  --gt-line-strong: #a3331a;
   --gt-preview: #1d55a0;
   --gt-preview-bg: #e8f1ff;
   --gt-ok: #17694a;
@@ -23,6 +27,10 @@
 
 @theme inline {
   --color-gt-bg: var(--gt-bg);
+  --color-gt-action: var(--gt-action);
+  --color-gt-line-tint: var(--gt-line-tint);
+  --color-gt-rail: var(--gt-rail);
+  --color-gt-unchecked: var(--gt-unchecked);
   --color-gt-paper: var(--gt-paper);
   --color-gt-ink: var(--gt-ink);
   --color-gt-muted: var(--gt-muted);
@@ -42,9 +50,10 @@
 }
 
 body {
+  border-top: 7px solid var(--gt-line);
   background: var(--gt-bg);
   color: var(--gt-ink);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: system-ui, 'Noto Sans JP', sans-serif;
 }
 
 .gt-field {
@@ -69,7 +78,7 @@ body {
   }
 
   .gt-screen-title {
-    @apply text-2xl leading-tight font-bold wrap-anywhere;
+    @apply text-xl leading-tight font-bold wrap-anywhere;
   }
 
   .gt-button-primary,
@@ -78,7 +87,7 @@ body {
   }
 
   .gt-button-primary {
-    @apply border-gt-ink bg-gt-ink text-white;
+    @apply border-gt-action bg-gt-action text-white;
   }
 
   .gt-button-secondary {
@@ -171,4 +180,66 @@ body {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* The root brand is replaced by the visible journey or subpage header. */
+body:has(main [data-flow-header]:not([hidden] *)) .gt-site-brand {
+  display: none;
+}
+
+body:has(main [data-flow-header]:not([hidden] *)) main {
+  padding-top: 0;
+}
+
+.gt-journey:has([data-flow-header='subpage']:not([hidden] *)) .gt-journey-chrome {
+  order: 2;
+}
+
+.gt-journey:has([data-flow-header='subpage']:not([hidden] *))
+  .gt-journey-chrome
+  [data-journey-brand],
+.gt-journey:has([data-flow-header='subpage']:not([hidden] *)) .gt-journey-title {
+  display: none;
+}
+
+.gt-header-bleed {
+  border-image: conic-gradient(var(--gt-paper) 0 0) fill 0 / 0 / 0 100vw;
+}
+
+.gt-food-ticket {
+  mask-image:
+    radial-gradient(circle at left 26%, transparent 5px, #000 5.5px),
+    radial-gradient(circle at left 74%, transparent 5px, #000 5.5px);
+  mask-composite: intersect;
+}
+
+.gt-mode-switch::before {
+  content: '';
+  position: absolute;
+  inset: 6px 0;
+  border: 2px solid var(--gt-ink);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.gt-mode-switch {
+  margin-inline-start: auto;
+}
+
+.gt-preview-panel {
+  position: relative;
+  isolation: isolate;
+}
+
+.gt-preview-panel::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0 -1rem;
+  border-radius: 22px 22px 0 0;
+  background: var(--gt-paper);
+}
+
+.gt-journey-chrome [data-journey-brand] {
+  flex: 1 1 8.5rem;
 }

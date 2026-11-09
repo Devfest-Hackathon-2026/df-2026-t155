@@ -80,11 +80,6 @@ export function TripSavePanel({
       <h3 id="trip-save-heading" className="text-base font-semibold">
         旅程の保存
       </h3>
-      <p className="text-sm">
-        保存は、あなたが押したときだけ行います。予約や、当日の営業を保証するものではありません。
-        Googleの情報（営業時間・評価など）は保存せず、予定の名前・時刻と、場所の識別子（Place
-        ID）だけを保存します。
-      </p>
       {state.phase === 'saved' ? (
         <div role="status" className="space-y-1 text-sm">
           <p className="font-semibold text-gt-ok">保存を確認しました。</p>
@@ -124,6 +119,14 @@ export function TripSavePanel({
           )}
         </>
       )}
+      <details className="text-sm text-gt-muted">
+        <summary className="flex min-h-11 cursor-pointer items-center font-medium">
+          保存される内容
+        </summary>
+        <p>
+          予定の名前・時刻・場所の識別子を保存します。営業時間や評価は保存しません。予約状況や当日の営業は別途ご確認ください。
+        </p>
+      </details>
       {onRestore && (
         <button type="button" onClick={onRestore} className="gt-button-secondary">
           保存済みの旅程へ戻す

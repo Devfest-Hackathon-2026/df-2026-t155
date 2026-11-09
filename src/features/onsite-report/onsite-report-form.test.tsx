@@ -82,7 +82,7 @@ const radio = (name: RegExp) => screen.getByRole('radio', { name })
 const queryRadio = (name: RegExp) => screen.queryByRole('radio', { name })
 const sendButton = () =>
   screen.getByRole('button', {
-    name: /^(報告する|実際の報告として送る|模擬報告として送る|送信しています)/,
+    name: /^(候補検索へ|実際の報告で候補検索へ|模擬報告で候補検索へ|送信しています)/,
   })
 const statusRegion = () => screen.getByRole('status', { name: '入力と送信の状況' })
 const kindStatusRegion = () => screen.getByRole('status', { name: '報告の種類についての注意' })
@@ -96,10 +96,12 @@ describe('対象の予定', () => {
     expect(radio(/昼食店A/)).toBeTruthy()
     expect(radio(/14時の予約展示/)).toBeTruthy()
     expect(screen.getAllByText(/固定予定は、修正の対象にできないため、選べません/).length).toBe(1)
-    const fixedList = screen.getByText('固定予定（修正の対象にできません）').parentElement
-    expect(fixedList).not.toBeNull()
-    expect(within(fixedList as HTMLElement).getByText(/朝の庭園/)).toBeTruthy()
-    expect(within(fixedList as HTMLElement).getByText('固定')).toBeTruthy()
+    const group = within(screen.getByRole('radiogroup', { name: /どの予定/ }))
+    const fixed = group.getByText(/朝の庭園/)
+    expect(fixed.textContent).toContain('（固定）')
+    expect(
+      fixed.compareDocumentPosition(radio(/昼食店A/)) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
   })
 
   it('対象が1件だけなら、最初から選択されている', () => {
@@ -302,11 +304,11 @@ describe('模擬報告の注意書き', () => {
   it('送信ボタンの表示でも、実際と模擬を区別する', async () => {
     const user = userEvent.setup()
     renderForm()
-    expect(sendButton().textContent).toBe('報告する')
+    expect(sendButton().textContent).toBe('候補検索へ')
     await user.click(radio(/デモ用の模擬報告/))
-    expect(sendButton().textContent).toBe('模擬報告として送る')
+    expect(sendButton().textContent).toBe('模擬報告で候補検索へ')
     await user.click(radio(/実際の報告/))
-    expect(sendButton().textContent).toBe('実際の報告として送る')
+    expect(sendButton().textContent).toBe('実際の報告で候補検索へ')
   })
 })
 

@@ -6,6 +6,7 @@ import { SavedRevisionSchema } from '@/server/persistence/contracts'
 // 未確認の適用を本人UID・Trip ID別に端末へ保存する。通信前に記録できないなら適用を始めない。
 // in-memory Mapではブラウザのフルリロードでロックが失われるため、永続記録を正本にする。
 const STORAGE_PREFIX = 'groundtrip:unresolved-apply:v1:'
+const LOCK_CHANGED = 'groundtrip:apply-lock-changed'
 const PendingSchema = z.strictObject({
   baseVersion: z.int().nonnegative(),
   revisionId: z.string().min(1).max(256),
@@ -17,6 +18,23 @@ export type UnresolvedApplyState =
 
 export function unresolvedApplyStorageKey(ownerUid: string, tripId: string): string {
   return STORAGE_PREFIX + encodeURIComponent(ownerUid) + ':' + encodeURIComponent(tripId)
+}
+
+// storageイベントは書き込んだタブに届かないため、同じ画面内の旅行前・旅行中にも変更を通知する。
+export function subscribeApplyLock(ownerUid: string, tripId: string, onChange: () => void) {
+  const key = unresolvedApplyStorageKey(ownerUid, tripId)
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === key || event.key === null) onChange()
+  }
+  const onLocalChange = (event: Event) => {
+    if (event instanceof CustomEvent && event.detail === key) onChange()
+  }
+  window.addEventListener('storage', onStorage)
+  window.addEventListener(LOCK_CHANGED, onLocalChange)
+  return () => {
+    window.removeEventListener('storage', onStorage)
+    window.removeEventListener(LOCK_CHANGED, onLocalChange)
+  }
 }
 
 // 保存先の読取失敗・破損・認証UID不明は「記録なし」ではない。再操作を許可しない。
@@ -57,6 +75,9 @@ export function markApplyUnresolved(
   } catch {
     throw new Error('未確認の適用状態を保存できないため、適用を開始しませんでした。')
   }
+  window.dispatchEvent(
+    new CustomEvent(LOCK_CHANGED, { detail: unresolvedApplyStorageKey(ownerUid, tripId) }),
+  )
   return pending
 }
 
@@ -78,6 +99,9 @@ export function clearApplyUnresolved(ownerUid: string, tripId: string, revisionI
   if (readUnresolvedApply(ownerUid, tripId).status !== 'clear') {
     throw new Error('未確認状態の解除を確認できませんでした。')
   }
+  window.dispatchEvent(
+    new CustomEvent(LOCK_CHANGED, { detail: unresolvedApplyStorageKey(ownerUid, tripId) }),
+  )
 }
 
 export type LatestTripVerdict = { kind: 'applied'; trip: Trip } | { kind: 'unverified' }

@@ -7,7 +7,7 @@ import {
   buildCandidatesResponseJsonSchema,
   LearningCandidatesDraftSchema,
 } from './candidates-draft'
-import { LearningReviewInputSchema, MAX_FEEDBACK_LENGTH } from './candidates-input'
+import { LearningReviewInputSchema, MAX_FEEDBACK_LENGTH, usableRevisions } from './candidates-input'
 import { buildCandidatesPrompt } from './candidates-prompt'
 import { generateLearningCandidates, type CandidatesFailureEvent } from './generate-candidates'
 
@@ -297,4 +297,21 @@ describe('入力の検証とプロンプト', () => {
 
     expect(Object.keys(shape).sort()).toEqual(['category', 'content', 'scope'])
   })
+})
+
+it('適用済みの保存履歴を振り返りに使い、適用後の版が確認できない履歴は入力エラーにする', () => {
+  const revision = {
+    ...actualRevision,
+    constraintCheck: { status: 'not_checked', explanation: '制約は再確認が必要です。' },
+  }
+  const trip = { ...sampleTrip, version: revision.baseTripVersion + 1 }
+  const result = LearningReviewInputSchema.parse({ trip, revisions: [revision], feedback: '' })
+  expect(usableRevisions(result.revisions)).toEqual([revision])
+  expect(
+    LearningReviewInputSchema.safeParse({
+      trip: { ...trip, version: revision.baseTripVersion },
+      revisions: [revision],
+      feedback: '',
+    }).success,
+  ).toBe(false)
 })
