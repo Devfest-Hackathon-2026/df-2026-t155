@@ -40,15 +40,15 @@ describe('worstEvidence', () => {
 })
 
 describe('setStopFixed', () => {
-  it('対象の固定状態だけを変え、版を1上げる。他の予定・内容は一切変えない', () => {
+  it('対象の固定状態だけを変え、保存済みの版を維持する。他の予定・内容は一切変えない', () => {
     const next = setStopFixed(sampleTrip, 'stop-lunch', true)
     if (!next) throw new Error('更新されることを期待しました')
 
-    expect(next.version).toBe(sampleTrip.version + 1)
+    expect(next.version).toBe(sampleTrip.version)
     expect(next.stops[1]).toEqual({ ...sampleTrip.stops[1], isFixed: true })
     expect(next.stops[0]).toEqual(sampleTrip.stops[0])
     expect(next.stops[2]).toEqual(sampleTrip.stops[2])
-    expect({ ...next, version: 0, stops: [] }).toEqual({ ...sampleTrip, version: 0, stops: [] })
+    expect({ ...next, stops: [] }).toEqual({ ...sampleTrip, stops: [] })
   })
 
   it('元のTripを書き換えない', () => {
@@ -63,7 +63,7 @@ describe('setStopFixed', () => {
     const next = setStopFixed(sampleTrip, 'stop-morning', false)
 
     expect(next?.stops[0].isFixed).toBe(false)
-    expect(next?.version).toBe(sampleTrip.version + 1)
+    expect(next?.version).toBe(sampleTrip.version)
   })
 
   it('すでにその状態なら、同じTripを返し、版を上げない', () => {

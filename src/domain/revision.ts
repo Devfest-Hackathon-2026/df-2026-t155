@@ -1,10 +1,15 @@
 import { z } from 'zod'
 
-import { StopSchema } from './models'
+import { StopSchema, type Stop } from './models'
 import { ApprovalSchema, IdSchema, TextSchema } from './primitives'
 
 export const MAX_REVISION_REASON_LENGTH = 1000
 export const RevisionReasonSchema = TextSchema.max(MAX_REVISION_REASON_LENGTH)
+
+export function revisionTargetRestriction(stop: Pick<Stop, 'kind' | 'isFixed'>) {
+  if (stop.kind === 'transport') return 'transport'
+  return stop.isFixed ? 'fixed' : null
+}
 
 export const OnSiteReportCategorySchema = z.enum(['closed', 'crowded', 'delayed', 'other'])
 

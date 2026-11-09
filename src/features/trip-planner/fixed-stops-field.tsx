@@ -26,10 +26,8 @@ interface FixedStopsFieldProps {
   onChange: (key: string, field: FixedStopField, value: string) => void
 }
 
-const inputClassName =
-  'w-full rounded border border-current/40 bg-transparent px-3 py-3 text-base aria-[invalid=true]:border-2 aria-[invalid=true]:border-current'
-const buttonClassName =
-  'min-h-12 w-full rounded border border-current/50 px-4 py-3 text-base font-medium'
+const inputClassName = 'gt-field px-3 py-3'
+const buttonClassName = 'gt-button-secondary w-full'
 
 export function FixedStopsField({
   rows,
@@ -60,7 +58,7 @@ export function FixedStopsField({
           <fieldset
             key={row.key}
             aria-describedby="fixed-stops-note"
-            className="space-y-3 rounded border border-current/40 p-3"
+            className="gt-card min-w-0 space-y-3 bg-gt-bg"
           >
             <legend className="px-1 text-sm font-medium">固定予定 {index + 1}</legend>
 

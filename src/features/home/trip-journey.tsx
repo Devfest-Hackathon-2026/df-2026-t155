@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import type { Trip } from '@/domain'
 import { OnSiteReplanningFlow } from '@/features/onsite-flow/onsite-replanning-flow'
@@ -40,6 +40,9 @@ interface TripJourneyProps {
   saveTrip?: SaveTrip
   initialSavedTrip?: Trip
   learningSummary?: ReactNode
+  verificationPanel: ReactNode
+  visible: boolean
+  onEditInput: () => void
   // 学びを保存したとき。次の旅に使う学びの一覧を読み込み直すために使う。
   onLearningsChanged: () => void
 }
@@ -100,7 +103,7 @@ export function createScopedRevisions(
   }
 }
 
-// 生成された旅程の下に続く、旅の通し導線：保存 → 現地での報告と部分修正 → 振り返りと学びの保存。
+// 画面の切り替えで比較・現地報告の入力を保持するため、非表示の画面もマウントしておく。
 // 旅程が変わる操作（現地報告からの部分修正）は、必ず adoptTripChange を通す。
 // 認証セッションが変わると、親（HomePlanner）がこの部分ごと作り直す（進行中の報告・保存・振り返りは残らない）。
 export function TripJourney({
@@ -114,9 +117,11 @@ export function TripJourney({
   saveTrip,
   initialSavedTrip,
   learningSummary,
+  verificationPanel,
+  visible,
+  onEditInput,
   onLearningsChanged,
 }: TripJourneyProps) {
-  const [savedTripId, setSavedTripId] = useState<string | null>(initialSavedTrip?.id ?? null)
   const [savedTrip, setSavedTrip] = useState<Trip | null>(initialSavedTrip ?? null)
   const isSavedCurrent = savedTrip !== null && sameSavedTrip(trip, savedTrip)
   const persistence = useMemo(
@@ -130,8 +135,19 @@ export function TripJourney({
         : null,
     [scope],
   )
-  // 保存の結果が不明のとき、保存済みの旅行の一覧を開いて確かめる。
-  const [reflectionOpen, setReflectionOpen] = useState(Boolean(initialSavedTrip))
+  const [mode, setMode] = useState<'before' | 'during'>('before')
+  const [reflection, setReflection] = useState<{ open: boolean; tripId?: string } | null>(null)
+  const reflectionOpen = reflection?.open === true
+  const heading = useRef<HTMLHeadingElement>(null)
+  const screen = reflectionOpen ? 'reflection' : mode
+
+  useEffect(() => {
+    if (visible) heading.current?.focus()
+  }, [screen, visible])
+
+  const openReflection = (tripId?: string) => {
+    setReflection({ open: true, tripId })
+  }
 
   // 候補生成の処理は、認証確認中に現在の別UIDのBearerへフォールバックしない。
   const revisions = useMemo(() => {
@@ -145,56 +161,127 @@ export function TripJourney({
   }, [generateRevisions, scope])
 
   return (
-    <div className="space-y-8">
-      <RevisionRouteView
-        trip={routeTrip ?? trip}
-        ownerUid={scope?.uid}
-        generate={isSavedCurrent ? revisions : undefined}
-        apply={isSavedCurrent ? (applyRevision ?? persistence?.apply) : undefined}
-        lockManagedByApply={!applyRevision}
-        loadLatestTrip={persistence?.loadLatestTrip}
-        loadAppliedRevision={persistence?.loadAppliedRevision}
-        adoptTripChange={(changed) => {
-          const adopted = (adoptRouteChange ?? adoptTripChange)(changed)
-          if (changed.version !== trip.version) setSavedTrip(adopted)
-          return adopted
-        }}
-      />
-      {learningSummary}
-      <TripSavePanel
-        key={`${trip.id}:${savedTrip?.version ?? 'new'}`}
-        initialSavedTrip={isSavedCurrent ? (savedTrip ?? undefined) : undefined}
-        trip={trip}
-        scope={scope}
-        save={saveTrip}
-        onSaved={(tripId, saved) => {
-          setSavedTrip(saved)
-          setSavedTripId(tripId)
-          setReflectionOpen(true)
-        }}
-        onCheckSaved={() => setReflectionOpen(true)}
-      />
+    <div className="space-y-4">
+      <header className="space-y-3">
+        <button
+          type="button"
+          className="gt-button-secondary"
+          onClick={
+            reflectionOpen ? () => setReflection({ ...reflection, open: false }) : onEditInput
+          }
+        >
+          {reflectionOpen ? '旅程へ戻る' : '旅行条件・保存済みの旅程'}
+        </button>
+        <h1 ref={heading} tabIndex={-1} className="gt-screen-title">
+          {reflectionOpen
+            ? '振り返り'
+            : mode === 'during'
+              ? '旅行中'
+              : savedTrip
+                ? '旅程'
+                : '旅程の提案'}
+        </h1>
+        {!reflectionOpen && (
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+            <p className="font-semibold wrap-anywhere">
+              {trip.region} <time dateTime={trip.date}>{trip.date}</time>
+            </p>
+            {savedTrip && (
+              <span
+                className={
+                  isSavedCurrent ? 'font-semibold text-gt-ok' : 'font-semibold text-gt-unk'
+                }
+              >
+                {isSavedCurrent ? '保存済み' : '保存後の変更あり'}
+              </span>
+            )}
+          </div>
+        )}
+        {!reflectionOpen && (
+          <div role="group" aria-label="旅程の表示モード" className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              aria-pressed={mode === 'before'}
+              className="gt-button-secondary"
+              onClick={() => setMode('before')}
+            >
+              旅行前
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === 'during'}
+              className="gt-button-secondary"
+              onClick={() => setMode('during')}
+            >
+              旅行中
+            </button>
+          </div>
+        )}
+      </header>
 
-      <section aria-labelledby="onsite-heading" className="space-y-3">
-        <h3 id="onsite-heading" className="text-base font-semibold">
-          旅行中：現地での報告と、その予定だけの修正
-        </h3>
-        <p className="text-sm">
-          旅行当日に予定が変わったときに、その予定だけを直す候補を比べます。旅程に反映できるのは「実際の報告」だけです。
-          「デモ用の模擬報告」は、実際に起きたことではないため、候補の比較までで旅程には適用しません。
-        </p>
+      <div hidden={screen !== 'before'} className="space-y-4">
+        <RevisionRouteView
+          trip={routeTrip ?? trip}
+          ownerUid={scope?.uid}
+          generate={isSavedCurrent ? revisions : undefined}
+          apply={isSavedCurrent ? (applyRevision ?? persistence?.apply) : undefined}
+          lockManagedByApply={!applyRevision}
+          loadLatestTrip={persistence?.loadLatestTrip}
+          loadAppliedRevision={persistence?.loadAppliedRevision}
+          adoptTripChange={adoptRouteChange ?? adoptTripChange}
+          onRevisionApplied={setSavedTrip}
+          revisionUnavailableReason={
+            savedTrip
+              ? '画面の旅程が保存時点と異なります。部分修正を始めるには、保存済みの旅程へ戻してください。'
+              : '部分修正を始めるには、旅程を保存してください。'
+          }
+          routeActions={
+            <>
+              {verificationPanel}
+              {learningSummary}
+              <TripSavePanel
+                key={`${trip.id}:${savedTrip?.version ?? 'new'}`}
+                initialSavedTrip={savedTrip ?? undefined}
+                trip={trip}
+                scope={scope}
+                save={saveTrip}
+                onSaved={setSavedTrip}
+                onRestore={
+                  savedTrip && !isSavedCurrent ? () => adoptTripChange(savedTrip) : undefined
+                }
+                onReflect={savedTrip ? () => openReflection(savedTrip.id) : undefined}
+                onCheckSaved={() => openReflection()}
+              />
+            </>
+          }
+        />
+      </div>
+
+      <section
+        hidden={screen !== 'during'}
+        aria-label="旅行中の旅程と現地報告"
+        className="space-y-3"
+      >
         {!isSavedCurrent && (
-          <div role="note" className="text-sm">
+          <div role="note" className="gt-card space-y-2 text-sm">
             <p>
               現地の候補を作るには、現在の旅程を保存してください。保存後に変更した場合は保存済みの旅程へ戻してください。
             </p>
-            {savedTrip && (
+            {savedTrip ? (
               <button
-                className="min-h-11 font-semibold underline"
+                className="gt-button-secondary"
                 type="button"
                 onClick={() => adoptTripChange(savedTrip)}
               >
                 保存済みの旅程へ戻す
+              </button>
+            ) : (
+              <button
+                className="gt-button-secondary"
+                type="button"
+                onClick={() => setMode('before')}
+              >
+                旅行前の旅程へ
               </button>
             )}
           </div>
@@ -216,22 +303,15 @@ export function TripJourney({
         />
       </section>
 
-      {reflectionOpen && (
-        <section aria-labelledby="reflection-heading" className="space-y-3">
-          <h3 id="reflection-heading" className="text-base font-semibold">
-            旅のあと：振り返りと、次の旅への学び
-          </h3>
-          <p className="text-sm">
-            承認して保存した学びは、次に旅程を作るとき、上の「前の旅の学びを使う」から選べます。
-            選んだ学びだけが、次の旅程の作成に使われます。
-          </p>
+      {reflection && (
+        <div hidden={!reflectionOpen}>
           <ReflectionFlow
-            key={`${savedTripId}:${savedTrip?.version ?? 0}`}
-            initialTripId={savedTripId ?? undefined}
+            key={`${reflection.tripId}:${savedTrip?.version ?? 0}`}
+            initialTripId={reflection.tripId}
             embedded
             onLearningsChanged={onLearningsChanged}
           />
-        </section>
+        </div>
       )}
     </div>
   )

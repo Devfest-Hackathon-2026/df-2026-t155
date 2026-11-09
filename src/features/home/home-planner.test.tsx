@@ -42,6 +42,14 @@ describe('HomePlanner: 入力から路線図まで', () => {
     expect(route.textContent).toContain('朝の庭園（架空）')
     expect(route.textContent?.match(/未照合/g)).toHaveLength(3)
     expect(route.textContent).not.toContain('情報源と整合')
+    expect(screen.queryByRole('button', { name: '旅程を作成する' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: '旅行中の進行状況' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: '旅程の提案' }))
+    await user.click(screen.getByRole('button', { name: '旅行中' }))
+    expect(screen.queryByRole('list', { name: '旅程の路線図' })).toBeNull()
+    expect(screen.getByRole('heading', { name: '旅行中の進行状況' })).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: '旅行前' }))
+    expect(screen.getByRole('list', { name: '旅程の路線図' })).toBe(route)
   })
 
   it('生成された旅程では、候補生成APIが未接続の間は部分修正の導線を出さない', async () => {
@@ -60,7 +68,7 @@ describe('HomePlanner: 入力から路線図まで', () => {
     expect(within(dialog).queryByRole('button', { name: 'この予定だけ変更' })).toBeNull()
   })
 
-  it('再生成に失敗すると、以前の旅程は表示から消える。保持されていると案内しない（保持されるのは入力内容だけ）', async () => {
+  it('再生成に失敗した後も、入力と前の旅程に戻れる', async () => {
     const generate = vi
       .fn<GenerateTrip>()
       .mockResolvedValueOnce({ ok: true, trip: generatedTrip })
@@ -74,14 +82,15 @@ describe('HomePlanner: 入力から路線図まで', () => {
     await user.type(screen.getByLabelText(/旅行先/), '京都市東山エリア')
     fireEvent.change(screen.getByLabelText(/日付/), { target: { value: '2026-11-14' } })
     await user.click(screen.getByRole('button', { name: '旅程を作成する' }))
-    expect(await screen.findByRole('list', { name: '旅程の路線図' })).toBeTruthy()
-
+    const route = await screen.findByRole('list', { name: '旅程の路線図' })
+    await user.click(screen.getByRole('button', { name: '旅行条件・保存済みの旅程' }))
     await user.click(screen.getByRole('button', { name: '旅程を作成する' }))
     const alert = await screen.findByRole('alert')
 
     expect(screen.queryByRole('list', { name: '旅程の路線図' })).toBeNull()
     expect(alert.textContent).toContain('入力内容は保持されています。')
-    expect(alert.textContent).not.toContain('元の旅程')
     expect((screen.getByLabelText(/旅行先/) as HTMLInputElement).value).toBe('京都市東山エリア')
+    await user.click(screen.getByRole('button', { name: '旅程へ戻る' }))
+    expect(screen.getByRole('list', { name: '旅程の路線図' })).toBe(route)
   })
 })

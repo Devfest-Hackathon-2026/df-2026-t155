@@ -42,7 +42,7 @@ describe('Tripの同期（指摘1）', () => {
     expect(screen.queryByText('朝の庭園（架空）')).toBeNull()
   })
 
-  it('固定の切り替えは、最新のTripを親へ渡す（版を1上げ、他は変えない）', async () => {
+  it('固定の切り替えは、最新のTripを親へ渡す（保存済みの版や他の予定は変えない）', async () => {
     const onTripChange = vi.fn()
     const user = userEvent.setup()
     render(<TripRouteView trip={sampleTrip} onTripChange={onTripChange} />)
@@ -51,7 +51,7 @@ describe('Tripの同期（指摘1）', () => {
 
     expect(onTripChange).toHaveBeenCalledTimes(1)
     const next: Trip = onTripChange.mock.calls[0][0]
-    expect(next.version).toBe(sampleTrip.version + 1)
+    expect(next.version).toBe(sampleTrip.version)
     expect(next.stops[1].isFixed).toBe(true)
     expect(next.stops[0]).toEqual(sampleTrip.stops[0])
     expect(next.stops[2]).toEqual(sampleTrip.stops[2])
@@ -69,11 +69,11 @@ describe('Tripの同期（指摘1）', () => {
     await user.click(within(sheet()).getByRole('button', { name: '固定を解除する' }))
 
     const latest: Trip = onTripChange.mock.calls[1][0]
-    expect(latest.version).toBe(sampleTrip.version + 2)
+    expect(latest.version).toBe(sampleTrip.version)
     expect(latest.stops.map((stop) => stop.isFixed)).toEqual([false, true, true])
   })
 
-  it('親が受け取ったTripを渡し直しても、表示は一貫し、版が重複して上がらない', async () => {
+  it('親が受け取ったTripを渡し直しても、表示は一貫し、保存済みの版を維持する', async () => {
     const seen: Trip[] = []
     function Parent() {
       const [trip, setTrip] = useState(sampleTrip)
@@ -93,7 +93,7 @@ describe('Tripの同期（指摘1）', () => {
     await user.click(within(sheet()).getByRole('button', { name: 'この予定を固定する' }))
 
     expect(seen).toHaveLength(1)
-    expect(seen[0].version).toBe(sampleTrip.version + 1)
+    expect(seen[0].version).toBe(sampleTrip.version)
     expect(stopButton(/昼食店A.*固定予定/)).toBeTruthy()
   })
 

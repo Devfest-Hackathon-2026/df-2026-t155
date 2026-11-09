@@ -66,10 +66,17 @@ const draft = (nextStart: string) => ({
     {
       fixedStopId: 'fixed-morning',
       name: 'AIの改名',
+      kind: 'meal',
       plannedStartTime: '09:00',
       durationMinutes: 10,
     },
-    { fixedStopId: null, name: '昼食', plannedStartTime: nextStart, durationMinutes: 60 },
+    {
+      fixedStopId: null,
+      name: '昼食',
+      kind: 'meal',
+      plannedStartTime: nextStart,
+      durationMinutes: 60,
+    },
     { fixedStopId: null, name: '散歩', plannedStartTime: '14:00', durationMinutes: 60 },
   ],
   learningApplications: [],
@@ -130,7 +137,7 @@ describe('旅程生成のRouteからクライアントまで', () => {
     expect(gemini.generateJson).toHaveBeenCalledTimes(1)
   })
 
-  it('固定予定を入力どおり復元し、自己申告の根拠を未照合にする', async () => {
+  it('固定予定の種別を入力どおり保ち、AIの種別を新規地点にだけ引き継ぐ', async () => {
     gemini.generateJson.mockResolvedValue(JSON.stringify(draft('11:30')))
     const { status, body, result } = await runFlow()
 
@@ -147,6 +154,8 @@ describe('旅程生成のRouteからクライアントまで', () => {
       durationMinutes: 60,
       isFixed: true,
     })
+    expect(result.trip.stops[1]).toMatchObject({ name: '昼食', kind: 'meal', isFixed: false })
+    expect(result.trip.stops[2]).not.toHaveProperty('kind')
     for (const stop of result.trip.stops) {
       expect(stop.placeId).toBeNull()
       expect(stop.evidence).toEqual([])

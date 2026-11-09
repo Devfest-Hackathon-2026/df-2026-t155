@@ -25,7 +25,7 @@ export function LearningApplicationSummary({ trip, learnings }: LearningApplicat
               (id) => stopNames.get(id) ?? `この旅程で確認できない予定（${id}）`,
             )
             return (
-              <li key={learningId} className="rounded-lg border border-current/20 p-3">
+              <li key={learningId} className="gt-card">
                 <p className="break-words text-sm">
                   {byId.get(learningId)?.content ?? `選択時の内容を確認できません（${learningId}）`}
                 </p>
@@ -40,7 +40,7 @@ export function LearningApplicationSummary({ trip, learnings }: LearningApplicat
         </ul>
       )}
       {unreported.length > 0 && (
-        <div className="rounded-lg border border-current/20 p-3 text-sm">
+        <div className="gt-card text-sm">
           <p className="font-semibold">
             生成条件に渡した学びのうち、AIから反映先の報告がなかったもの
           </p>

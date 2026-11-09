@@ -6,11 +6,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { sampleRevision, sampleTrip } from '@/domain/samples'
 import { TripSchema, type Evidence, type Stop, type Trip } from '@/domain'
+import * as reportForm from '@/features/onsite-report/onsite-report-form'
 import type {
   ApplyRevision,
   GenerateRevisions,
   RevisionProposal,
 } from '@/features/revision-review/api-client'
+import * as progressView from '@/features/trip-progress/trip-progress-view'
 
 import { OnSiteReplanningFlow } from './onsite-replanning-flow'
 
@@ -141,6 +143,8 @@ const cafe: Stop = {
 }
 // 固定でない予定が昼食とカフェの2件ある旅程。
 const fourStopTrip = withStops([morning, lunch, cafe, exhibition])
+const transfer: Stop = { ...cafe, id: 'stop-transfer', name: '駅で乗換', kind: 'transport' }
+const tripWithTransfer = withStops([morning, lunch, transfer, exhibition])
 
 const openCandidates = async (
   user: User,
@@ -150,6 +154,7 @@ const openCandidates = async (
   await goToLunch(user)
   await submitReport(user, kind, preset)
   await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+  await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
   await screen.findByRole('table')
 }
 
@@ -168,6 +173,75 @@ const flowNotice = () => {
 }
 
 describe('現地報告から再計画', () => {
+  it('非固定の乗換は現在予定でも報告フォームでも対象外にし、通常の予定は候補を探せる', async () => {
+    const user = userEvent.setup()
+    const generate = vi.fn<GenerateRevisions>().mockResolvedValue({
+      status: 'no_candidates',
+      message: '候補がありません',
+    })
+    render(<OnSiteReplanningFlow trip={tripWithTransfer} initialIndex={2} generate={generate} />)
+
+    expect(currentStop()).toContain(transfer.name)
+    expect(currentStop()).toContain('乗車・乗換は部分修正の対象外です。')
+    expect(currentStop()).not.toContain('固定予定')
+    expect(screen.queryByRole('button', { name: /この予定だけ変更する/ })).toBeNull()
+    expect(generate).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: 'ひとつ前に戻す' }))
+    await user.click(replanButton())
+    expect(screen.queryByRole('radio', { name: /駅で乗換|朝の庭園|14時の予約展示/ })).toBeNull()
+    expect(screen.getByRole('radio', { name: /昼食店A/ })).toBeTruthy()
+    expect(screen.getByText('乗車・乗換は部分修正の対象外です。')).toBeTruthy()
+    await submitReport(user, 'actual')
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    expect(generate).toHaveBeenCalledOnce()
+    expect(generate.mock.calls[0][0].targetStopId).toBe(lunch.id)
+  })
+
+  it('子から対象外のIDが渡されても報告を開始・送信しない', async () => {
+    const user = userEvent.setup()
+    const generate = vi.fn<GenerateRevisions>()
+    const progress = vi.spyOn(progressView, 'TripProgressView')
+    const form = vi.spyOn(reportForm, 'OnSiteReportForm')
+    try {
+      render(<OnSiteReplanningFlow trip={tripWithTransfer} initialIndex={1} generate={generate} />)
+      const start = progress.mock.lastCall?.[0].onReplan
+      if (!start) throw new Error('報告開始のコールバックがありません')
+      const invalidIds = [transfer.id, morning.id, 'missing-stop']
+      for (const id of invalidIds) {
+        act(() => start(id))
+        expect(screen.queryByRole('heading', { name: '現地の状況を報告する' })).toBeNull()
+      }
+
+      await user.click(replanButton())
+      const submit = form.mock.lastCall?.[0].onSubmit
+      if (!submit) throw new Error('報告送信のコールバックがありません')
+      for (const id of invalidIds) {
+        act(() =>
+          submit({
+            targetStopId: id,
+            reason: '閉店していた',
+            context: {
+              phase: 'on_site',
+              report: {
+                kind: 'actual',
+                category: 'closed',
+                description: '閉店していた',
+                targetStopId: id,
+              },
+            },
+          }),
+        )
+        expect(flowNotice().textContent).toContain('修正できる予定を確認してください')
+        expect(screen.queryByRole('button', { name: '変更候補を探す' })).toBeNull()
+      }
+      expect(generate).not.toHaveBeenCalled()
+    } finally {
+      form.mockRestore()
+      progress.mockRestore()
+    }
+  })
+
   it('旅行中に固定でない予定を報告し、on_site文脈で既存の部分修正APIへ渡す', async () => {
     const user = userEvent.setup()
     const generate = vi.fn<GenerateRevisions>().mockResolvedValue({
@@ -237,6 +311,7 @@ describe('現地報告から再計画', () => {
     await submitReport(user, 'simulated')
     expect(screen.getByText(/デモ用の想定です。現地で実際に起きたことではありません/)).toBeTruthy()
     await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     expect(generate.mock.calls[0][0].context).toEqual({
       phase: 'on_site',
@@ -362,6 +437,28 @@ describe('現地報告から再計画', () => {
 })
 
 describe('旅程が変わったあとの古い報告・比較は、元の内容に戻っても復活しない', () => {
+  it('報告後に同じIDの予定が乗車・乗換に変わったら、古い報告から候補を生成しない', async () => {
+    const user = userEvent.setup()
+    const generate = vi.fn<GenerateRevisions>()
+    const { rerender } = render(<OnSiteReplanningFlow trip={sampleTrip} generate={generate} />)
+    await goToLunch(user)
+    await submitReport(user, 'actual')
+    expect(screen.getByRole('button', { name: '変更候補を探す' })).toBeTruthy()
+
+    const updated = {
+      ...sampleTrip,
+      stops: sampleTrip.stops.with(1, { ...lunch, kind: 'transport' as const }),
+    }
+    rerender(<OnSiteReplanningFlow trip={updated} generate={generate} />)
+    const alert = screen.getByRole('alert')
+    expect(alert.textContent).toContain('古い報告からの再計画を中止しました')
+    expect(screen.queryByRole('button', { name: '変更候補を探す' })).toBeNull()
+    await user.click(within(alert).getByRole('button', { name: '旅行中の画面に戻る' }))
+    expect(currentStop()).toContain('乗車・乗換は部分修正の対象外です。')
+    expect(screen.queryByRole('button', { name: /この予定だけ変更する/ })).toBeNull()
+    expect(generate).not.toHaveBeenCalled()
+  })
+
   it('途中で旅程が更新された場合は、古い報告による候補生成を許可しない', async () => {
     const user = userEvent.setup()
     const generate = vi.fn<GenerateRevisions>()

@@ -1,10 +1,12 @@
 import {
   RevisionContextSchema,
+  revisionTargetRestriction,
   type OnSiteReportCategory,
   type RevisionContext,
   type Stop,
   type Trip,
 } from '@/domain'
+import { TRANSPORT_REVISION_UNAVAILABLE } from '@/features/plain-wording/wording'
 
 // 現地の状況の報告フォームの、純粋なロジック（表示を持たない）。
 // 保存・API呼び出し・再計画の処理は持たない。出力は OnSiteReportSubmission として親へ渡す。
@@ -51,9 +53,9 @@ export type ReportFormErrors = Partial<Record<ReportField, string>>
 // 画面の上から下への順。最初の不備へフォーカスを移すときの順序でもある。
 export const REPORT_FIELD_ORDER: readonly ReportField[] = ['target', 'preset', 'note', 'kind']
 
-// 固定予定は、修正の対象にできない。選べる予定（固定されていない予定）だけを返す。
+// 修正の対象にできる予定だけを返す。
 export function selectableStops(trip: Trip): Stop[] {
-  return trip.stops.filter((stop) => !stop.isFixed)
+  return trip.stops.filter((stop) => revisionTargetRestriction(stop) === null)
 }
 
 export function fixedStops(trip: Trip): Stop[] {
@@ -61,7 +63,7 @@ export function fixedStops(trip: Trip): Stop[] {
 }
 
 // 選択中の対象。選べる予定が1件だけなら最初から選択する。
-// 旅程が更新されて、選択中の予定が選べなくなった（固定された・無くなった）場合は、未選択に戻す。
+// 旅程の更新で選択中の予定が対象外になった場合は、選択を見直す。
 // autoSelectSingle が false のときは、選べる予定が1件だけでも選ばない（対象の選び直しを求める場合）。
 export function resolveTargetId(trip: Trip, selectedId: string, autoSelectSingle = true): string {
   const selectable = selectableStops(trip)
@@ -106,17 +108,25 @@ export type BuildResult =
 // 契約に反するものは送らない。空白だけの補足は無視する。
 export function buildSubmission(trip: Trip, values: ReportFormValues): BuildResult {
   const errors: ReportFormErrors = {}
-  const selectable = selectableStops(trip)
 
   if (values.targetStopId === '') {
-    errors.target =
-      selectable.length === 0
+    if (selectableStops(trip).length > 0) {
+      errors.target = 'どの予定の状況かを選んでください。'
+    } else {
+      errors.target = trip.stops.every((stop) => stop.isFixed)
         ? '修正できる予定がありません。すべて固定予定のため、ここからは報告できません。'
-        : 'どの予定の状況かを選んでください。'
-  } else if (!selectable.some((stop) => stop.id === values.targetStopId)) {
-    errors.target = trip.stops.some((stop) => stop.id === values.targetStopId)
-      ? '固定予定は修正の対象にできません。固定されていない予定を選んでください。'
-      : '選んだ予定が見つかりません。もう一度、予定を選んでください。'
+        : '修正できる予定がありません。'
+    }
+  } else {
+    const target = trip.stops.find((stop) => stop.id === values.targetStopId)
+    const restriction = target && revisionTargetRestriction(target)
+    if (!target) {
+      errors.target = '選んだ予定が見つかりません。もう一度、予定を選んでください。'
+    } else if (restriction === 'transport') {
+      errors.target = TRANSPORT_REVISION_UNAVAILABLE
+    } else if (restriction === 'fixed') {
+      errors.target = '固定予定は修正の対象にできません。修正できる予定を選んでください。'
+    }
   }
 
   const note = values.note.trim()

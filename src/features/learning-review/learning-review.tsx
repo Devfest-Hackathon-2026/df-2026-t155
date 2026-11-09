@@ -104,10 +104,8 @@ const REVISION_MATERIAL_LABEL = {
   not_approved: '未承認または却下のため、学びの材料にしません',
 } as const
 
-const fieldClass =
-  'w-full rounded border border-current/40 bg-transparent px-3 py-3 text-base aria-[invalid=true]:border-2'
-const buttonClass =
-  'rounded border border-current/50 px-4 py-3 text-sm font-medium aria-disabled:opacity-50'
+const fieldClass = 'gt-field px-3 py-3'
+const buttonClass = 'gt-button-secondary'
 // 長い文字列でも、モバイル画面で横にはみ出さない。
 const wrapClass = 'break-words [overflow-wrap:anywhere]'
 
@@ -399,7 +397,7 @@ export function LearningReview({
         ) : (
           <ul className="space-y-2 text-sm">
             {revisions.map((revision) => (
-              <li key={revision.id} className={`rounded border border-current/30 p-3 ${wrapClass}`}>
+              <li key={revision.id} className={`gt-card ${wrapClass}`}>
                 <p>
                   <b>{revision.diff.before.name}</b> → <b>{revision.diff.after.name}</b>
                 </p>
@@ -413,7 +411,7 @@ export function LearningReview({
         )}
       </section>
 
-      <form onSubmit={handleSubmit} noValidate className="space-y-3">
+      <form onSubmit={handleSubmit} noValidate className="gt-card space-y-3">
         <div>
           <label htmlFor="reflection-feedback" className="block text-sm font-medium">
             感想・変更した理由
@@ -441,7 +439,7 @@ export function LearningReview({
             </p>
           )}
         </div>
-        <button type="submit" className={buttonClass} aria-disabled={generating || undefined}>
+        <button type="submit" className="gt-button-primary" aria-disabled={generating || undefined}>
           {generating ? '学びの候補を作っています…' : '学びの候補を作る'}
         </button>
       </form>
@@ -456,7 +454,7 @@ export function LearningReview({
         </p>
       </div>
       {phase.kind === 'failed' && (
-        <p role="alert" className="rounded border-2 border-current p-3 text-sm">
+        <p role="alert" className="gt-notice" data-tone="error">
           {phase.failure.message}
           {review.items.length > 0 && '（すでに確認中の候補は、そのまま残っています。）'}
         </p>
@@ -563,7 +561,7 @@ function CandidateCard({
   const scopeId = `learning-scope-${learning.id}`
 
   return (
-    <li className={`space-y-3 rounded border border-current/40 p-4 ${wrapClass}`}>
+    <li className={`gt-card space-y-3 ${wrapClass}`}>
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <span className="rounded border border-current/50 px-2 py-0.5">
           {CATEGORY_LABEL[learning.category]}
@@ -736,13 +734,13 @@ function SavePanel({
     (unknown) => !currentUnknowns.some((current) => sameApprovedContent(current, unknown)),
   )
   return (
-    <div className="space-y-2">
+    <div className="gt-card space-y-2">
       <p className="text-sm">
         <span className="rounded border-2 border-current px-2 py-0.5 font-medium">保存の状態</span>{' '}
         {saveStatusText(status)}
       </p>
       {status.kind === 'failed' && (
-        <p role="alert" className={`rounded border-2 border-current p-3 text-sm ${wrapClass}`}>
+        <p role="alert" className="gt-notice" data-tone="error">
           保存できませんでした。{status.message}
           承認済みの学びと入力中の内容は、そのまま残っています。
           {status.unknownIds && status.unknownIds.length > 0
@@ -751,7 +749,7 @@ function SavePanel({
         </p>
       )}
       {previousUnknowns.length > 0 && (
-        <div role="alert" className={`rounded border-2 border-current p-3 text-sm ${wrapClass}`}>
+        <div role="alert" className="gt-notice" data-tone="error">
           前回の保存結果が未確認の学びが{previousUnknowns.length}
           件あります。保存済み一覧を読み込み直して、状態を確認してください。
           {UNKNOWN_GUIDE}
@@ -765,7 +763,7 @@ function SavePanel({
       <button
         type="button"
         id="learning-save"
-        className={buttonClass}
+        className="gt-button-primary"
         aria-disabled={saving || !canSave || undefined}
         aria-describedby={notice ? 'learning-save-notice' : undefined}
         onClick={onSave}

@@ -34,6 +34,40 @@ const travelUnknown = {
 
 const travelModes = { walk: '徒歩', drive: '車', transit: '公共交通' }
 
+export function sharedRevisionBlockers(
+  trip: Trip,
+  revision: Revision,
+  comparison?: TravelComparison,
+) {
+  const index = trip.stops.findIndex(({ id }) => id === revision.targetStopId)
+  const blockers: string[] = []
+  if (comparison?.originalPlaceId === null) {
+    blockers.push('元の施設を特定できず、別の施設への変更か確認できません。')
+  }
+  const sides = [
+    {
+      stop: trip.stops[index - 1],
+      label: '前の予定',
+      placeId: comparison?.routeEndpoints?.previousPlaceId,
+    },
+    {
+      stop: trip.stops[index + 1],
+      label: '次の予定',
+      placeId: comparison?.routeEndpoints?.nextPlaceId,
+    },
+  ]
+  for (const { stop, label, placeId } of sides) {
+    if (stop?.kind === 'transport') {
+      blockers.push(
+        `${label}「${stop.name}」は乗車・乗換のため、この機能では経路の端点として照合できません。`,
+      )
+    } else if (stop && placeId === null) {
+      blockers.push(`${label}「${stop.name}」の施設を特定できず、移動時間を照合できません。`)
+    }
+  }
+  return blockers
+}
+
 function knownSegment(slot?: TravelSlot) {
   return slot?.presence === 'segment' && slot.segment.status === 'known' ? slot.segment : undefined
 }
@@ -60,11 +94,13 @@ function TravelValue({
   baseline,
   compare = false,
   inline = false,
+  showCheckedAt = true,
 }: {
   slot?: TravelSlot
   baseline?: TravelSlot
   compare?: boolean
   inline?: boolean
+  showCheckedAt?: boolean
 }) {
   if (slot?.presence === 'none') return <>該当区間なし</>
   const segment = slot?.segment
@@ -92,7 +128,7 @@ function TravelValue({
       {!inline && segment?.status === 'known' && (
         <span className="block text-xs text-gt-muted">{segment.source.label}</span>
       )}
-      {checkedAt && (
+      {checkedAt && showCheckedAt && (
         <span className={inline ? undefined : 'block text-xs text-gt-muted'}>
           {inline && '（'}
           {simulated ? '模擬日時' : '照合'} {checkedAt}
@@ -196,6 +232,61 @@ function StopEvidence({ stop, label }: { stop: Stop; label: string }) {
         <UnverifiedBadge />
       )}
     </div>
+  )
+}
+
+export function CandidatePreviewSummary({
+  trip,
+  revision,
+  comparison,
+}: {
+  trip: Trip
+  revision: Revision
+  comparison?: TravelComparison
+}) {
+  const { after } = revision.diff
+  const index = trip.stops.findIndex(({ id }) => id === revision.targetStopId)
+  const fixedStops = trip.stops.filter(({ isFixed }) => isFixed)
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+      <dt className="font-semibold">時刻・滞在</dt>
+      <dd>
+        {after.plannedStartTime}〜{endTime(after)}（{after.durationMinutes}分）
+      </dd>
+      <dt className="font-semibold">前の予定から</dt>
+      <dd>
+        {index === 0 ? (
+          '該当区間なし'
+        ) : (
+          <TravelValue slot={comparison?.after.fromPrevious} inline showCheckedAt={false} />
+        )}
+      </dd>
+      <dt className="font-semibold">次の予定まで</dt>
+      <dd>
+        {index === trip.stops.length - 1 ? (
+          '該当区間なし'
+        ) : (
+          <TravelValue slot={comparison?.after.toNext} inline showCheckedAt={false} />
+        )}
+      </dd>
+      <dt className="font-semibold">固定予定</dt>
+      <dd>
+        {fixedStops.length ? (
+          <>
+            <p>場所・時刻を維持</p>
+            <ul className="text-gt-muted">
+              {fixedStops.map((stop) => (
+                <li key={stop.id}>
+                  {stop.plannedStartTime} {stop.name}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          '固定予定なし'
+        )}
+      </dd>
+    </dl>
   )
 }
 

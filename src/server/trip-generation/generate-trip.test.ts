@@ -218,6 +218,7 @@ describe('Geminiへ渡すJSON Schema', () => {
             required: ['fixedStopId', 'name', 'plannedStartTime', 'durationMinutes'],
             properties: {
               fixedStopId: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+              kind: { type: 'string', enum: ['sight', 'meal', 'transport', 'other'] },
               durationMinutes: { type: 'integer', minimum: 1, maximum: 1440 },
             },
           },
@@ -232,6 +233,11 @@ describe('Geminiへ渡すJSON Schema', () => {
 })
 
 describe('draftスキーマ', () => {
+  it('予約状態など、予定種別の契約に含まれない値を拒否する', () => {
+    const stops = [{ ...validDraft.stops[0], kind: 'reserved' }, ...validDraft.stops.slice(1)]
+    expect(GeneratedTripDraftSchema.safeParse({ ...validDraft, stops }).success).toBe(false)
+  })
+
   it('正常な下書きを受け入れ、JSON Schemaは$schemaを含まず厳密なオブジェクトとして出力する', () => {
     expect(GeneratedTripDraftSchema.safeParse(validDraft).success).toBe(true)
 

@@ -1,8 +1,8 @@
 'use client'
 
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } from 'react'
 
-import { MAX_REVISION_REASON_LENGTH, type Stop, type Trip } from '@/domain'
+import { MAX_REVISION_REASON_LENGTH, type Revision, type Stop, type Trip } from '@/domain'
 import { StatusBadge } from '@/features/trip-map/evidence-badge'
 import type { RouteMeta } from '@/features/trip-map/model'
 import { RouteMap } from '@/features/trip-map/route-map'
@@ -18,7 +18,13 @@ import {
   type RevisionRequest,
   type RevisionResult,
 } from './api-client'
-import { CandidateComparison, ConstraintBadge } from './candidate-comparison'
+import {
+  CandidateComparison,
+  CandidatePreviewSummary,
+  ConstraintBadge,
+  sharedRevisionBlockers,
+} from './candidate-comparison'
+import { checkStopEvidence } from './proposal-checks'
 
 const generationMessages = {
   no_candidates: '条件に合う候補が見つかりませんでした。希望条件を見直して再試行できます。',
@@ -48,10 +54,8 @@ const applyMessages = {
 }
 
 const inputClass = 'gt-field px-3 py-2'
-const primaryClass =
-  'min-h-12 rounded-xl bg-gt-ink px-3 py-2 text-sm font-semibold text-white motion-safe:transition-colors motion-safe:duration-200 hover:bg-gt-muted disabled:bg-gt-rule disabled:text-gt-muted aria-disabled:bg-gt-rule aria-disabled:text-gt-muted aria-disabled:hover:bg-gt-rule disabled:hover:bg-gt-rule'
-const secondaryClass =
-  'min-h-12 rounded-xl border border-gt-rule bg-gt-paper px-3 py-2 text-sm font-semibold motion-safe:transition-colors motion-safe:duration-200 hover:bg-gt-bg disabled:opacity-50'
+const primaryClass = 'gt-button-primary'
+const secondaryClass = 'gt-button-secondary'
 
 function ProgressMark() {
   return (
@@ -121,6 +125,8 @@ export function RevisionReview({
     RevisionProposal
   > | null>(null)
   const [review, setReview] = useState<Review | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const id = useId()
   const [isGenerating, setIsGenerating] = useState(false)
   const [isApplying, setIsApplying] = useState(false)
   const [applyFailure, setApplyFailure] = useState<{
@@ -134,11 +140,11 @@ export function RevisionReview({
   const preferencesField = useRef<HTMLTextAreaElement>(null)
   const submitButton = useRef<HTMLButtonElement>(null)
   const cancelButton = useRef<HTMLButtonElement>(null)
-  const hasReview = review !== null
+  const stage = !review ? 'reason' : confirming ? 'confirm' : 'preview'
 
   useEffect(() => {
     heading.current?.focus()
-  }, [hasReview])
+  }, [stage])
 
   useLayoutEffect(() => {
     if (!generationFailure) return
@@ -228,6 +234,7 @@ export function RevisionReview({
     if (result.status === 'proposed') {
       const proposal = readRevisionProposal(result, request)
       if (proposal) {
+        setConfirming(false)
         setReview({ request, proposal, selected: 0 })
       } else {
         setGenerationFailure({ status: 'unexpected' })
@@ -248,12 +255,40 @@ export function RevisionReview({
   const simulated =
     candidate?.context.phase === 'on_site' && candidate.context.report.kind === 'simulated'
   const proposalToken = candidate && review?.proposal.proposalTokens?.[candidate.id]
-  const canApprove =
+  const isApprovable = (revision: Revision) =>
+    Boolean(apply) &&
     generationAvailable &&
-    constraintSatisfied &&
+    revision.constraintCheck.status === 'satisfied' &&
     !requiresLatestTrip &&
-    !simulated &&
-    Boolean(proposalToken)
+    !(revision.context.phase === 'on_site' && revision.context.report.kind === 'simulated') &&
+    Boolean(review?.proposal.proposalTokens?.[revision.id])
+  const canApprove = Boolean(candidate && isApprovable(candidate))
+  const approvableCount = review?.proposal.revisions.filter(isApprovable).length ?? 0
+  const blockers =
+    candidate && !constraintSatisfied ? sharedRevisionBlockers(trip, candidate, comparison) : []
+  const canReviewConditions = blockers.length === 0
+  const hoursUnconfirmed =
+    candidate?.constraintCheck.status === 'unknown' &&
+    checkStopEvidence(candidate.diff.after, 'opening_hours').status === 'unverifiable'
+  const walkingRouteMissing = [comparison?.after.fromPrevious, comparison?.after.toNext].some(
+    (slot) =>
+      slot?.presence === 'segment' &&
+      slot.segment.status === 'unknown' &&
+      slot.segment.reason === 'no_route' &&
+      slot.segment.mode === 'walk',
+  )
+  const conditionsHint =
+    !canReviewConditions || simulated
+      ? null
+      : hoursUnconfirmed
+        ? '営業時間を照合できる別の施設を探す場合は、希望条件を見直せます。'
+        : walkingRouteMissing && !canDrive
+          ? '車を使える場合は、条件を見直して車での移動も確認できます。'
+          : null
+  const reviewConditions = () => {
+    setReview(null)
+    setApplyFailure(null)
+  }
   const constraintViolated = candidate?.constraintCheck.status === 'violated'
   const unapprovableNote = constraintViolated
     ? '旅程の条件に合わないため、この候補は選べません。'
@@ -355,31 +390,27 @@ export function RevisionReview({
 
   return (
     <section
-      aria-labelledby="revision-heading"
+      aria-labelledby={`${id}-heading`}
       className="mx-auto max-w-[34rem] space-y-4 rounded-2xl bg-gt-bg p-3 text-gt-ink sm:p-5"
     >
       <header className="space-y-2">
-        <p
-          key={hasReview ? 'compare' : 'conditions'}
-          className="gt-enter text-sm font-semibold text-gt-muted"
-        >
-          {review ? '2 / 2　候補を確認' : '1 / 2　希望を入力'}
+        <p key={stage} className="gt-enter text-sm font-semibold text-gt-muted">
+          部分修正 {stage === 'reason' ? '1' : stage === 'preview' ? '2' : '3'} / 3
         </p>
-        <h2
-          id="revision-heading"
-          tabIndex={-1}
-          ref={heading}
-          className="text-xl font-bold leading-snug wrap-anywhere"
-        >
-          {review ? '候補を比較して承認' : 'この予定だけ変更'}
+        <h2 id={`${id}-heading`} tabIndex={-1} ref={heading} className="gt-screen-title">
+          {stage === 'reason'
+            ? 'この予定だけ変更'
+            : stage === 'preview'
+              ? '候補を選ぶ'
+              : '変更内容の確認'}
         </h2>
         <p className="text-sm font-bold wrap-anywhere">
           {target.plannedStartTime}　{target.name}
         </p>
         <p className="text-sm text-gt-muted">
-          この予定だけが変更の対象です。ほかの予定や固定時刻はそのままです。
+          開始時刻と滞在時間を維持し、この予定の場所だけを変更します。
         </p>
-        {review && (
+        {stage === 'confirm' && review && (
           <p className="whitespace-pre-wrap text-sm text-gt-muted wrap-anywhere">
             {review.request.reason}
           </p>
@@ -395,7 +426,7 @@ export function RevisionReview({
       </p>
 
       {!review && (
-        <form className="gt-enter space-y-4" onSubmit={generateCandidates} noValidate>
+        <form className="gt-card gt-enter space-y-4" onSubmit={generateCandidates} noValidate>
           <fieldset
             disabled={isGenerating || generationFailure?.status === 'conflict'}
             className="min-w-0 space-y-3"
@@ -412,7 +443,7 @@ export function RevisionReview({
                 value={reason}
                 readOnly={onSiteReport !== undefined}
                 aria-invalid={invalidReason}
-                aria-describedby={invalidReason ? 'revision-reason-error' : undefined}
+                aria-describedby={invalidReason ? `${id}-reason-error` : undefined}
                 onChange={(event) => {
                   setReason(event.target.value)
                   setInvalidReason(false)
@@ -424,7 +455,7 @@ export function RevisionReview({
               <p className="text-sm text-gt-muted">報告を直す場合は、前の画面に戻ってください。</p>
             )}
             {invalidReason && (
-              <p id="revision-reason-error" role="alert" className="text-sm text-gt-warn">
+              <p id={`${id}-reason-error`} role="alert" className="text-sm text-gt-warn">
                 修正理由を入力してください。
               </p>
             )}
@@ -437,7 +468,7 @@ export function RevisionReview({
                 className={inputClass}
                 value={preferences}
                 aria-invalid={reasonLength !== null}
-                aria-describedby={reasonLength !== null ? 'revision-length-error' : undefined}
+                aria-describedby={reasonLength !== null ? `${id}-length-error` : undefined}
                 onChange={(event) => {
                   setPreferences(event.target.value)
                   setReasonLength(null)
@@ -445,7 +476,7 @@ export function RevisionReview({
               />
             </label>
             {reasonLength !== null && (
-              <p id="revision-length-error" role="alert" className="text-sm text-gt-warn">
+              <p id={`${id}-length-error`} role="alert" className="text-sm text-gt-warn">
                 {`${onSiteReport ? '現地の報告内容' : '修正理由'}と希望条件を合わせて${MAX_REASON_LENGTH}文字以内にしてください（現在${reasonLength}文字）。${onSiteReport ? '希望条件' : '修正理由か希望条件'}を短くしてから、もう一度送ってください。`}
               </p>
             )}
@@ -492,8 +523,13 @@ export function RevisionReview({
         </form>
       )}
 
-      {review && (
-        <div className="gt-enter space-y-2">
+      {stage === 'preview' && review && candidate && (
+        <div className="gt-enter space-y-3">
+          <p className="text-sm font-semibold" role="status">
+            {approvableCount === 0 ? '承認できる候補はありません' : `承認可能 ${approvableCount}件`}
+            {review.proposal.revisions.length > approvableCount &&
+              ` ／ 承認不可 ${review.proposal.revisions.length - approvableCount}件`}
+          </p>
           <div
             role="group"
             aria-label="変更候補を切り替える"
@@ -505,27 +541,72 @@ export function RevisionReview({
                 type="button"
                 aria-pressed={review.selected === index}
                 disabled={isApplying}
-                className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border border-gt-rule bg-gt-paper p-1 text-sm font-semibold motion-safe:transition-colors motion-safe:duration-200 aria-pressed:border-gt-preview aria-pressed:bg-gt-preview-bg aria-pressed:text-gt-preview"
+                data-approvable={isApprovable(revision)}
+                className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border border-gt-muted bg-gt-paper p-2 text-sm font-semibold aria-pressed:border-gt-preview aria-pressed:outline-2 aria-pressed:outline-gt-preview aria-pressed:data-[approvable=true]:bg-gt-preview-bg"
                 onClick={() => {
                   setReview({ ...review, selected: index })
                   if (!requiresLatestTrip) setApplyFailure(null)
                 }}
               >
-                {candidateLabel(index)}
-                <ConstraintBadge status={revision.constraintCheck.status} />
+                <span>{candidateLabel(index)}</span>
+                <span className={isApprovable(revision) ? 'text-gt-ok' : 'text-gt-muted'}>
+                  {isApprovable(revision) ? '承認可能' : '承認不可'}
+                </span>
               </button>
             ))}
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-x-2">
-            <p aria-hidden="true" className="flex flex-wrap items-center gap-1 text-sm">
-              {label}を表示中
-              {isApplying && <ProgressMark />}
-              <StatusBadge key={approvalStatus} tone="unverified">
-                <span className="gt-enter">{approvalStatus}</span>
-              </StatusBadge>
-            </p>
+          <section className="gt-card space-y-3" aria-label="選択中の候補の概要">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="font-bold">
+                {label}　{candidate.diff.after.name}
+              </h3>
+              <ConstraintBadge status={candidate.constraintCheck.status} />
+              <StatusBadge tone="unverified">{approvalStatus}</StatusBadge>
+            </div>
+            {blockers.length > 0 && (
+              <div className="gt-notice space-y-1" data-tone="error">
+                <ul className="list-disc space-y-1 pl-5">
+                  {blockers.map((blocker) => (
+                    <li key={blocker}>{blocker}</li>
+                  ))}
+                </ul>
+                <p>この確認は候補に共通します。候補を切り替えるだけでは解消しません。</p>
+              </div>
+            )}
+            {!constraintSatisfied && (
+              <p className="text-sm">{candidate.constraintCheck.explanation}</p>
+            )}
+            {constraintSatisfied && approvalNote && <p className="text-sm">{approvalNote}</p>}
+            <CandidatePreviewSummary trip={trip} revision={candidate} comparison={comparison} />
+            {conditionsHint && (
+              <div className="space-y-1">
+                <p className="text-sm">{conditionsHint}</p>
+                <button
+                  type="button"
+                  className={secondaryClass}
+                  disabled={requiresLatestTrip}
+                  onClick={reviewConditions}
+                >
+                  条件を見直す
+                </button>
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={secondaryClass} onClick={onCancel}>
+                {requiresLatestTrip ? '旅程を確認' : cancelLabel}
+              </button>
+              <button
+                type="button"
+                className={canApprove ? primaryClass : secondaryClass}
+                onClick={() => setConfirming(true)}
+              >
+                変更内容を確認する
+              </button>
+            </div>
+          </section>
+          <div className="flex flex-wrap items-center gap-2">
             <a
-              href={`#stop-${encodeURIComponent(target.id)}`}
+              href={`#${encodeURIComponent(`${id}-stop-${target.id}`)}`}
               className="inline-flex min-h-11 items-center text-sm font-semibold text-gt-preview underline underline-offset-2"
             >
               路線図の分岐を見る
@@ -534,18 +615,32 @@ export function RevisionReview({
         </div>
       )}
 
-      <RouteMap
-        trip={trip}
-        meta={meta}
-        preview={candidate && { stop: candidate.diff.after, label, revisionId: candidate.id }}
-      />
+      {(stage === 'preview' || generationFailure) && (
+        <RouteMap
+          idPrefix={id}
+          trip={trip}
+          meta={meta}
+          preview={candidate && { stop: candidate.diff.after, label, revisionId: candidate.id }}
+        />
+      )}
 
-      {review && candidate && (
+      {stage === 'confirm' && candidate && (
         <>
-          <section className="space-y-3" aria-labelledby="comparison-heading">
-            <h3 id="comparison-heading" className="text-lg font-bold">
-              根拠と変更内容を比較
-            </h3>
+          <section className="gt-card space-y-3" aria-labelledby={`${id}-comparison`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 id={`${id}-comparison`} className="text-lg font-bold">
+                {label}の根拠と変更内容
+              </h3>
+              <StatusBadge tone="unverified">{approvalStatus}</StatusBadge>
+            </div>
+            <button
+              type="button"
+              className={secondaryClass}
+              disabled={isApplying || requiresLatestTrip}
+              onClick={() => setConfirming(false)}
+            >
+              候補の選択へ戻る
+            </button>
             <CandidateComparison
               key={candidate.id}
               trip={trip}
@@ -553,17 +648,16 @@ export function RevisionReview({
               label={label}
               comparison={comparison}
             />
-            <button
-              type="button"
-              className="min-h-11 text-sm font-bold underline disabled:opacity-50"
-              disabled={isApplying || requiresLatestTrip}
-              onClick={() => {
-                setReview(null)
-                setApplyFailure(null)
-              }}
-            >
-              条件を見直す
-            </button>
+            {canReviewConditions && (
+              <button
+                type="button"
+                className="min-h-11 text-sm font-bold underline disabled:opacity-50"
+                disabled={isApplying || requiresLatestTrip}
+                onClick={reviewConditions}
+              >
+                条件を見直す
+              </button>
+            )}
           </section>
           <footer className="space-y-2 border-t border-gt-rule bg-gt-bg py-2 pb-[max(8px,env(safe-area-inset-bottom))]">
             {applyFailure && (
@@ -572,7 +666,7 @@ export function RevisionReview({
               </div>
             )}
             {approvalNote && (
-              <p id="approval-note" className="text-sm text-gt-muted">
+              <p id={`${id}-approval-note`} className="text-sm text-gt-muted">
                 {approvalNote}
               </p>
             )}
@@ -591,7 +685,7 @@ export function RevisionReview({
                 type="button"
                 className={`flex-1 ${primaryClass}`}
                 aria-disabled={!canApprove || !apply || isApplying}
-                aria-describedby={approvalNote ? 'approval-note' : undefined}
+                aria-describedby={approvalNote ? `${id}-approval-note` : undefined}
                 onClick={() => void approve()}
               >
                 {isApplying ? '適用を確認中…' : '承認して適用を依頼'}

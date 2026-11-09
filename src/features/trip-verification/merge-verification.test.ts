@@ -45,8 +45,10 @@ const renameFirst = (trip: Trip): Trip => ({
 describe('itineraryFingerprint', () => {
   it('固定・版・Place ID・根拠が違っても、内容が同じなら同じ指紋になる', () => {
     const toggled = setStopFixed(sent, 'stop-lunch', true)!
-    expect(toggled.version).not.toBe(sent.version)
     expect(itineraryFingerprint(toggled)).toBe(itineraryFingerprint(sent))
+    expect(itineraryFingerprint({ ...sent, version: sent.version + 1 })).toBe(
+      itineraryFingerprint(sent),
+    )
     expect(itineraryFingerprint(result)).toBe(itineraryFingerprint(sent))
   })
 

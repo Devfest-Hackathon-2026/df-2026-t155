@@ -66,7 +66,9 @@ export function VerifiableTrip({
   trip: Trip
   verify?: VerifyTrip
   renderAfter?: (context: VerifiableTripAfterContext) => ReactNode
-  renderContent?: (context: VerifiableTripAfterContext) => ReactNode
+  renderContent?: (
+    context: VerifiableTripAfterContext & { verificationPanel: ReactNode },
+  ) => ReactNode
 }) {
   const [stored, setStored] = useState<View>(() => fresh(source))
   const view = stored.source === source ? stored : fresh(source)
@@ -137,32 +139,28 @@ export function VerifiableTrip({
         ? { kind: 'partial', summary }
         : { kind: 'withdrawn' }
 
+  const verificationPanel = (
+    <VerificationPanel
+      status={status}
+      phase={state}
+      interrupted={view.interrupted}
+      onVerify={() => void verifyNow()}
+    />
+  )
+  const context = {
+    trip: view.current,
+    adoptExternalChange,
+    routeTrip: view.prop,
+    adoptRouteChange: adoptChange,
+  }
+
+  if (renderContent) return renderContent({ ...context, verificationPanel })
+
   return (
     <div className="space-y-4">
-      <VerificationPanel
-        status={status}
-        phase={state}
-        interrupted={view.interrupted}
-        onVerify={() => void verifyNow()}
-      />
-      {renderContent ? (
-        renderContent({
-          trip: view.current,
-          adoptExternalChange,
-          routeTrip: view.prop,
-          adoptRouteChange: adoptChange,
-        })
-      ) : (
-        <>
-          <RevisionRouteView trip={view.prop} adoptTripChange={adoptChange} />
-          {renderAfter?.({
-            trip: view.current,
-            adoptExternalChange,
-            routeTrip: view.prop,
-            adoptRouteChange: adoptChange,
-          })}
-        </>
-      )}
+      {verificationPanel}
+      <RevisionRouteView trip={view.prop} adoptTripChange={adoptChange} />
+      {renderAfter?.(context)}
     </div>
   )
 }

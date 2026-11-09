@@ -15,6 +15,7 @@ const SYSTEM_INSTRUCTION = `あなたは日帰り旅行の旅程案を作る旅�
 - 固定予定（fixedStops）は、必ずstopsに1回ずつ含め、fixedStopIdに入力のidを入れる。名前・開始時刻・滞在分数は入力のとおりにし、変更しない。固定予定でない地点のfixedStopIdはnullにする。
 - 固定予定を含めて合計3〜4地点にする。固定予定の前後に、移動に無理のない順序で他の地点を配置する。
 - 地点の名前は、地図で検索できる1つの施設・地名の正式名称にする。「A・B」「A／B」「AとB」のように複数をまとめた名前にせず、別々の地点にする。
+- 地点で何をする予定かに沿ってkindを付ける。食事やカフェ利用はmeal、観光や見学はsight、独立した乗車・乗換の予定はtransport、その他の目的が明確ならotherとする。地点間の移動にtransportを付けない。名称だけで判断できない場合はkindを省略する。固定予定のkindは入力に指定があるときだけ引き継ぐ。
 - 営業時間・移動時間・料金・混雑は確認していない。これらを断定して出力に含めない。存在が確かな実在の施設・地名だけを選び、確信が持てない場合は選ばない。
 - 承認済みの学び（approvedLearnings）は、旅程に反映できるものだけを反映する。反映したものだけをlearningApplicationsに、入力にあるidで記録する。反映していない学びは記録しない。
 - 旅程を作れない（条件が矛盾する、実在の地域として特定できない等）場合は、failureを設定してstopsを空にする。入力が足りず判断できない場合はinsufficient_information、条件を満たす旅程を作れない場合はno_candidatesとする。
@@ -39,6 +40,7 @@ export function buildTripPrompt(request: GenerateTripRequest): TripPrompt {
     fixedStops: request.fixedStops.map((stop) => ({
       id: stop.id,
       name: stop.name,
+      kind: stop.kind,
       plannedStartTime: stop.plannedStartTime,
       durationMinutes: stop.durationMinutes,
     })),

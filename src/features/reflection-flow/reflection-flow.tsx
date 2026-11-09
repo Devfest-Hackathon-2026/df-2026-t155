@@ -57,7 +57,7 @@ const SAVED_LIST_NOTE =
 
 interface ReflectionFlowProps {
   initialTripId?: string
-  // トップ画面の中に置くとき。ページの見出し（h1）を持たず、節の見出しとして出す。
+  // 旅程から振り返り画面を開いた場合は、親がページ見出しと戻る操作を出す。
   embedded?: boolean
   // 学びの保存を試みたあとに呼ぶ（成功・失敗にかかわらず）。次の旅の学びの選択を読み込み直すために使う。
   onLearningsChanged?: () => void
@@ -68,8 +68,6 @@ export function ReflectionFlow({
   embedded = false,
   onLearningsChanged,
 }: ReflectionFlowProps) {
-  // トップ画面の中では、見出しをh3・h4にする（トップ画面の旅程の節がh2のため）。
-  const SubHeading = embedded ? 'h4' : 'h2'
   const auth = useSessionScope()
   const [bootError, setBootError] = useState<TopError | null>(null)
   // 直近に認証済みだったセッション。認証の確認中・失敗の間も、UIDが同じなら画面の内容を保つ。
@@ -320,18 +318,14 @@ export function ReflectionFlow({
   return (
     <div className="space-y-6">
       <header className="space-y-2">
-        {embedded ? (
-          <h3 className="text-lg font-semibold">保存した旅行を振り返る</h3>
-        ) : (
-          <h1 className="text-2xl font-semibold">保存した旅行を振り返る</h1>
-        )}
+        {!embedded && <h1 className="gt-screen-title">保存した旅行を振り返る</h1>}
         <p className="text-sm">
           保存した旅程を選び、感想と変更履歴から次の旅のための学びを作ります。
-          学びは本人が確認・承認して保存するまで、次回には使われません。
+          学びは本人が確認・承認して保存した学びは、次の旅程を作るときに選べます。
         </p>
       </header>
       {sessionNotice && (
-        <p role="alert" className="rounded border-2 border-current p-3 text-sm">
+        <p role="alert" className="gt-notice" data-tone="error">
           {sessionNotice}
         </p>
       )}
@@ -342,7 +336,7 @@ export function ReflectionFlow({
         </p>
       )}
       {topError && (
-        <section className="space-y-3 rounded border border-current/40 p-4">
+        <section className="gt-card space-y-3">
           <p role="alert">{topError.message}</p>
           {topError.canStartNew && (
             <>
@@ -356,18 +350,14 @@ export function ReflectionFlow({
             </>
           )}
           <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="rounded border border-current/50 px-4 py-3"
-              onClick={retry}
-            >
+            <button type="button" className="gt-button-secondary" onClick={retry}>
               再試行
             </button>
             {topError.canStartNew && (
               <button
                 type="button"
                 aria-describedby="new-session-warning"
-                className="rounded border border-current/50 px-4 py-3"
+                className="gt-button-secondary"
                 onClick={() => void openSession(true)}
               >
                 新しい利用を始める
@@ -378,23 +368,25 @@ export function ReflectionFlow({
       )}
       {trips?.kind === 'ready' && (
         <section className="space-y-3" aria-labelledby="saved-trips-heading">
-          <SubHeading id="saved-trips-heading" className="text-lg font-semibold">
+          <h2 id="saved-trips-heading" className="text-lg font-semibold">
             保存済みの旅行
-          </SubHeading>
+          </h2>
           {trips.warning && (
             <p role="alert" className="text-sm">
               {trips.warning}
             </p>
           )}
           {trips.trips.length === 0 ? (
-            <div className="space-y-2 rounded border border-current/30 p-4 text-sm">
+            <div className="gt-card space-y-2 text-sm">
               <p>保存された旅行がありません。</p>
               <p>
                 旅行計画を作るだけでは保存されません。保存が完了した旅程だけを、振り返りに使えます。
               </p>
-              <Link className="underline" href="/">
-                旅行計画へ戻る
-              </Link>
+              {!embedded && (
+                <Link className="gt-button-secondary" href="/">
+                  旅行計画へ戻る
+                </Link>
+              )}
             </div>
           ) : (
             <ul className="space-y-2">
@@ -404,7 +396,7 @@ export function ReflectionFlow({
                     type="button"
                     aria-pressed={selectedTripId === trip.id}
                     onClick={(event) => requestTrip(trip.id, event.currentTarget)}
-                    className="w-full rounded border border-current/40 px-4 py-3 text-left aria-pressed:border-2"
+                    className="gt-button-secondary block w-full wrap-anywhere text-left"
                   >
                     <span className="font-medium">{trip.region}</span>
                     <span className="ml-3 text-sm">{trip.date}</span>
@@ -424,7 +416,7 @@ export function ReflectionFlow({
               aria-labelledby="switch-confirm-heading"
               aria-describedby="switch-confirm-description"
               onKeyDown={onConfirmKeyDown}
-              className="space-y-3 rounded border-2 border-current p-4"
+              className="gt-card space-y-3 border-gt-unk"
             >
               <h3 id="switch-confirm-heading" className="text-base font-semibold">
                 まだ保存していない承認済みの学びがあります
@@ -435,18 +427,10 @@ export function ReflectionFlow({
                 すでに保存した学びは消えません。
               </p>
               <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className="rounded border border-current/50 px-4 py-3"
-                  onClick={cancelSwitch}
-                >
+                <button type="button" className="gt-button-secondary" onClick={cancelSwitch}>
                   この旅行に残る
                 </button>
-                <button
-                  type="button"
-                  className="rounded border border-current/50 px-4 py-3"
-                  onClick={confirmSwitch}
-                >
+                <button type="button" className="gt-button-secondary" onClick={confirmSwitch}>
                   保存せずに切り替える
                 </button>
               </div>
@@ -463,7 +447,7 @@ export function ReflectionFlow({
           </p>
           {selectedTripId && (
             <button
-              className="rounded border border-current/50 px-4 py-3"
+              className="gt-button-secondary"
               type="button"
               onClick={() => setReloadAttempt((value) => value + 1)}
             >
@@ -474,7 +458,7 @@ export function ReflectionFlow({
       )}
       {history?.kind === 'ready' && (
         <section className="space-y-4">
-          <p className="rounded border border-current/30 p-3 text-sm">
+          <p className="gt-card text-sm">
             {history.history.trip.region}（{history.history.trip.date}
             ）の保存済みデータを表示しています。 保存された修正案は、すべて未承認です。
             未承認の変更や模擬報告は、実際に起きた出来事として学びにしません。
@@ -494,15 +478,15 @@ export function ReflectionFlow({
             onApprovedChange={handleApprovedChange}
           />
           <section aria-labelledby="saved-learnings-heading" className="space-y-2">
-            <SubHeading id="saved-learnings-heading" className="text-lg font-semibold">
+            <h2 id="saved-learnings-heading" className="text-lg font-semibold">
               保存済みの学び
-            </SubHeading>
+            </h2>
             <p id="saved-learnings-note" className="text-sm">
               {SAVED_LIST_NOTE}
             </p>
             <button
               type="button"
-              className="rounded border border-current/50 px-3 py-2 text-sm"
+              className="gt-button-secondary"
               onClick={() => void refreshSaved()}
             >
               保存済みの学びを読み込み直す
@@ -523,7 +507,7 @@ export function ReflectionFlow({
             {saved && saved.learnings.length > 0 && (
               <ul className="space-y-2">
                 {saved.learnings.map(({ learning }) => (
-                  <li key={learning.id} className="rounded border border-current/30 p-3 text-sm">
+                  <li key={learning.id} className="gt-card text-sm">
                     <p className="break-words font-medium">{learning.content}</p>
                     <p>
                       適用範囲：

@@ -87,14 +87,13 @@ export function worstEvidence(evidence: readonly Evidence[]): Evidence | null {
 
 // 固定状態だけを切り替えた新しいTripを返す（元は変更しない）。存在しないIDならnull。
 // 固定は場所・時刻・滞在を含むStop全体の固定で、他の予定や内容は一切変えない。
-// 【画面の先行実装用】保存や認可は#10。サーバー側の状態遷移が別途必要。
+// 画面上の編集だけなので、保存済みの版は進めない。
 export function setStopFixed(trip: Trip, stopId: string, fixed: boolean): Trip | null {
   const target = trip.stops.find((stop) => stop.id === stopId)
   if (!target) return null
   if (target.isFixed === fixed) return trip
   return {
     ...trip,
-    version: trip.version + 1,
     stops: trip.stops.map((stop) => (stop.id === stopId ? { ...stop, isFixed: fixed } : stop)),
   }
 }

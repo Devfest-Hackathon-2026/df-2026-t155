@@ -20,6 +20,11 @@ import { fakeAppCheck } from '../../../tests/helpers/fake-app-check'
 import { fakeAuth } from '../../../tests/helpers/fake-auth-client'
 import { createFakeBackend, isListLearnings } from '../../../tests/helpers/fake-persistence-backend'
 
+import { fromTripDocument, toTripDocument } from '@/server/persistence/dto'
+import { documentKey } from '@/server/persistence/paths'
+import { generateTrip } from '@/server/trip-generation/generate-trip'
+import { GenerateTripHttpRequestSchema } from '@/server/trip-generation/http-request'
+
 import { HomePlanner } from './home-planner'
 
 // 通し導線の結合テスト。認証SDK・App Check・外部API（生成・照合）・保存先だけを差し替え、
@@ -189,7 +194,7 @@ function setup(
   const backend = createFakeBackend(accounts, { candidates })
   const generateCalls: GenerateCall[] = []
   const state = {
-    generate: (): Response => json({ status: 'proposed', trip: generatedTrip }),
+    generate: (): Response | Promise<Response> => json({ status: 'proposed', trip: generatedTrip }),
     verifyCalls: 0,
   }
   const fetchFn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -238,7 +243,16 @@ async function saveTripFromScreen(user: User) {
   await screen.findByText(/保存を確認しました/)
 }
 
+const showDuring = (user: User) => user.click(screen.getByRole('button', { name: '旅行中' }))
+const showBefore = (user: User) => user.click(screen.getByRole('button', { name: '旅行前' }))
+const openReflection = (user: User) =>
+  user.click(screen.getByRole('button', { name: '保存した旅行を振り返る' }))
+const backToTrip = (user: User) => user.click(screen.getByRole('button', { name: '旅程へ戻る' }))
+const editInput = (user: User) =>
+  user.click(screen.getByRole('button', { name: '旅行条件・保存済みの旅程' }))
+
 const goToLunch = async (user: User) => {
+  await showDuring(user)
   await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
   await user.click(screen.getByRole('button', { name: '予定が変わった？この予定だけ変更する' }))
 }
@@ -257,6 +271,7 @@ async function reportAndOpenCandidates(user: User, kind: 'actual' | 'simulated')
     }),
   )
   await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+  await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
   await screen.findByRole('table')
 }
 
@@ -290,6 +305,186 @@ afterEach(() => {
 })
 
 describe('トップ画面の通し導線：生成→照合→保存→現地報告→修正の採用', () => {
+  it('生成した食事をチケットで表示し、照合・固定・保存・再読込でも種別を維持する', async () => {
+    const { backend, generateCalls, state } = setup()
+    const generateJson = vi.fn().mockResolvedValue(
+      JSON.stringify({
+        failure: null,
+        stops: [
+          {
+            fixedStopId: null,
+            name: '庭園',
+            kind: 'sight',
+            plannedStartTime: '10:00',
+            durationMinutes: 60,
+          },
+          {
+            fixedStopId: null,
+            name: '鴨川食堂',
+            kind: 'meal',
+            plannedStartTime: '12:00',
+            durationMinutes: 75,
+          },
+          {
+            fixedStopId: null,
+            name: '喫茶室（種別未指定）',
+            plannedStartTime: '14:00',
+            durationMinutes: 60,
+          },
+        ],
+        learningApplications: [],
+      }),
+    )
+    state.generate = async () => {
+      const { learningSelections, ...conditions } = GenerateTripHttpRequestSchema.parse(
+        generateCalls.at(-1)?.body,
+      )
+      expect(learningSelections).toEqual([])
+      const result = await generateTrip(
+        { ...conditions, learnings: [] },
+        { client: { generateJson } },
+      )
+      return json(result, result.status === 'proposed' ? 200 : 422)
+    }
+    backend.intercept(
+      (call) => call.method === 'POST' && call.path === '/api/trips',
+      ({ call }) => {
+        const input = TripSchema.parse(call.body)
+        const saved = fromTripDocument(toTripDocument({ uid: A }, input), documentKey(input.id))
+        backend.account(A).trips.push(saved)
+        return json({ trip: saved }, 201)
+      },
+    )
+
+    const user = userEvent.setup()
+    const first = renderHome()
+    const card = (name: RegExp) =>
+      within(screen.getByRole('list', { name: '旅程の路線図' })).getByRole('button', { name })
+    const meal = () => card(/鴨川食堂/)
+    await generate(user)
+    expect(generateJson).toHaveBeenCalledOnce()
+    expect(meal().dataset.variant).toBe('ticket')
+    expect(meal().textContent).toContain('12:00〜13:15・75分')
+    expect(meal().textContent).toContain('未照合')
+    expect(card(/庭園/).dataset.variant).toBe('station')
+    expect(card(/喫茶室/).dataset.variant).toBe('station')
+
+    await verify(user)
+    expect(meal().dataset.variant).toBe('ticket')
+    await user.click(meal())
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'この予定を固定する' }),
+    )
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(meal().textContent).toContain('固定予定')
+    expect(meal().dataset.variant).toBe('ticket')
+    await saveTripFromScreen(user)
+    expect(backend.account(A).trips[0].stops.map(({ kind }) => kind)).toEqual([
+      'sight',
+      'meal',
+      undefined,
+    ])
+    expect(backend.account(A).trips[0].stops[1]).toMatchObject({ isFixed: true, evidence: [] })
+
+    first.unmount()
+    renderHome()
+    await user.click(screen.getByRole('button', { name: '保存した旅程で旅行を続ける' }))
+    await user.click(await screen.findByRole('button', { name: new RegExp(REGION) }))
+    expect(meal().dataset.variant).toBe('ticket')
+    expect(meal().textContent).toContain('固定予定')
+    expect(card(/喫茶室/).dataset.variant).toBe('station')
+  })
+
+  it('未保存で固定して解除しても、保存や部分修正を解禁しない', async () => {
+    const { backend } = setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    const sheet = within(screen.getByRole('dialog'))
+    await user.click(sheet.getByRole('button', { name: 'この予定を固定する' }))
+    await user.click(sheet.getByRole('button', { name: '固定を解除する' }))
+    expect(sheet.queryByRole('button', { name: 'この予定だけ変更' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '承認して適用を依頼' })).toBeNull()
+    expect(backend.account(A).trips).toEqual([])
+    expect(applyRevision).not.toHaveBeenCalled()
+  })
+
+  it('照合後に保存しても、固定操作なしで非固定地点を変更できる。固定の変更は保存済みと扱わない', async () => {
+    const { backend } = setup()
+    backend.intercept(
+      (call) => call.method === 'POST' && call.path === '/api/trips',
+      ({ call }) => {
+        const input = TripSchema.parse(call.body)
+        const saved = fromTripDocument(toTripDocument({ uid: A }, input), documentKey(input.id))
+        backend.account(A).trips.push(saved)
+        return json({ trip: saved }, 201)
+      },
+    )
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await verify(user)
+    await saveTripFromScreen(user)
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    expect(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'この予定だけ変更' }),
+    ).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await user.click(screen.getByRole('button', { name: new RegExp(exhibition.name) }))
+    const fixedSheet = within(screen.getByRole('dialog'))
+    expect(
+      fixedSheet.getByRole<HTMLButtonElement>('button', { name: '固定中は変更できません' })
+        .disabled,
+    ).toBe(true)
+    await user.click(fixedSheet.getByRole('button', { name: '固定を解除する' }))
+    expect(fixedSheet.queryByRole('button', { name: 'この予定だけ変更' })).toBeNull()
+    await user.click(fixedSheet.getByRole('button', { name: 'この予定を固定する' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    expect(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'この予定だけ変更' }),
+    ).toBeTruthy()
+    expect(panelStatus()).toContain('照合結果あり')
+    expect(backend.account(A).trips[0].version).toBe(0)
+    expect(backend.account(A).trips[0].stops[2].isFixed).toBe(true)
+  })
+
+  it('保存済み旅程を再読込した直後は変更でき、Place IDが変わる照合の後は正本に戻るまで変更できない', async () => {
+    const { backend } = setup()
+    backend.account(A).trips.push(generatedTrip)
+    const user = userEvent.setup()
+    renderHome()
+    await user.click(screen.getByRole('button', { name: '保存した旅程で旅行を続ける' }))
+    await user.click(await screen.findByRole('button', { name: new RegExp(generatedTrip.region) }))
+    const openLunch = () => user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
+    await openLunch()
+    expect(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'この予定だけ変更' }),
+    ).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+
+    await verify(user)
+    await openLunch()
+    const sheet = within(screen.getByRole('dialog'))
+    expect(sheet.queryByRole('button', { name: 'この予定だけ変更' })).toBeNull()
+    expect(sheet.getByText(/画面の旅程が保存時点と異なります/)).toBeTruthy()
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(screen.queryByRole('button', { name: '本人の操作で旅程を保存する' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: '保存済みの旅程へ戻す' }))
+    await openLunch()
+    expect(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'この予定だけ変更' }),
+    ).toBeTruthy()
+    expect(applyRevision).not.toHaveBeenCalled()
+    expect(backend.account(A).trips[0]).toEqual(generatedTrip)
+  })
+
   it('保存後は旅行前の予定を部分修正できる', async () => {
     setup()
     const user = userEvent.setup()
@@ -300,6 +495,15 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
     await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
     await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    const preview = await screen.findByRole('button', { name: '変更内容を確認する' })
+    expect(screen.queryByRole('button', { name: '承認して適用を依頼' })).toBeNull()
+    await showDuring(user)
+    expect(screen.queryByRole('button', { name: '変更内容を確認する' })).toBeNull()
+    await showBefore(user)
+    expect(screen.getByRole('button', { name: '変更内容を確認する' })).toBe(preview)
+    expect(generateRevisions).toHaveBeenCalledOnce()
+    expect(applyRevision).not.toHaveBeenCalled()
+    await user.click(preview)
     await screen.findByRole('table')
     expect(generateRevisions.mock.calls[0][0].context).toEqual({ phase: 'planning' })
     await user.click(approve())
@@ -323,6 +527,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
     await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
     await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     await user.click(approve())
     await screen.findByText(/候補の保存結果を確認できません/)
@@ -340,6 +545,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
     expect(screen.queryByLabelText('修正理由（必須）')).toBeNull()
     await user.click(screen.getByRole('button', { name: '閉じる' }))
+    await showDuring(user)
     await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
     await user.click(screen.getByRole('button', { name: '予定が変わった？この予定だけ変更する' }))
     expect(screen.queryByRole('heading', { name: '現地の状況を報告する' })).toBeNull()
@@ -381,6 +587,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await user.click(approve())
     await waitFor(() => expect(applyRevision).toHaveBeenCalledTimes(1))
 
+    await showBefore(user)
     // 旅程が変わった：路線図は新しい昼食、照合は取り下げられて未確認に戻る。
     const route = within(screen.getAllByRole('list', { name: '旅程の路線図' })[0])
     await waitFor(() => expect(route.getByText(after.name)).toBeTruthy())
@@ -465,11 +672,15 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
       await generate(user)
       await verify(user)
       await saveTripFromScreen(user)
+      await openReflection(user)
+      await screen.findByRole('button', { name: '学びの候補を作る' })
+      await backToTrip(user)
       if (phase === 'planning') {
         await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
         await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
         await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
         await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+        await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
         await screen.findByRole('table')
         expect(generateRevisions.mock.calls[0][0].context).toEqual({ phase: 'planning' })
       } else {
@@ -480,9 +691,10 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
       await waitFor(() =>
         expect(backend.calls.filter((call) => call.path === applyPath)).toHaveLength(1),
       )
+      await showBefore(user)
       await waitFor(() =>
         expect(
-          within(screen.getAllByRole('list', { name: '旅程の路線図' })[0]).getByText(after.name),
+          within(screen.getByRole('list', { name: '旅程の路線図' })).getByText(after.name),
         ).toBeTruthy(),
       )
       const candidateCall = backend.calls.find(
@@ -508,6 +720,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
       expect(backend.account(A).trips[0].stops[2]).toEqual(
         expect.objectContaining({ id: exhibition.id, isFixed: true }),
       )
+      await openReflection(user)
       await waitFor(() =>
         expect(
           backend.calls.filter((call) => call.path === revisionPath && call.method === 'GET')
@@ -516,6 +729,26 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
       )
     },
   )
+  it('旅行前と旅行中の往復で、報告の選択と手動の進行位置を保持する', async () => {
+    setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await saveTripFromScreen(user)
+    await goToLunch(user)
+    const reason = screen.getByRole<HTMLInputElement>('radio', { name: /閉店・臨時休業だった/ })
+    await user.click(reason)
+    await showBefore(user)
+    expect(screen.queryByRole('heading', { name: '現地の状況を報告する' })).toBeNull()
+    await showDuring(user)
+    expect(screen.getByRole('radio', { name: /閉店・臨時休業だった/ })).toBe(reason)
+    expect(reason.checked).toBe(true)
+    await user.click(screen.getByRole('button', { name: '旅行中の画面に戻る' }))
+    expect(
+      within(screen.getByRole('region', { name: 'いまの予定' })).getByText(lunch.name),
+    ).toBeTruthy()
+  })
+
   it('デモ用の模擬報告は、候補を比べられても旅程に適用せず、照合も取り下げない', async () => {
     setup()
     const user = userEvent.setup()
@@ -532,6 +765,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await flush()
 
     expect(applyRevision).not.toHaveBeenCalled()
+    await showBefore(user)
     expect(panelStatus()).toContain('照合結果あり')
     expect(
       within(screen.getAllByRole('list', { name: '旅程の路線図' })[0]).getByText(lunch.name),
@@ -547,6 +781,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await user.click(screen.getByRole('button', { name: new RegExp(lunch.name) }))
     expect(screen.queryByRole('button', { name: 'この予定だけ変更' })).toBeNull()
     await user.click(screen.getByRole('button', { name: '閉じる' }))
+    await showDuring(user)
     await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
     expect(
       screen.queryByRole('button', { name: '予定が変わった？この予定だけ変更する' }),
@@ -562,26 +797,35 @@ it('保存済み旅程を開くと振り返りにも進める', async () => {
   renderHome()
   await user.click(screen.getByRole('button', { name: '保存した旅程で旅行を続ける' }))
   await user.click(await screen.findByRole('button', { name: new RegExp(generatedTrip.region) }))
-  expect(await screen.findByRole('heading', { name: '保存した旅行を振り返る' })).toBeTruthy()
+  await openReflection(user)
+  expect(await screen.findByRole('heading', { name: '振り返り', level: 1 })).toBeTruthy()
 })
 describe('トップ画面：保存して振り返る（同じページ内で、旅程を失わずに進む）', () => {
-  it('保存すると、同じページに振り返りが現れ、保存した旅程が選ばれる。生成結果は残る', async () => {
+  it('保存後に独立した振り返り画面を開け、往復しても旅程と感想が残る', async () => {
     const { backend } = setup()
     const user = userEvent.setup()
     renderHome()
 
     await generate(user)
-    // 保存前は振り返りを出さない。
-    expect(screen.queryByRole('heading', { name: '保存した旅行を振り返る' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '保存した旅行を振り返る' })).toBeNull()
     await saveTripFromScreen(user)
+    expect(screen.queryByRole('heading', { name: '振り返り', level: 1 })).toBeNull()
 
-    // 振り返りは同じページの節（h3）。ページの見出し（h1）を増やさない。
-    const heading = await screen.findByRole('heading', { name: '保存した旅行を振り返る' })
-    expect(heading.tagName).toBe('H3')
-    expect(screen.queryByRole('heading', { level: 1 })).toBeNull()
-    expect(await screen.findByRole('button', { name: '学びの候補を作る' })).toBeTruthy()
-    // 画面上の旅程は残っている。
+    await openReflection(user)
+    const heading = screen.getByRole('heading', { name: '振り返り', level: 1 })
+    expect(document.activeElement).toBe(heading)
+    expect(screen.getAllByRole('heading', { level: 1 })).toEqual([heading])
+    expect(screen.queryByRole('list', { name: '旅程の路線図' })).toBeNull()
+    const feedback = await screen.findByRole<HTMLTextAreaElement>('textbox', {
+      name: /感想・変更した理由/,
+    })
+    await user.type(feedback, '朝は慌ただしかった')
+    await backToTrip(user)
     expect(screen.getByRole('list', { name: '旅程の路線図' })).toBeTruthy()
+    expect(screen.queryByRole('textbox', { name: /感想・変更した理由/ })).toBeNull()
+    await openReflection(user)
+    expect(screen.getByRole('textbox', { name: /感想・変更した理由/ })).toBe(feedback)
+    expect(feedback.value).toBe('朝は慌ただしかった')
     expect(
       backend.calls.filter((call) => call.method === 'POST' && call.path === '/api/trips'),
     ).toHaveLength(1)
@@ -612,7 +856,7 @@ describe('トップ画面：保存して振り返る（同じページ内で、�
     ).toHaveLength(1)
     // 一覧で確かめる導線を出す。
     await user.click(screen.getByRole('button', { name: '保存済みの旅行を確認する' }))
-    expect(await screen.findByRole('heading', { name: '保存した旅行を振り返る' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: '振り返り', level: 1 })).toBeTruthy()
     expect(
       await screen.findByText(new RegExp(sampleTrip.stops.length + '地点・保存済み')),
     ).toBeTruthy()
@@ -647,14 +891,17 @@ describe('トップ画面：認証セッションが変わったら、前のセ�
     await generate(user)
     await verify(user)
     await saveTripFromScreen(user)
+    await openReflection(user)
+    expect(await screen.findByRole('button', { name: '学びの候補を作る' })).toBeTruthy()
+    await backToTrip(user)
     await goToLunch(user)
-    expect(await screen.findByRole('heading', { name: '保存した旅行を振り返る' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '現地の状況を報告する' })).toBeTruthy()
 
     act(() => fakeAuth.signInAs(B))
 
     await waitFor(() => expect(screen.queryByRole('list', { name: '旅程の路線図' })).toBeNull())
     expect(screen.queryByRole('region', { name: '根拠の確認' })).toBeNull()
-    expect(screen.queryByRole('heading', { name: '保存した旅行を振り返る' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: '振り返り', level: 1 })).toBeNull()
     expect(screen.queryByRole('heading', { name: '現地の状況を報告する' })).toBeNull()
     expect(screen.queryByRole('button', { name: '本人の操作で旅程を保存する' })).toBeNull()
     // 本人が入れた旅行条件は残る。
@@ -783,7 +1030,9 @@ describe('トップ画面：前の旅の学びを選んで、次の旅程の生�
     ).toBe(false)
 
     // 次の操作で選択を外しても、生成結果には当時の内容を表示し続ける。
+    await editInput(user)
     await user.click(screen.getByRole('checkbox', { name: /昼食後は休憩を長めに取る/ }))
+    await backToTrip(user)
     expect(summary.getByText(learningA.learning.content)).toBeTruthy()
 
     act(() => fakeAuth.signInAs(B))
@@ -931,6 +1180,7 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
     await generate(user)
     expect(screen.queryByRole('checkbox', { name: /朝の移動は短くする/ })).toBeNull()
     await saveTripFromScreen(user)
+    await openReflection(user)
 
     await user.type(await screen.findByLabelText(/感想・変更した理由/), '朝は慌ただしかった')
     await user.click(screen.getByRole('button', { name: '学びの候補を作る' }))
@@ -938,6 +1188,8 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
     await user.click(screen.getByRole('button', { name: '承認する' }))
     await user.click(screen.getByRole('button', { name: /保存する|保存しています/ }))
 
+    await backToTrip(user)
+    await editInput(user)
     // 次の旅程のための一覧に、保存した学びが現れる。選んで、もう一度生成する。
     state.generate = () => json({ status: 'proposed', trip: { ...generatedTrip, id: 'next-trip' } })
     const checkbox = await screen.findByRole('checkbox', { name: /朝の移動は短くする/ })
@@ -952,6 +1204,7 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
     expect(summary.getByText(/AIから反映先の報告がなかった/)).toBeTruthy()
     expect(summary.getByRole('listitem').textContent).toBe(candidate.content)
 
+    await editInput(user)
     await user.click(screen.getByRole('button', { name: '保存した旅程で旅行を続ける' }))
     await user.click(await screen.findByRole('button', { name: new RegExp(generatedTrip.region) }))
     expect(screen.queryByRole('region', { name: '生成時の学びの適用記録' })).toBeNull()
@@ -959,6 +1212,7 @@ describe('トップ画面：振り返りで保存した学びが、次の旅程�
     await user.click(screen.getByRole('button', { name: 'この予定だけ変更' }))
     await user.type(screen.getByLabelText('修正理由（必須）'), '店が休み')
     await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     expect(generateRevisions.mock.calls[0][0]).toMatchObject({
       context: { phase: 'planning' },

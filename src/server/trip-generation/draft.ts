@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { StopKindSchema } from '../../domain/models'
 import { IdSchema, LocalTimeSchema, TextSchema } from '../../domain/primitives'
 import { buildGeminiResponseJsonSchema } from '../gemini/schema'
 
@@ -11,6 +12,7 @@ export const DraftStopSchema = z.strictObject({
     '入力の固定予定に対応する地点ならそのid。固定予定でない地点はnull',
   ),
   name: TextSchema.describe('地点の名称（施設名や地名）'),
+  kind: StopKindSchema.optional().describe('旅程上の予定種別。判断できなければ省略する'),
   plannedStartTime: LocalTimeSchema.describe(
     '予定開始時刻。旅程のタイムゾーンでの24時間表記HH:mm（例: 09:30、14:00）',
   ),

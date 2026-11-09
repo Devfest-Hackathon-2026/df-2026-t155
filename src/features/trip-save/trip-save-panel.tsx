@@ -3,6 +3,7 @@
 import { useRef, useState } from 'react'
 
 import type { Trip } from '@/domain'
+import { sameSavedTrip } from '@/features/onsite-flow/saved-snapshot'
 import { ReflectionApiError, saveTrip } from '@/features/reflection-flow/api-client'
 import type { SessionScope } from '@/lib/auth/session-scope'
 
@@ -12,8 +13,7 @@ export type SaveTrip = (scope: SessionScope, trip: Trip) => Promise<Trip>
 type SaveState =
   | { phase: 'idle' }
   | { phase: 'saving' }
-  // 保存を確認できた。savedFingerprint は保存した時点の旅程（その後の変更に気づくために持つ）。
-  | { phase: 'saved'; tripId: string; savedFingerprint: string }
+  | { phase: 'saved'; trip: Trip }
   | { phase: 'failed'; message: string; unknown: boolean }
 
 const AUTH_MESSAGE = '認証の状態を確認できないため、保存を始めませんでした。旅程はそのままです。'
@@ -26,25 +26,26 @@ export function TripSavePanel({
   save = saveTrip,
   onSaved,
   onCheckSaved,
+  onReflect,
+  onRestore,
   initialSavedTrip,
 }: {
   trip: Trip
   // 認証済みのセッション。なければ保存を始めない。
   scope: SessionScope | null
   save?: SaveTrip
-  onSaved: (tripId: string, saved: Trip, original: Trip) => void
+  onSaved: (saved: Trip) => void
   // 結果不明のとき、保存済みの旅行の一覧で確かめる操作。
   onCheckSaved: () => void
+  onReflect?: () => void
+  onRestore?: () => void
   initialSavedTrip?: Trip
 }) {
   const [state, setState] = useState<SaveState>(() =>
-    initialSavedTrip
-      ? { phase: 'saved', tripId: initialSavedTrip.id, savedFingerprint: JSON.stringify(trip) }
-      : { phase: 'idle' },
+    initialSavedTrip ? { phase: 'saved', trip: initialSavedTrip } : { phase: 'idle' },
   )
   // 同じ描画の間の二重押下を止める。
   const busy = useRef(false)
-  const fingerprint = JSON.stringify(trip)
 
   const start = async () => {
     if (busy.current || state.phase === 'saved') return
@@ -56,8 +57,8 @@ export function TripSavePanel({
     setState({ phase: 'saving' })
     try {
       const saved = await save(scope, trip)
-      setState({ phase: 'saved', tripId: saved.id, savedFingerprint: fingerprint })
-      onSaved(saved.id, saved, trip)
+      setState({ phase: 'saved', trip: saved })
+      onSaved(saved)
     } catch (error) {
       const known = error instanceof Error ? error.message : ''
       // 送信後に応答を失った・読めないときは、保存されたかもしれない。未保存とは言わない。
@@ -75,9 +76,9 @@ export function TripSavePanel({
   const saving = state.phase === 'saving'
 
   return (
-    <section aria-labelledby="trip-save-heading" className="space-y-3 rounded-xl border p-4">
+    <section aria-labelledby="trip-save-heading" className="gt-card space-y-3">
       <h3 id="trip-save-heading" className="text-base font-semibold">
-        この旅程を保存して、旅のあとに振り返る
+        旅程の保存
       </h3>
       <p className="text-sm">
         保存は、あなたが押したときだけ行います。予約や、当日の営業を保証するものではありません。
@@ -86,8 +87,8 @@ export function TripSavePanel({
       </p>
       {state.phase === 'saved' ? (
         <div role="status" className="space-y-1 text-sm">
-          <p className="font-semibold">保存を確認しました。下の「振り返り」へ進めます。</p>
-          {state.savedFingerprint !== fingerprint && (
+          <p className="font-semibold text-gt-ok">保存を確認しました。</p>
+          {!sameSavedTrip(trip, state.trip) && (
             <p role="note">
               保存したあとに、画面の旅程が変わりました。振り返りに使われるのは、保存した時点の旅程です。
             </p>
@@ -99,7 +100,7 @@ export function TripSavePanel({
             type="button"
             aria-disabled={saving}
             onClick={() => void start()}
-            className="min-h-11 rounded-lg border-2 border-gt-ink px-4 py-2 font-semibold aria-disabled:opacity-60"
+            className="gt-button-primary"
           >
             {saving ? '保存を確認中…' : '本人の操作で旅程を保存する'}
           </button>
@@ -107,18 +108,14 @@ export function TripSavePanel({
             {saving ? '保存しています。結果が出るまで、もう一度押さないでください。' : ''}
           </p>
           {state.phase === 'failed' && (
-            <div role="alert" className="space-y-2 text-sm">
+            <div role="alert" className="gt-notice space-y-2" data-tone="error">
               <p>{state.message}</p>
               {state.unknown && (
                 <>
                   <p>
                     保存できたかどうか、確認できませんでした。もう一度押す前に、保存済みの旅行に入っているか確かめてください。
                   </p>
-                  <button
-                    type="button"
-                    onClick={onCheckSaved}
-                    className="min-h-11 rounded-lg border border-gt-rule px-3 py-2 font-semibold"
-                  >
+                  <button type="button" onClick={onCheckSaved} className="gt-button-secondary">
                     保存済みの旅行を確認する
                   </button>
                 </>
@@ -126,6 +123,16 @@ export function TripSavePanel({
             </div>
           )}
         </>
+      )}
+      {onRestore && (
+        <button type="button" onClick={onRestore} className="gt-button-secondary">
+          保存済みの旅程へ戻す
+        </button>
+      )}
+      {onReflect && (
+        <button type="button" onClick={onReflect} className="gt-button-secondary">
+          保存した旅行を振り返る
+        </button>
       )}
     </section>
   )

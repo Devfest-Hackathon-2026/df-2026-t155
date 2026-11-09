@@ -26,8 +26,8 @@ import { useTripGeneration, type GenerateTrip } from './use-trip-generation'
 interface TripPlannerProps {
   // 旅程生成の呼び出し。テストや先行開発で差し替える。省略時は実際のAPIを呼ぶ。
   generate?: GenerateTrip
-  // 生成された旅程の表示。#8の旅程一覧UIはここへ差し込む。省略時は暫定の一覧を出す。
-  renderTrip?: (trip: Trip) => ReactNode
+  // 生成結果を親が表示する場合は null。省略時は簡易プレビューを出す。
+  renderTrip?: ((trip: Trip) => ReactNode) | null
   // 前の旅の学びを選ぶ部品の差し込み口。旅行先（入力途中の値）を渡す。省略時は何も出さない。
   renderLearningPicker?: (region: string) => ReactNode
   // 値が変わったら（認証セッションが変わったとき）、進行中の生成を中止し、生成結果と失敗の表示を捨てる。
@@ -164,12 +164,17 @@ export function TripPlanner({
   }
 
   return (
-    <div className="space-y-8">
-      <form onSubmit={handleSubmit} noValidate aria-describedby="form-note" className="space-y-5">
+    <div className="space-y-4">
+      <form
+        onSubmit={handleSubmit}
+        noValidate
+        aria-describedby="form-note"
+        className="gt-card space-y-5"
+      >
         <p id="form-note" className="text-sm">
           旅行先と日付、希望条件から、日帰り旅行の旅程を提案します。
         </p>
-        <fieldset disabled={isGenerating} className="space-y-5">
+        <fieldset disabled={isGenerating} className="min-w-0 space-y-5">
           <legend className="sr-only">旅行条件</legend>
 
           <div className="space-y-1">
@@ -265,10 +270,7 @@ export function TripPlanner({
 
           {renderLearningPicker?.(values.region)}
 
-          <button
-            type="submit"
-            className="min-h-12 w-full rounded-xl bg-gt-ink px-4 py-3 text-base font-semibold text-white"
-          >
+          <button type="submit" className="gt-button-primary w-full">
             {isGenerating ? '生成中…' : '旅程を作成する'}
           </button>
         </fieldset>
@@ -283,12 +285,11 @@ export function TripPlanner({
           title={failureGuidance[state.failure.kind].title}
           action={failureGuidance[state.failure.kind].action}
           message={state.failure.message}
-          // 再生成に失敗すると、以前の旅程は表示から消える。保持されているのは、フォームの入力内容だけ。
           note="入力内容は保持されています。"
         />
       )}
 
-      {state.phase === 'succeeded' && (
+      {state.phase === 'succeeded' && renderTrip && (
         <section aria-labelledby="result-heading" className="space-y-3">
           <h2
             id="result-heading"

@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ApprovedLearning, Trip } from '@/domain'
 
 import { LearningApplicationSummary } from '@/features/learning-reuse/learning-application-summary'
@@ -45,7 +45,7 @@ interface SessionView {
 }
 
 // トップ画面：旅程の通し導線。
-//   生成（旅行条件＋前の旅の学びの選択）→ 根拠の照合 → 保存 → 現地での報告と部分修正 → 振り返りと学びの保存
+//   入力画面 → 旅程（旅行前・旅行中）→ 振り返りと学びの保存
 //   → 承認した学びを、次の生成で選んで使う。
 // 旅程は提案であり、保存・適用・学びの承認は、どれも本人が押したときだけ行う。
 //
@@ -75,6 +75,7 @@ export function HomePlanner({
     trip: Trip
     learnings: readonly ApprovedLearning[]
   } | null>(null)
+  const [showInput, setShowInput] = useState(true)
   const changed =
     auth.scopeEpoch !== view.epoch ||
     (authScope !== null && view.scope !== null && authScope.uid !== view.scope.uid)
@@ -83,6 +84,7 @@ export function HomePlanner({
     session = { epoch: auth.scopeEpoch, scope: authScope, discard: view.discard + 1 }
     setView(session)
     setGeneration(null)
+    setShowInput(true)
   } else if (authScope !== null && view.scope !== authScope) {
     session = { ...view, scope: authScope }
     setView(session)
@@ -104,12 +106,13 @@ export function HomePlanner({
   const generateWithSelection = useCallback<GenerateTrip>(
     async (request, options) => {
       // 選択は、ここで取り出した値をそのまま渡す。送信の直前に、クライアント側で現在のセッションと照合される。
-      setChosen(null)
-      setChooserSeq((count) => count + 1)
       const selection = selectionRef.current
       const result = await run(request, { ...options, learningSelection: selection })
       if (options?.signal?.aborted) return result
       if (result.ok) {
+        setChosen(null)
+        setChooserSeq((count) => count + 1)
+        setShowInput(false)
         setGeneration((previous) => ({
           seq: (previous?.seq ?? 0) + 1,
           trip: result.trip,
@@ -124,82 +127,87 @@ export function HomePlanner({
     [run],
   )
 
+  const trip = selected ?? generation?.trip
+  const inputHeading = useRef<HTMLHeadingElement>(null)
+  useEffect(() => {
+    if (showInput && trip) inputHeading.current?.focus()
+  }, [showInput, trip])
+
   return (
     <>
-      <SavedTripChooser
-        key={`${session.discard}:${chooserSeq}`}
-        scope={authScope}
-        onChoose={(trip) => {
-          setChoiceSeq((count) => count + 1)
-          setChosen({ trip, discard: session.discard })
-        }}
-      />
-      <TripPlanner
-        generate={generateWithSelection}
-        discardKey={`${session.discard}:${choiceSeq}`}
-        renderLearningPicker={(region) => (
-          <HomeLearningPicker
-            key={pickerKey}
-            region={region}
-            session={auth}
-            load={loadLearnings}
-            delayMs={learningPickerDelayMs}
-            onSelectionChange={onSelectionChange}
-          />
+      <div hidden={!showInput} className="space-y-4">
+        <h1 ref={inputHeading} tabIndex={-1} className="gt-screen-title">
+          日帰り旅程を作る
+        </h1>
+        {trip && (
+          <button type="button" className="gt-button-secondary" onClick={() => setShowInput(false)}>
+            旅程へ戻る
+          </button>
         )}
-        renderTrip={(trip) =>
-          !selected && (
-            <VerifiableTrip
-              key={`${trip.id}:${generation?.seq}`}
-              trip={trip}
-              verify={verify ?? verifyTripWithProtectedApi}
-              renderContent={({
-                trip: current,
-                adoptExternalChange,
-                routeTrip,
-                adoptRouteChange,
-              }) => (
-                <TripJourney
-                  trip={current}
-                  routeTrip={routeTrip}
-                  adoptRouteChange={adoptRouteChange}
-                  adoptTripChange={adoptExternalChange}
-                  scope={authScope}
-                  generateRevisions={generateRevisions}
-                  applyRevision={applyRevision}
-                  saveTrip={saveTrip}
-                  learningSummary={
-                    generation?.trip === trip && (
-                      <LearningApplicationSummary trip={trip} learnings={generation.learnings} />
-                    )
-                  }
-                  onLearningsChanged={() => setPickerKey((count) => count + 1)}
-                />
-              )}
-            />
-          )
-        }
-      />
-      {selected && (
-        <VerifiableTrip
-          key={`saved:${selected.id}:${choiceSeq}`}
-          trip={selected}
-          verify={verify ?? verifyTripWithProtectedApi}
-          renderContent={({ trip: current, adoptExternalChange, routeTrip, adoptRouteChange }) => (
-            <TripJourney
-              trip={current}
-              routeTrip={routeTrip}
-              adoptRouteChange={adoptRouteChange}
-              adoptTripChange={adoptExternalChange}
-              scope={authScope}
-              initialSavedTrip={selected}
-              generateRevisions={generateRevisions}
-              applyRevision={applyRevision}
-              saveTrip={saveTrip}
-              onLearningsChanged={() => setPickerKey((count) => count + 1)}
+        <SavedTripChooser
+          key={`${session.discard}:${chooserSeq}`}
+          scope={authScope}
+          onChoose={(trip) => {
+            setChoiceSeq((count) => count + 1)
+            setChosen({ trip, discard: session.discard })
+            setGeneration(null)
+            setShowInput(false)
+          }}
+        />
+        <TripPlanner
+          generate={generateWithSelection}
+          discardKey={`${session.discard}:${choiceSeq}`}
+          renderTrip={null}
+          renderLearningPicker={(region) => (
+            <HomeLearningPicker
+              key={pickerKey}
+              region={region}
+              session={auth}
+              load={loadLearnings}
+              delayMs={learningPickerDelayMs}
+              onSelectionChange={onSelectionChange}
             />
           )}
         />
+      </div>
+      {trip && (
+        <div hidden={showInput}>
+          <VerifiableTrip
+            key={
+              selected ? `saved:${trip.id}:${choiceSeq}` : `generated:${trip.id}:${generation?.seq}`
+            }
+            trip={trip}
+            verify={verify ?? verifyTripWithProtectedApi}
+            renderContent={({
+              trip: current,
+              adoptExternalChange,
+              routeTrip,
+              adoptRouteChange,
+              verificationPanel,
+            }) => (
+              <TripJourney
+                trip={current}
+                routeTrip={routeTrip}
+                adoptRouteChange={adoptRouteChange}
+                adoptTripChange={adoptExternalChange}
+                scope={authScope}
+                generateRevisions={generateRevisions}
+                applyRevision={applyRevision}
+                saveTrip={saveTrip}
+                initialSavedTrip={selected ?? undefined}
+                verificationPanel={verificationPanel}
+                learningSummary={
+                  generation?.trip === trip && (
+                    <LearningApplicationSummary trip={trip} learnings={generation.learnings} />
+                  )
+                }
+                visible={!showInput}
+                onEditInput={() => setShowInput(true)}
+                onLearningsChanged={() => setPickerKey((count) => count + 1)}
+              />
+            )}
+          />
+        </div>
       )}
     </>
   )

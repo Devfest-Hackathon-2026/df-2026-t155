@@ -25,6 +25,7 @@ interface RouteMapProps {
   onSelectStop?: (stopId: string) => void
   preview?: { stop: Stop; label: string; revisionId: string }
   appliedStopId?: string
+  idPrefix?: string
 }
 
 // 予定のボタンのid。詳細シートを閉じたあとのフォーカスの復帰先に使う。
@@ -245,12 +246,13 @@ export function RouteMap({
   onSelectStop,
   preview,
   appliedStopId,
+  idPrefix,
 }: RouteMapProps) {
   const last = trip.stops.length - 1
   return (
     // tabIndex=-1：キー操作の順序には入れず、フォーカスを退避できるようにする（outlineは出さない）。
     <ol
-      id={ROUTE_LIST_ID}
+      id={idPrefix ? `${idPrefix}-${ROUTE_LIST_ID}` : ROUTE_LIST_ID}
       tabIndex={-1}
       aria-label="旅程の路線図"
       className="m-0 list-none p-0 outline-none"
@@ -271,7 +273,7 @@ export function RouteMap({
         return (
           <li
             key={stop.id}
-            id={`stop-${stop.id}`}
+            id={`${idPrefix ? `${idPrefix}-` : ''}stop-${stop.id}`}
             tabIndex={branch ? -1 : undefined}
             className="relative flex scroll-mt-4"
           >

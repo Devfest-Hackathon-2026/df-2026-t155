@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { TripSchema, type Trip } from '@/domain'
+import { revisionTargetRestriction, TripSchema, type Trip } from '@/domain'
 import { OnSiteReportForm } from '@/features/onsite-report/onsite-report-form'
 import type { OnSiteReportSubmission } from '@/features/onsite-report/report-model'
 import type { ApplyRevision, GenerateRevisions } from '@/features/revision-review/api-client'
@@ -133,7 +133,7 @@ export function OnSiteReplanningFlow({
     session !== null &&
     session.epoch === epoch &&
     target != null &&
-    !target.isFixed
+    revisionTargetRestriction(target) === null
   const stale = step === 'review' && !activeReview
 
   // 切り替えた先の見出しなどへフォーカスを移す。隠していた画面は、このコミットで表示される。
@@ -163,8 +163,11 @@ export function OnSiteReplanningFlow({
     return result.status === 'proposed' ? guardOnSiteProposal(result, request) : result
   }
 
+  const canReport = (stopId: string) =>
+    trip.stops.some((stop) => stop.id === stopId && revisionTargetRestriction(stop) === null)
+
   const startReport = (stopId: string) => {
-    if (!generate || !trip.stops.some((stop) => stop.id === stopId && !stop.isFixed)) return
+    if (!generate || !canReport(stopId)) return
     if (
       applyUnresolved ||
       (ownerUid && readUnresolvedApply(ownerUid, trip.id).status !== 'clear')
@@ -183,10 +186,7 @@ export function OnSiteReplanningFlow({
   }
 
   const submitReport = (submission: OnSiteReportSubmission) => {
-    if (
-      !generate ||
-      !trip.stops.some((stop) => stop.id === submission.targetStopId && !stop.isFixed)
-    ) {
+    if (!generate || !canReport(submission.targetStopId)) {
       announce('修正できる予定を確認してください。元の旅程は変更していません。')
       return
     }

@@ -2,8 +2,9 @@
 
 import { useState } from 'react'
 
-import type { Stop, Trip } from '@/domain'
+import { revisionTargetRestriction, type Stop, type Trip } from '@/domain'
 import { GoogleMapsAttribution } from '@/features/legal/google-maps-attribution'
+import { TRANSPORT_REVISION_UNAVAILABLE } from '@/features/plain-wording/wording'
 
 import { paletteStyle } from './palette'
 import {
@@ -153,6 +154,7 @@ export function TripProgressView({ trip, initialIndex = 0, onReplan }: TripProgr
 
 function CurrentCard({ stop, onReplan }: { stop: Stop; onReplan?: (stopId: string) => void }) {
   const lines = evidenceLines(stop)
+  const restriction = revisionTargetRestriction(stop)
   return (
     <section
       aria-labelledby="trip-progress-current"
@@ -209,12 +211,14 @@ function CurrentCard({ stop, onReplan }: { stop: Stop; onReplan?: (stopId: strin
           「デモ用の想定」は、{simulatedNote}。
         </p>
       )}
-      {onReplan &&
-        (stop.isFixed ? (
-          <p className={`mt-3 text-sm text-(color:--tp-muted) ${wrapClass}`}>
-            固定予定のため、固定を解除するまで、変更の対象にできません。
-          </p>
-        ) : (
+      {restriction === 'transport' || (onReplan && restriction === 'fixed') ? (
+        <p className={`mt-3 text-sm text-(color:--tp-muted) ${wrapClass}`}>
+          {restriction === 'transport'
+            ? TRANSPORT_REVISION_UNAVAILABLE
+            : '固定予定のため、固定を解除するまで、変更の対象にできません。'}
+        </p>
+      ) : (
+        onReplan && (
           <button
             type="button"
             onClick={() => onReplan(stop.id)}
@@ -222,7 +226,8 @@ function CurrentCard({ stop, onReplan }: { stop: Stop; onReplan?: (stopId: strin
           >
             予定が変わった？この予定だけ変更する
           </button>
-        ))}
+        )
+      )}
     </section>
   )
 }

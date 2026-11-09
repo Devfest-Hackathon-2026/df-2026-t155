@@ -21,6 +21,7 @@ interface TripRouteViewProps {
   onTripChange?: (trip: Trip) => Trip | void
   // 部分修正を始める（候補の比較・承認は部分修正の機能の責務）。未指定なら修正の操作は出さない。
   onStartRevision?: (stopId: string) => void
+  revisionUnavailableReason?: string
 }
 
 // 旅程の一覧（路線図）の表示と、予定の選択・固定の切り替え。
@@ -37,6 +38,7 @@ export function TripRouteView({
   appliedStopId,
   onTripChange,
   onStartRevision,
+  revisionUnavailableReason,
 }: TripRouteViewProps) {
   const [trip, setTrip] = useState(tripProp)
   const [lastProp, setLastProp] = useState(tripProp)
@@ -143,6 +145,9 @@ export function TripRouteView({
       <p className="mt-3 text-sm text-gt-muted empty:hidden">{!selected && notice?.message}</p>
       <p className="mt-2 text-sm text-gt-muted">
         路線図は旅の順番を表すもので、実際の地図ではありません。
+        {!mock && trip.stops.some((stop) => stop.kind !== undefined) && (
+          <>AIが提案した予定の種別は旅程上の分類です。照合結果は各予定の根拠に表示します。</>
+        )}
       </p>
       {selected && (
         <StopSheet
@@ -156,6 +161,7 @@ export function TripRouteView({
           segment={segmentEvidence(trip.stops, selectedIndex)}
           kind={routeStopKind(selected, meta?.[selected.id])}
           onStartRevision={onStartRevision}
+          revisionUnavailableReason={revisionUnavailableReason}
           onToggleFixed={toggleFixed}
           onClose={closeSheet}
         />

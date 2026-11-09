@@ -10,7 +10,8 @@ import {
   type ReactNode,
 } from 'react'
 
-import { stopKindLabels, type Trip } from '@/domain'
+import { revisionTargetRestriction, stopKindLabels, type Trip } from '@/domain'
+import { TRANSPORT_REVISION_UNAVAILABLE } from '@/features/plain-wording/wording'
 
 import { ONSITE_PALETTE as palette } from './palette'
 import {
@@ -137,6 +138,7 @@ export function OnSiteReportForm({
   const submitting = status.phase === 'submitting'
   const selectable = selectableStops(trip)
   const fixed = fixedStops(trip)
+  const hasTransport = trip.stops.some((stop) => revisionTargetRestriction(stop) === 'transport')
   // 選べる予定が1件だけなら最初から選択する。選べなくなった予定は未選択に戻す。
   const targetStopId = resolveTargetId(trip, values.targetStopId, autoSelectSingleTarget)
   const current: ReportFormValues = { ...values, targetStopId }
@@ -207,7 +209,7 @@ export function OnSiteReportForm({
       style={rootStyle}
       className={`mx-auto w-full max-w-xl rounded-xl border-2 border-(--of-edge) bg-(--of-paper) p-4 text-base text-(--of-ink) ${wrapClass}`}
     >
-      <h2 id={id('heading')} className="text-lg font-semibold">
+      <h2 id={id('heading')} className="gt-screen-title">
         現地の状況を報告する
       </h2>
       <p className="mt-1 text-sm text-(--of-muted)">
@@ -226,13 +228,15 @@ export function OnSiteReportForm({
           className={groupClass}
         >
           <legend className="text-base font-semibold">1. どの予定の状況ですか（必須）</legend>
-          <p id={id('target-hint')} className="text-sm text-(--of-muted)">
-            固定予定は、修正の対象にできないため、選べません。
-          </p>
+          <div id={id('target-hint')} className="text-sm text-(--of-muted)">
+            <p>固定予定は、修正の対象にできないため、選べません。</p>
+            {hasTransport && <p>{TRANSPORT_REVISION_UNAVAILABLE}</p>}
+          </div>
           <FieldError id={id('target-error')} message={errors.target} />
           {selectable.length === 0 && (
             <p className="rounded-lg border-2 border-(--of-edge) p-3 text-sm">
-              修正できる予定がありません。すべて固定予定です。
+              修正できる予定がありません。
+              {fixed.length === trip.stops.length && 'すべて固定予定です。'}
             </p>
           )}
           <div className="space-y-2">

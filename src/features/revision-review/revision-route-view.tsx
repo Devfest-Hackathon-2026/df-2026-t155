@@ -1,8 +1,8 @@
 'use client'
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
-import type { Trip } from '@/domain'
+import { revisionTargetRestriction, type Trip } from '@/domain'
 import type { RouteMeta } from '@/features/trip-map/model'
 import { ROUTE_LIST_ID, stopButtonId } from '@/features/trip-map/route-map'
 import { TripRouteView } from '@/features/trip-map/trip-route-view'
@@ -47,6 +47,9 @@ interface RevisionRouteViewProps {
   // 固定の切り替え・候補の適用で旅程が変わったとき、画面に採用する旅程を決める（変えなければ受け取った旅程を返す）。
   // 照合結果の取り下げなど、旅程の変更に連動して根拠を戻す用途。予定の名称・時刻・固定は変えないこと。
   adoptTripChange?: (changed: Trip) => Trip
+  onRevisionApplied?: (saved: Trip) => void
+  revisionUnavailableReason?: string
+  routeActions?: ReactNode
 }
 
 export function RevisionRouteView({
@@ -60,6 +63,9 @@ export function RevisionRouteView({
   loadLatestTrip,
   loadAppliedRevision,
   adoptTripChange,
+  onRevisionApplied,
+  revisionUnavailableReason,
+  routeActions,
 }: RevisionRouteViewProps) {
   const [local, setLocal] = useState<{
     source: Trip
@@ -130,7 +136,11 @@ export function RevisionRouteView({
   const updateNotice = useRef<HTMLDivElement>(null)
   const target = session && current.trip.stops.find((stop) => stop.id === session.stopId)
   const hasActiveSession =
-    session && target && !target.isFixed && session.trip === current.trip && generate
+    session &&
+    target &&
+    revisionTargetRestriction(target) === null &&
+    session.trip === current.trip &&
+    generate
 
   if (session && !hasActiveSession) {
     setInterruption({
@@ -176,6 +186,7 @@ export function RevisionRouteView({
     }
     updateStoredLock()
     const trip = adoptTripChange?.(changed) ?? changed
+    onRevisionApplied?.(changed)
     if (!cleared) {
       setLocal({ source: sourceTrip, trip })
       leave('適用結果は確認しましたが、端末の再操作禁止を解除できません。', 'neutral')
@@ -263,6 +274,7 @@ export function RevisionRouteView({
     setReconcile(null)
     // 対象Revisionの承認が確定した場合だけ、取得した旅程を採用する。
     setLocal({ source: sourceTrip, trip: adoptTripChange?.(verdict.trip) ?? verdict.trip })
+    onRevisionApplied?.(verdict.trip)
     leave('サーバーで適用を確認し、最新の旅程を表示しています。', 'success')
   }
 
@@ -375,6 +387,11 @@ export function RevisionRouteView({
             meta={current.meta}
             mock={mock}
             appliedStopId={appliedStopId}
+            revisionUnavailableReason={
+              operationBlocked
+                ? '先に適用結果を確認してください。旅程の画面から確認できます。'
+                : revisionUnavailableReason
+            }
             onTripChange={(changed) => {
               const trip = adoptTripChange?.(changed) ?? changed
               setLocal({ ...current, source: sourceTrip, trip })
@@ -387,7 +404,11 @@ export function RevisionRouteView({
                       updateStoredLock()
                       return
                     }
-                    if (current.trip.stops.some((stop) => stop.id === stopId && !stop.isFixed)) {
+                    if (
+                      current.trip.stops.some(
+                        (stop) => stop.id === stopId && revisionTargetRestriction(stop) === null,
+                      )
+                    ) {
                       setNotice(null)
                       setInterruption(null)
                       setSession({ trip: current.trip, stopId })
@@ -396,6 +417,11 @@ export function RevisionRouteView({
                 : undefined
             }
           />
+        </div>
+      )}
+      {routeActions && (
+        <div hidden={Boolean(hasActiveSession)} className="mt-4 space-y-4">
+          {routeActions}
         </div>
       )}
     </div>

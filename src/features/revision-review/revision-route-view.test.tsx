@@ -116,8 +116,27 @@ const request = async (user: ReturnType<typeof userEvent.setup>) => {
 const route = () => within(screen.getByRole('list', { name: '旅程の路線図' }))
 const approve = () => screen.getByRole<HTMLButtonElement>('button', { name: '承認して適用を依頼' })
 const approvalDisabled = () => approve().getAttribute('aria-disabled') === 'true'
+const tableInConfirmation = () => within(screen.getByRole('table'))
 
 describe('部分修正の候補比較', () => {
+  it('非固定の乗車・乗換は旅行前の部分修正の対象外にする', async () => {
+    const user = userEvent.setup()
+    const generate = vi.fn<GenerateRevisions>()
+    const transfer = { ...target, name: '駅で乗換', kind: 'transport' as const, isFixed: false }
+    render(
+      <RevisionRouteTest
+        trip={{ ...trip, stops: trip.stops.with(1, transfer) }}
+        generate={generate}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: /駅で乗換/ }))
+    const sheet = within(screen.getByRole('dialog'))
+    expect(sheet.getByText('乗車・乗換は部分修正の対象外です。')).toBeTruthy()
+    expect(sheet.queryByRole('button', { name: 'この予定だけ変更' })).toBeNull()
+    expect(generate).not.toHaveBeenCalled()
+  })
+
   it('選択したStopだけを徒歩で生成し、分岐、固定予定、構造化比較を切り替える', async () => {
     const user = userEvent.setup()
     // 希望条件を足すと理由が変わるため、応答も送られた理由に合わせる。
@@ -145,6 +164,19 @@ describe('部分修正の候補比較', () => {
       },
       expect.any(AbortSignal),
     )
+    expect(screen.queryByRole('button', { name: '承認して適用を依頼' })).toBeNull()
+    expect(screen.getByRole('button', { name: /候補 A\s*承認可能/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /候補 B\s*承認不可/ })).toBeTruthy()
+    expect(
+      route().getByText(after.name).closest('[data-variant]')?.getAttribute('data-variant'),
+    ).toBe('ticket')
+    expect(route().getByText(target.name)).toBeTruthy()
+    expect(route().getByText('この先は元の旅程に合流')).toBeTruthy()
+    expect(
+      route().getByText(trip.stops[2].name).closest('[data-variant]')?.querySelector('svg'),
+    ).toBeTruthy()
+    expect(route().getByText('営業時間：確認できない')).toBeTruthy()
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     const table = within(await screen.findByRole('table'))
     const scope = () => within(screen.getByRole('region', { name: '予定への影響' }))
     expect(scope().getByText(/営業時間：情報源と整合（照合/)).toBeTruthy()
@@ -164,24 +196,17 @@ describe('部分修正の候補比較', () => {
       screen.getByText(`${trip.stops[2].plannedStartTime}の予定に間に合う見込みです。`),
     ).toBeTruthy()
     expect(table.queryByText(/999分/)).toBeNull()
-    expect(
-      route().getByText(after.name).closest('[data-variant]')?.getAttribute('data-variant'),
-    ).toBe('ticket')
-    expect(route().getByText(target.name)).toBeTruthy()
-    expect(route().getByText('この先は元の旅程に合流')).toBeTruthy()
-    expect(
-      route().getByText(trip.stops[2].name).closest('[data-variant]')?.querySelector('svg'),
-    ).toBeTruthy()
     expect(screen.getByRole('region', { name: '根拠と照合日時' }).textContent).toContain('矛盾あり')
     expect(screen.getByRole('region', { name: '根拠と照合日時' }).textContent).toContain(
       '情報源と整合',
     )
-    expect(route().getByText('営業時間：確認できない')).toBeTruthy()
     expect(approvalDisabled()).toBe(false)
 
+    await user.click(screen.getByRole('button', { name: '候補の選択へ戻る' }))
     await user.click(screen.getByRole('button', { name: /候補 B/ }))
     expect(route().getByText('別の食堂')).toBeTruthy()
     expect(route().queryByText(after.name)).toBeNull()
+    await user.click(screen.getByRole('button', { name: '変更内容を確認する' }))
     expect(within(screen.getByRole('table')).getAllByText('移動時間は未取得')).toHaveLength(4)
     expect(within(screen.getByRole('table')).getAllByText('時間差：未確認')).toHaveLength(2)
     expect(scope().getByText('営業時間：未確認')).toBeTruthy()
@@ -190,7 +215,9 @@ describe('部分修正の候補比較', () => {
     expect(screen.getByRole('region', { name: '根拠と照合日時' }).textContent).toContain('未照合')
     expect(approvalDisabled()).toBe(true)
     approve().focus()
-    expect(approve().getAttribute('aria-describedby')).toBe('approval-note')
+    expect(
+      document.getElementById(approve().getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toContain('この候補は選べません')
     await user.keyboard('{Enter}')
     await user.click(approve())
     expect(apply).not.toHaveBeenCalled()
@@ -200,6 +227,60 @@ describe('部分修正の候補比較', () => {
     expect(route().queryByText('別の食堂')).toBeNull()
     expect(document.activeElement?.id).toBe('stop-button-stop-lunch')
     expect(trip).toEqual(original)
+  })
+
+  it('全候補に共通する乗車・乗換の制約を候補選択時に示し、条件の再入力に誘導しない', async () => {
+    const user = userEvent.setup()
+    const transport = { ...trip.stops[2], kind: 'transport' as const, name: '固定の乗換予定' }
+    const itinerary = { ...trip, stops: trip.stops.with(2, transport) }
+    const originalComparison = routes(8)?.[0]
+    if (!originalComparison) throw new Error('比較のテストデータがありません')
+    const missingLeg = {
+      presence: 'segment',
+      segment: {
+        fromStopId: target.id,
+        toStopId: transport.id,
+        status: 'unknown',
+        reason: 'not_queried',
+        mode: 'walk',
+        explanation: '隣接地点を経路の端点として照会できません。',
+      },
+    } as const
+    const generate: GenerateRevisions = async () => ({
+      ...proposal,
+      revisions: proposal.revisions.map((revision) => ({
+        ...revision,
+        constraintCheck: {
+          status: 'unknown',
+          explanation: '次の予定への移動を確認できていません。',
+        },
+      })),
+      comparisons: proposal.revisions.map(({ id }) => ({
+        ...originalComparison,
+        revisionId: id,
+        routeEndpoints: { previousPlaceId: 'garden', nextPlaceId: null },
+        before: { ...originalComparison.before, toNext: missingLeg },
+        after: { ...originalComparison.after, toNext: missingLeg },
+      })),
+    })
+    const apply = vi.fn<ApplyRevision>()
+    render(<RevisionRouteTest trip={itinerary} generate={generate} apply={apply} />)
+    await open(user)
+    expect(screen.getByText(/開始時刻と滞在時間を維持/)).toBeTruthy()
+    await request(user)
+    expect(await screen.findByText('承認できる候補はありません ／ 承認不可 2件')).toBeTruthy()
+    const overview = within(screen.getByRole('region', { name: '選択中の候補の概要' }))
+    expect(overview.getByText(/固定の乗換予定.*経路の端点として照合できません/)).toBeTruthy()
+    expect(overview.getByText(/候補を切り替えるだけでは解消しません/)).toBeTruthy()
+    expect(overview.getByText(/移動を確認できていません/)).toBeTruthy()
+    expect(overview.getByText('徒歩・未確認（未照会）')).toBeTruthy()
+    expect(overview.queryByRole('button', { name: '条件を見直す' })).toBeNull()
+    expect(apply).not.toHaveBeenCalled()
+    await user.click(overview.getByRole('button', { name: '変更内容を確認する' }))
+    expect(approvalDisabled()).toBe(true)
+    expect(screen.queryByRole('button', { name: '条件を見直す' })).toBeNull()
+    await user.click(approve())
+    expect(apply).not.toHaveBeenCalled()
   })
 
   it('修正理由と希望条件を合わせて保存契約の上限を超えるときは、送らずに案内する', async () => {
@@ -242,6 +323,7 @@ describe('部分修正の候補比較', () => {
     await open(user)
     await user.click(screen.getByRole('checkbox', { name: /車を利用できる/ }))
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     const table = within(await screen.findByRole('table'))
     expect(table.getByText('車8分')).toBeTruthy()
     expect(table.getByText('徒歩6分')).toBeTruthy()
@@ -266,6 +348,7 @@ describe('部分修正の候補比較', () => {
     await request(user)
     expect(generate.mock.calls[0][0].travelModes).toEqual(['walk', 'drive'])
     expect(await screen.findByText('承認・適用サービスは未接続です。')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: '変更内容を確認する' }))
     expect(approvalDisabled()).toBe(true)
   })
 
@@ -396,6 +479,7 @@ describe('部分修正の候補比較', () => {
     expect(submit.disabled).toBe(false)
     expect(document.activeElement).toBe(submit)
     await user.keyboard('{Enter}')
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     expect(await screen.findByRole('table')).toBeTruthy()
     expect(fetchFn).toHaveBeenCalledTimes(2)
   })
@@ -486,6 +570,7 @@ describe('部分修正の候補比較', () => {
     render(<RevisionRouteTest trip={trip} generate={async () => simulated} apply={apply} />)
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     expect(
       within(screen.getByRole('region', { name: '予定への影響' })).getByText(/徒歩6分（模擬）/),
@@ -503,6 +588,7 @@ describe('部分修正の候補比較', () => {
     const view = render(<RevisionRouteTest trip={trip} generate={generate} />)
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     view.rerender(
       <RevisionRouteTest
@@ -529,6 +615,7 @@ describe('本人承認とサーバー適用', () => {
     )
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     await user.click(approve())
     expect(approvalDisabled()).toBe(true)
@@ -568,6 +655,7 @@ describe('本人承認とサーバー適用', () => {
     render(<RevisionRouteTest trip={trip} generate={async () => proposal} apply={apply} />)
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     await user.click(approve())
     expect(await screen.findByText('その後の施設')).toBeTruthy()
@@ -588,6 +676,7 @@ describe('本人承認とサーバー適用', () => {
     await open(user)
     expect(container.querySelector('[role="status"][aria-atomic="true"]')).toBe(liveRegion)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     await user.click(approve())
     expect(apply).toHaveBeenCalledOnce()
@@ -595,10 +684,10 @@ describe('本人承認とサーバー適用', () => {
       request: { trip, targetStopId: target.id, travelModes: ['walk'] },
       revision: first,
     })
-    expect(route().getByText(target.name)).toBeTruthy()
+    expect(tableInConfirmation().getByText(target.name)).toBeTruthy()
     expect(screen.getByText('承認操作済み・適用結果を確認中')).toBeTruthy()
     expect(screen.queryByText(/旅程に反映されました/)).toBeNull()
-    expect(route().queryByText('変更を反映済み')).toBeNull()
+    expect(screen.queryByText('変更を反映済み')).toBeNull()
     expect(trip).toEqual(original)
 
     const saved = structuredClone({ ...trip, version: 1, stops: trip.stops.with(1, after) })
@@ -631,12 +720,13 @@ describe('本人承認とサーバー適用', () => {
     render(<RevisionRouteTest trip={trip} generate={generate} apply={apply} />)
     await open(user)
     await request(user)
-    await screen.findByRole('table')
+    const confirm = await screen.findByRole('button', { name: '変更内容を確認する' })
     returned.revisions[0].diff.after.name = '応答後に変更された候補'
     returned.revisions[0].constraintCheck.status = 'unknown'
     await user.click(screen.getByRole('button', { name: /候補 B/ }))
     await user.click(screen.getByRole('button', { name: /候補 A/ }))
     expect(route().getByText(after.name)).toBeTruthy()
+    await user.click(confirm)
     await user.click(approve())
     expect(apply).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -662,15 +752,16 @@ describe('本人承認とサーバー適用', () => {
     render(<RevisionRouteTest trip={source} generate={async () => proposal} apply={apply} />)
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     await user.click(approve())
     expect(source).toEqual(trip)
-    expect(route().getByText(after.name)).toBeTruthy()
+    expect(tableInConfirmation().getByText(after.name)).toBeTruthy()
     await act(async () => pending.resolve({ status: 'failed' }))
     expect((await screen.findByRole('alert')).textContent).toContain('候補を適用できませんでした')
     expect(source).toEqual(trip)
-    expect(route().getByText(after.name)).toBeTruthy()
-    expect(route().queryByText('改変された候補')).toBeNull()
+    expect(tableInConfirmation().getByText(after.name)).toBeTruthy()
+    expect(tableInConfirmation().queryByText('改変された候補')).toBeNull()
     await user.click(screen.getByRole('button', { name: 'キャンセル' }))
     expect(route().getByRole('button', { name: /14時の予約展示.*固定予定/ })).toBeTruthy()
   })
@@ -706,13 +797,14 @@ describe('本人承認とサーバー適用', () => {
       )
       await open(user)
       await request(user)
+      await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
       await screen.findByRole('table')
       await user.click(approve())
       expect((await screen.findByRole('alert')).textContent).toContain(
         '適用結果を確認できませんでした',
       )
       expect(source).toEqual(original)
-      expect(route().getByText(target.name)).toBeTruthy()
+      expect(tableInConfirmation().getByText(target.name)).toBeTruthy()
       expect(screen.queryByText(/旅程に反映されました/)).toBeNull()
       expect(approvalDisabled()).toBe(true)
     },
@@ -726,6 +818,7 @@ describe('本人承認とサーバー適用', () => {
     const view = render(<RevisionRouteTest trip={trip} generate={generate} apply={apply} />)
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     approve().focus()
     await user.keyboard('{Enter}')
@@ -787,10 +880,11 @@ describe('本人承認とサーバー適用', () => {
     render(<RevisionRouteTest trip={trip} generate={async () => proposal} apply={apply} />)
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     await user.click(approve())
     expect((await screen.findByRole('alert')).textContent).toContain(message)
-    expect(route().getByText(target.name)).toBeTruthy()
+    expect(tableInConfirmation().getByText(target.name)).toBeTruthy()
     expect(screen.queryByText(/旅程に反映されました/)).toBeNull()
     expect(approvalDisabled()).toBe(
       ['conflict', 'network', 'invalid-success', 'uncertain'].includes(status),
@@ -803,6 +897,7 @@ describe('本人承認とサーバー適用', () => {
     render(<RevisionRouteTest trip={trip} generate={async () => proposal} apply={apply} />)
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     await user.click(approve())
     await user.click(await screen.findByRole('button', { name: '旅程を確認' }))
@@ -819,6 +914,7 @@ describe('本人承認とサーバー適用', () => {
 
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     await user.click(approve())
     expect(apply).toHaveBeenCalledTimes(1)
@@ -855,6 +951,7 @@ describe('本人承認とサーバー適用', () => {
       const view = render(<RevisionRouteTest trip={trip} {...props} />)
       await open(user)
       await request(user)
+      await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
       await screen.findByRole('table')
       await user.click(approve())
       await user.click(await screen.findByRole('button', { name: '旅程を確認' }))
@@ -926,6 +1023,7 @@ describe('本人承認とサーバー適用', () => {
       render(<RevisionRouteTest trip={trip} generate={generate} apply={apply} />)
       await open(user)
       await request(user)
+      await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
       await screen.findByRole('table')
       await user.click(approve())
       await waitFor(() =>
@@ -942,6 +1040,7 @@ describe('本人承認とサーバー適用', () => {
       const view = render(<RevisionRouteTest trip={trip} generate={generate} apply={apply} />)
       await open(user)
       await request(user)
+      await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
       await screen.findByRole('table')
       await user.click(approve())
       view.unmount()
@@ -1110,6 +1209,7 @@ describe('本人承認とサーバー適用', () => {
     )
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     expect(approvalDisabled()).toBe(true)
   })
@@ -1159,6 +1259,7 @@ describe('旅程の変更を親が採用する（adoptTripChange）', () => {
     )
     await open(user)
     await request(user)
+    await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await screen.findByRole('table')
     await user.click(approve())
 

@@ -100,7 +100,7 @@ export function SavedTripChooser({
   return (
     <section className="space-y-2">
       <button
-        className="min-h-11 w-full rounded-md border px-4 py-2 text-left"
+        className="gt-button-secondary w-full justify-start text-left"
         type="button"
         onClick={() => void open()}
         disabled={!scope || Boolean(active.current)}
@@ -112,7 +112,7 @@ export function SavedTripChooser({
       </p>
       {visible?.result.trips.map((trip) => (
         <button
-          className="block min-h-11 w-full rounded-md border px-4 py-2 text-left"
+          className="gt-button-secondary block w-full wrap-anywhere text-left"
           type="button"
           key={trip.id}
           onClick={() => {

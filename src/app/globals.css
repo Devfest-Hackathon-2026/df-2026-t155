@@ -63,6 +63,29 @@ body {
   @apply bg-gt-bg text-gt-muted;
 }
 
+@layer components {
+  .gt-card {
+    @apply min-w-0 rounded-2xl border border-gt-rule bg-gt-paper p-4 wrap-anywhere;
+  }
+
+  .gt-screen-title {
+    @apply text-2xl leading-tight font-bold wrap-anywhere;
+  }
+
+  .gt-button-primary,
+  .gt-button-secondary {
+    @apply inline-flex min-h-11 items-center justify-center rounded-xl border px-3 py-2 text-center text-sm font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview disabled:opacity-60 aria-disabled:opacity-60;
+  }
+
+  .gt-button-primary {
+    @apply border-gt-ink bg-gt-ink text-white;
+  }
+
+  .gt-button-secondary {
+    @apply border-gt-muted bg-gt-paper text-gt-ink hover:bg-gt-bg aria-pressed:border-gt-preview aria-pressed:bg-gt-preview-bg aria-pressed:text-gt-preview;
+  }
+}
+
 .gt-notice {
   @apply w-fit max-w-full rounded-lg border border-gt-muted bg-gt-bg px-3 py-2 text-sm leading-relaxed wrap-anywhere text-gt-ink;
 }

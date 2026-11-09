@@ -498,6 +498,7 @@ describe('HomePlanner: 根拠の確認（照合）', () => {
       await user.click(verifyButton())
       await panel().findByText(/照合結果あり/)
 
+      await user.click(screen.getByRole('button', { name: '旅行条件・保存済みの旅程' }))
       await user.click(screen.getByRole('button', { name: '旅程を作成する' }))
       await waitFor(() => expect(generate).toHaveBeenCalledTimes(2))
       await waitFor(() => expect(panel().getByRole('status').textContent).toContain('未確認'))

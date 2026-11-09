@@ -2,6 +2,8 @@
 // 内部の状態（根拠・制約・承認・移動区間）は変えず、表示用の言葉にだけ対応づける。
 import type { Approval, Evidence, EvidenceStatus, TravelMode } from '@/domain'
 
+export const TRANSPORT_REVISION_UNAVAILABLE = '乗車・乗換は部分修正の対象外です。'
+
 // 状態の「意味」。色の決定は画面側で行う（色だけで区別しないこと）。
 // - ok: 確認できた／条件を満たす
 // - conflict: 食い違い／条件に合わない

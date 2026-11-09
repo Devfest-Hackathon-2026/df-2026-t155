@@ -150,6 +150,24 @@ describe('送信データの作成', () => {
     if (!built.ok) expect(built.errors.target).toContain('すべて固定予定')
   })
 
+  it('対象IDを直接渡されても、非固定の乗車・乗換は送信できない', () => {
+    const trip = TripSchema.parse({
+      ...sampleTrip,
+      stops: sampleTrip.stops.map((stop) =>
+        stop.id === LUNCH ? { ...stop, kind: 'transport' } : stop,
+      ),
+    })
+    expect(selectableStops(trip)).toEqual([])
+    expect(buildSubmission(trip, valid)).toEqual({
+      ok: false,
+      errors: { target: '乗車・乗換は部分修正の対象外です。' },
+    })
+    expect(buildSubmission(trip, { ...valid, targetStopId: '' })).toEqual({
+      ok: false,
+      errors: { target: '修正できる予定がありません。' },
+    })
+  })
+
   it('補足が長すぎると不備（空白は数えない）', () => {
     const tooLong = buildSubmission(sampleTrip, {
       ...valid,

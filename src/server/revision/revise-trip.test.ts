@@ -527,23 +527,47 @@ describe('reviseTrip: 隣の予定の区間が未測定のときは「確認で�
     expect(explanationOf(response)).toContain('次の予定への移動')
   })
 
-  it('隣の予定が乗車・乗換（transport）で施設として特定できないなら unknown', async () => {
-    const trip = TripSchema.parse({
-      ...sampleTrip,
-      stops: sampleTrip.stops.map((stop) =>
-        stop.id === 'stop-exhibition'
-          ? { ...stop, name: '電車で嵐山へ移動（乗換あり）', kind: 'transport' }
-          : stop,
-      ),
-    })
-    const { response } = await run(
-      { places: withoutExhibition, routes },
-      clientReturning(draft([{ name: '昼食店B' }])),
-      { ...request, trip },
-    )
+  it.each(['transport', 'unidentified'] as const)(
+    '同じ隣接区間を照合できない場合は、営業時間が確認できる候補もすべて unknown（%s）',
+    async (kind) => {
+      const trip = TripSchema.parse({
+        ...sampleTrip,
+        stops: sampleTrip.stops.map((stop) =>
+          stop.id === 'stop-exhibition' && kind === 'transport'
+            ? { ...stop, name: '電車で嵐山へ移動（乗換あり）', kind: 'transport' }
+            : stop,
+        ),
+      })
+      const { response } = await run(
+        { places: withoutExhibition, routes },
+        clientReturning(draft([{ name: '昼食店B' }, { name: '昼食店C' }])),
+        { ...request, trip },
+      )
 
-    expect(explanationOf(response)).toContain('次の予定への移動')
-  })
+      if (response.status !== 'proposed') throw new Error('候補が返ることを期待しました')
+      expect(response.revisions).toHaveLength(2)
+      for (const revision of response.revisions) {
+        expect(revision.constraintCheck).toMatchObject({
+          status: 'unknown',
+          explanation: expect.stringContaining('次の予定への移動'),
+        })
+        expect(revision.approval).toEqual({ status: 'pending' })
+        expect(revision.diff.after.evidence).toContainEqual(
+          expect.objectContaining({ subject: 'opening_hours', status: 'consistent' }),
+        )
+        expect(revision.diff.after.plannedStartTime).toBe(revision.diff.before.plannedStartTime)
+        expect(revision.diff.after.durationMinutes).toBe(revision.diff.before.durationMinutes)
+      }
+      expect(response.comparisons).toHaveLength(2)
+      for (const comparison of response.comparisons ?? []) {
+        expect(comparison.routeEndpoints?.nextPlaceId).toBeNull()
+        expect(comparison.after.toNext).toMatchObject({
+          presence: 'segment',
+          segment: { status: 'unknown', reason: 'not_queried' },
+        })
+      }
+    },
+  )
 })
 
 // 乗車・乗換（transport）は施設ではない：予定名が実在の駅名で、Placesが一致を返しても、経路の端点にしない。
@@ -600,21 +624,24 @@ describe('乗車・乗換の予定は、施設として照合しない', () => {
     expect(proposed(response)[0].constraintCheck.status).toBe('satisfied')
   })
 
-  it('差し替え対象が乗車・乗換なら、Gemini・Mapsを呼ばず insufficient_information', async () => {
-    const client = clientReturning(draft([{ name: '昼食店B' }]))
-    const { response, maps } = await run({ places: stationPlaces, routes }, client, {
-      ...request,
-      trip: tripWithTransport('stop-lunch'),
-    })
+  it.each([request, closureRequest])(
+    '差し替え対象が乗車・乗換なら、Gemini・Mapsを呼ばず insufficient_information ($context.phase)',
+    async (revisionRequest) => {
+      const client = clientReturning(draft([{ name: '昼食店B' }]))
+      const { response, maps } = await run({ places: stationPlaces, routes }, client, {
+        ...revisionRequest,
+        trip: tripWithTransport('stop-lunch'),
+      })
 
-    expect(response).toEqual({
-      status: 'insufficient_information',
-      message: '乗車・乗換の予定は、施設として差し替えられません。',
-    })
-    expect(client.generateJson).not.toHaveBeenCalled()
-    expect(maps.searchPlaces).not.toHaveBeenCalled()
-    expect(maps.computeRoute).not.toHaveBeenCalled()
-  })
+      expect(response).toEqual({
+        status: 'insufficient_information',
+        message: '乗車・乗換の予定は、施設として差し替えられません。',
+      })
+      expect(client.generateJson).not.toHaveBeenCalled()
+      expect(maps.searchPlaces).not.toHaveBeenCalled()
+      expect(maps.computeRoute).not.toHaveBeenCalled()
+    },
+  )
 
   it('適用前の再検証も、対象が乗車・乗換なら、Mapsを呼ばず not_possible', async () => {
     const { response } = await run(fitting, clientReturning(draft([{ name: '昼食店B' }])))
