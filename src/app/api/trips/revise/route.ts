@@ -17,6 +17,10 @@ const client = createLazyVertexGeminiClient(process.env)
 const maps = createLazyMapsClient(process.env)
 
 const logFailure = (event: RevisionFailureEvent) => {
+  if (event.kind === 'candidate_counts') {
+    console.info('[trip-revision] 候補の集計', event)
+    return
+  }
   console.error(
     '[trip-revision] 候補の作成に失敗',
     event.kind === 'gemini_call' ? event : { kind: event.kind },

@@ -234,7 +234,10 @@ export function hoursEvidence(
       {
         ...base,
         status: 'unverifiable',
-        explanation: '営業時間のデータが取得できないため、確認できません。',
+        explanation:
+          place.openingHours.status === 'invalid'
+            ? '営業時間のデータ形式を解釈できないため、確認できません。'
+            : '営業時間のデータが取得できないため、確認できません。',
       },
       checkedAt,
     )

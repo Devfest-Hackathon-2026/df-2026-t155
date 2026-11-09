@@ -36,6 +36,12 @@ const TimeOfWeekSchema = z.object({
   minute: z.int().min(0).max(59).optional(),
 })
 
+const RawOpeningHoursSchema = z.object({
+  periods: z
+    .array(z.object({ open: TimeOfWeekSchema, close: TimeOfWeekSchema.optional() }))
+    .optional(),
+})
+
 const RawPlaceSchema = z.object({
   id: z.string().min(1),
   displayName: z.object({ text: z.string() }).optional(),
@@ -48,13 +54,7 @@ const RawPlaceSchema = z.object({
     })
     .optional(),
   businessStatus: z.string().optional(),
-  regularOpeningHours: z
-    .object({
-      periods: z
-        .array(z.object({ open: TimeOfWeekSchema, close: TimeOfWeekSchema.optional() }))
-        .optional(),
-    })
-    .optional(),
+  regularOpeningHours: z.unknown().optional(),
 })
 
 const RawResponseSchema = z.object({ places: z.array(RawPlaceSchema).optional() })
@@ -72,6 +72,7 @@ export type OpeningPeriod = {
 export type OpeningHours =
   | { status: 'not_requested' }
   | { status: 'unavailable' }
+  | { status: 'invalid' }
   | { status: 'available'; periods: OpeningPeriod[] }
 
 export interface PlaceCandidate {
@@ -161,7 +162,8 @@ export async function searchPlaces(
   return {
     status: 'found',
     candidates: places.map((place): PlaceCandidate => {
-      const periods = place.regularOpeningHours?.periods
+      const hours = RawOpeningHoursSchema.safeParse(place.regularOpeningHours)
+      const periods = hours.success ? hours.data.periods : undefined
       return {
         placeId: place.id,
         name: place.displayName?.text ?? '',
@@ -178,7 +180,9 @@ export async function searchPlaces(
                   close: period.close && { ...period.close, minute: period.close.minute ?? 0 },
                 })),
               }
-            : { status: 'unavailable' },
+            : place.regularOpeningHours === undefined || hours.success
+              ? { status: 'unavailable' }
+              : { status: 'invalid' },
       }
     }),
   }

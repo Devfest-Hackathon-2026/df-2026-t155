@@ -141,6 +141,25 @@ describe('Places: searchPlaces', () => {
     })
   })
 
+  it('一部の営業時間の形式が不正でも、施設同定と他施設の営業時間を維持する', async () => {
+    const { client } = setup(() =>
+      jsonResponse({
+        places: [
+          { ...place, regularOpeningHours: { periods: [{ open: { day: 8, hour: 9 } }] } },
+          { ...place, id: 'second', regularOpeningHours: { periods: [] } },
+        ],
+      }),
+    )
+    const result = await client.searchPlaces({ query: '清水寺', includeOpeningHours: true })
+    expect(result.status).toBe('found')
+    if (result.status !== 'found') throw new Error('施設が見つかりません')
+    expect(result.candidates.map((candidate) => candidate.openingHours)).toEqual([
+      { status: 'invalid' },
+      { status: 'available', periods: [] },
+    ])
+    expect(result.candidates[0].placeId).toBe(place.id)
+  })
+
   it('HTTP 200の空応答は「候補なし」（失敗ではない）', async () => {
     expect(await setup(() => jsonResponse({})).client.searchPlaces({ query: 'zzz' })).toEqual({
       status: 'no_candidates',

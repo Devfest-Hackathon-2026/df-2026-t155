@@ -46,6 +46,17 @@ export type RevisionFailureEvent =
   | { kind: 'gemini_call'; reason: GeminiCallFailureReason; status?: number }
   | { kind: 'unexpected_client_error'; errorName: string }
   | { kind: 'invalid_output'; detail: string }
+  | {
+      kind: 'candidate_counts'
+      generated: number
+      filtered: number
+      identified: number
+      mapsFailed: number
+      violated: number
+      samePlace: number
+      unknown: number
+      satisfied: number
+    }
 
 export interface ReviseDeps {
   client: GeminiJsonClient
@@ -503,7 +514,7 @@ export async function reviseTrip(
   const invalidOutput = (detail: string): ProposalFailure => {
     report?.({ kind: 'invalid_output', detail })
     return {
-      status: 'no_candidates',
+      status: 'external_service_error',
       message:
         'AIの結果が条件を満たさなかったため、候補を作れませんでした。もう一度お試しください。',
     }
@@ -540,7 +551,24 @@ export async function reviseTrip(
     taken.add(full)
     return true
   })
-  if (candidates.length === 0) return invalidOutput('有効な候補が無い')
+  if (candidates.length === 0) {
+    report?.({
+      kind: 'candidate_counts',
+      generated: draft.candidates.length,
+      filtered: 0,
+      identified: 0,
+      mapsFailed: 0,
+      violated: 0,
+      samePlace: 0,
+      unknown: 0,
+      satisfied: 0,
+    })
+    return {
+      status: 'no_candidates',
+      message:
+        '元の予定や他の予定と異なる候補を作れませんでした。理由や条件を変えて、もう一度お試しください。',
+    }
+  }
 
   const checkedAt = (now?.() ?? new Date()).toISOString()
   const surroundings = await resolveSurroundings(trip, index, maps)
@@ -565,6 +593,34 @@ export async function reviseTrip(
       }),
     ),
   )
+  report?.({
+    kind: 'candidate_counts',
+    generated: draft.candidates.length,
+    filtered: candidates.length,
+    identified: evaluations.filter(
+      (e) => e.kind === 'excluded' || (e.kind === 'judged' && !!e.after.placeId),
+    ).length,
+    mapsFailed: evaluations.filter((e) => e.kind === 'maps_failed').length,
+    violated: evaluations.filter(
+      (e) =>
+        e.kind === 'judged' &&
+        e.judgement.status === 'excluded' &&
+        e.judgement.reason === 'violated',
+    ).length,
+    samePlace: evaluations.filter((e) => e.kind === 'excluded').length,
+    unknown: evaluations.filter(
+      (e) =>
+        e.kind === 'judged' &&
+        e.judgement.status === 'candidate' &&
+        e.judgement.constraintCheck.status === 'unknown',
+    ).length,
+    satisfied: evaluations.filter(
+      (e) =>
+        e.kind === 'judged' &&
+        e.judgement.status === 'candidate' &&
+        e.judgement.constraintCheck.status === 'satisfied',
+    ).length,
+  })
   if (evaluations.every((evaluation) => evaluation.kind === 'maps_failed')) {
     return externalFailure(MAPS_FAILURE_MESSAGE)
   }

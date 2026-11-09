@@ -462,28 +462,43 @@ describe('reviseTrip: 成立しない候補は提案しない', () => {
     )
   })
 
-  it('営業時間のデータが無い候補は、unknown（営業とも休みとも決めつけない）', async () => {
-    const setup = {
-      ...fitting,
-      places: {
-        ...basePlaces,
-        昼食店B: {
-          status: 'found' as const,
-          candidates: [
-            {
-              placeId: 'P4',
-              name: '昼食店B',
-              address: KYOTO_ADDRESS,
-              openingHours: { status: 'unavailable' as const },
-            },
-          ],
+  it.each(['unavailable', 'invalid'] as const)(
+    '営業時間が%sの候補は、unknownとして返す',
+    async (status) => {
+      const setup = {
+        ...fitting,
+        places: {
+          ...basePlaces,
+          昼食店B: {
+            status: 'found' as const,
+            candidates: [
+              {
+                placeId: 'P4',
+                name: '昼食店B',
+                address: KYOTO_ADDRESS,
+                openingHours: { status },
+              },
+            ],
+          },
         },
-      },
-    }
-    const { response } = await run(setup, clientReturning(draft([{ name: '昼食店B' }])))
+      }
+      const { response, events } = await run(setup, clientReturning(draft([{ name: '昼食店B' }])))
 
-    expect(proposed(response)[0].constraintCheck.status).toBe('unknown')
-  })
+      expect(proposed(response)[0].constraintCheck.status).toBe('unknown')
+      expect(events).toContainEqual({
+        kind: 'candidate_counts',
+        generated: 1,
+        filtered: 1,
+        identified: 1,
+        mapsFailed: 0,
+        violated: 0,
+        samePlace: 0,
+        unknown: 1,
+        satisfied: 0,
+      })
+      expect(JSON.stringify(events)).not.toContain('昼食店')
+    },
+  )
 })
 
 describe('reviseTrip: 隣の予定の区間が未測定のときは「確認できない」', () => {
@@ -691,7 +706,7 @@ describe('reviseTrip: 候補の整理', () => {
 
     expect(response.status).toBe('no_candidates')
     expect(maps.searchPlaces).not.toHaveBeenCalled()
-    expect(events[0]?.kind).toBe('invalid_output')
+    expect(events[0]).toMatchObject({ kind: 'candidate_counts', generated: 1, filtered: 0 })
   })
 })
 
@@ -746,10 +761,10 @@ describe('reviseTrip: 失敗の区別（元の旅程は維持される）', () =
     expect(maps.searchPlaces).not.toHaveBeenCalled()
   })
 
-  it('AIの出力がJSONでない・形式が不正なら no_candidates', async () => {
+  it('AIの出力がJSONでない・形式が不正なら外部サービスの失敗として区別する', async () => {
     for (const text of ['not json', JSON.stringify({ failure: null, candidates: 'x' })]) {
       const { response } = await run(fitting, clientReturning(text))
-      expect(response.status).toBe('no_candidates')
+      expect(response.status).toBe('external_service_error')
     }
   })
 
@@ -762,7 +777,7 @@ describe('reviseTrip: 失敗の区別（元の旅程は維持される）', () =
     })
     const { response } = await run(fitting, clientReturning(text))
 
-    expect(response.status).toBe('no_candidates')
+    expect(response.status).toBe('external_service_error')
   })
 })
 
