@@ -25,7 +25,7 @@ export function createRevisionVerifier(maps: MapsClient): VerifyRevision {
     const next = trip.stops[index + 1]
     let serviceFailed = false
     let placeMismatch = false
-    // 共通判定はRoutesや隣接施設の取得失敗を未確認にまとめる。適用APIでは通信失敗を分けて返す。
+    // 適用に必要な根拠を取得できなかったときは、通信失敗を情報不足と区別する。
     const observe = async <T>(call: () => Promise<T>): Promise<T> => {
       try {
         return await call()
@@ -58,7 +58,12 @@ export function createRevisionVerifier(maps: MapsClient): VerifyRevision {
         },
       },
     })
-    if (serviceFailed || result.status === 'external_service_error') {
+    // 利用者が指定した別の移動手段で制約を確認できた場合、使わない手段の通信失敗は適用を止めない。
+    if (
+      result.status === 'external_service_error' ||
+      (serviceFailed &&
+        (result.status !== 'checked' || result.constraintCheck.status !== 'satisfied'))
+    ) {
       throw new PersistenceError('external_service_error')
     }
     if (result.status === 'endpoints_changed')

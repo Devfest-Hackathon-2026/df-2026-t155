@@ -236,6 +236,7 @@ async function generate(
   expect(proposalToken).toBeDefined()
   return {
     request,
+    data,
     proposal,
     revision,
     body: { ...revision, travelModes, proposalToken },
@@ -292,6 +293,175 @@ function holdMaps(expected = 1) {
 }
 
 describe('Revision適用 API＋Firestore Emulator', () => {
+  it.each([true, false])(
+    '通常施設は、保存済みPlace IDの有無（%s）にかかわらず再同定できれば承認・適用できる',
+    async (hasPlaceIds) => {
+      await seedTrip({
+        ...tripInput,
+        stops: tripInput.stops.map((stop) => ({
+          ...stop,
+          placeId: hasPlaceIds ? stop.placeId : null,
+        })),
+      })
+      const trip = await readTrip()
+      generateJson.mockResolvedValue(draft(candidateB.name, candidateC.name))
+      const { request, proposal, revision, body, context } = await generate(trip, {
+        phase: 'planning',
+      })
+      expect(proposal.revisions.map(({ constraintCheck }) => constraintCheck.status)).toEqual([
+        'satisfied',
+        'satisfied',
+      ])
+      expect(proposal.comparisons?.[0].routeEndpoints).toEqual({
+        previousPlaceId: 'place-1',
+        nextPlaceId: 'place-3',
+      })
+      expect((await saveRevision(owner.request('POST', body), context)).status).toBe(201)
+      const response = await applyRevision(owner.request('POST', approval), context)
+      expect(response.status).toBe(200)
+      const result = readRevisionApplyResponse(await response.json(), request, revision)
+      expect(result).toMatchObject({
+        status: 'applied',
+        trip: { version: trip.version + 1 },
+        receipt: { revision: { approval: { status: 'approved' } } },
+      })
+      const updated = await readTrip()
+      expect(updated.stops).toEqual(trip.stops.with(1, { ...trip.stops[1], ...candidateB }))
+    },
+  )
+
+  it.each([
+    ['前が乗車・乗換', 'fromPrevious', 'not_queried', 'revision_unverified', 0],
+    ['次が乗車・乗換', 'toNext', 'not_queried', 'revision_unverified', 2],
+    ['次の施設が未同定', 'toNext', 'not_queried', 'revision_unverified'],
+    ['次の施設の検索が失敗', 'toNext', 'not_queried', 'external_service_error'],
+    ['候補の営業時間データが欠落', 'toNext', 'known', 'revision_unverified'],
+    ['経路が見つからない', 'toNext', 'no_route', 'revision_unverified'],
+    ['Routesの通信が失敗', 'toNext', 'api_error', 'external_service_error'],
+  ] as const)(
+    '保存済み旅程で全候補を比較できるが適用できない（%s）',
+    async (scenario, side, expectedSegment, code, transportIndex?: number) => {
+      const stops =
+        transportIndex === undefined
+          ? tripInput.stops
+          : tripInput.stops.with(transportIndex, {
+              ...tripInput.stops[transportIndex],
+              kind: 'transport',
+              placeId: null,
+            })
+      await seedTrip({ ...tripInput, stops })
+      const trip = await readTrip()
+      generateJson.mockResolvedValue(draft(candidateB.name, candidateC.name))
+      maps.searchPlaces.mockImplementation(async (options) => {
+        if (options.query.startsWith(trip.stops[2].name)) {
+          if (scenario === '次の施設が未同定') return { status: 'no_candidates' }
+          if (scenario === '次の施設の検索が失敗') throw new Error('injected Places outage')
+        }
+        if (options.includeOpeningHours && expectedSegment === 'known') {
+          const candidate = [candidateB, candidateC].find(({ name }) =>
+            options.query.startsWith(name),
+          )
+          if (candidate) {
+            return foundPlace(candidate.name, candidate.placeId, { status: 'unavailable' })
+          }
+        }
+        return normalSearch(options)
+      })
+      if (expectedSegment === 'no_route')
+        maps.computeRoute.mockResolvedValue({ status: 'no_route' })
+      if (expectedSegment === 'api_error')
+        maps.computeRoute.mockRejectedValue(new Error('injected Routes outage'))
+
+      const { data, proposal, body, context } = await generate(trip, { phase: 'planning' })
+      if (data.status !== 'proposed') throw new Error('Expected proposal')
+      expect(data.revisions.map(({ constraintCheck }) => constraintCheck.status)).toEqual([
+        'unknown',
+        'unknown',
+      ])
+      expect(proposal.revisions.map(({ constraintCheck }) => constraintCheck.status)).toEqual([
+        'unknown',
+        'unknown',
+      ])
+      expect(proposal.comparisons).toHaveLength(2)
+      for (const comparison of proposal.comparisons ?? []) {
+        expect(comparison.after[side]).toMatchObject({
+          presence: 'segment',
+          segment:
+            expectedSegment === 'known'
+              ? { status: 'known' }
+              : { status: 'unknown', reason: expectedSegment },
+        })
+      }
+      if (expectedSegment === 'known') {
+        expect(proposal.revisions[0].constraintCheck.explanation).toContain('営業時間')
+      }
+
+      // UIが承認を送信しない場合も、適用APIを直接呼べば再照合で拒否される。
+      expect((await saveRevision(owner.request('POST', body), context)).status).toBe(201)
+      await expectCode(
+        await applyRevision(owner.request('POST', approval), context),
+        code === 'external_service_error' ? 502 : 422,
+        code,
+      )
+      expect(await readTrip()).toEqual(trip)
+      const stored = await getRevision(owner.request(), context)
+      expect(RevisionResponseSchema.parse(await stored.json()).revision.approval).toEqual({
+        status: 'pending',
+      })
+    },
+  )
+
+  it('候補の営業時間付きPlaces検索が全件失敗した場合は、比較候補を返さず502にする', async () => {
+    const trip = await seedTrip()
+    generateJson.mockResolvedValue(draft(candidateB.name, candidateC.name))
+    maps.searchPlaces.mockImplementation(async (options) => {
+      if (options.includeOpeningHours) throw new Error('injected candidate Places outage')
+      return normalSearch(options)
+    })
+
+    const response = await generateRevision(
+      owner.request('POST', {
+        trip,
+        context: { phase: 'planning' },
+        targetStopId: trip.stops[1].id,
+        reason: '昼食の候補を比較する',
+      }),
+    )
+    expect(response.status).toBe(502)
+    expect(await response.json()).toMatchObject({ status: 'external_service_error' })
+    expect(await readTrip()).toEqual(trip)
+  })
+
+  it('適用時に徒歩経路の取得が失敗しても、指定済みの車で両区間が間に合えば適用する', async () => {
+    await seedTrip()
+    const trip = await readTrip()
+    const { request, revision, body, context } = await generate(trip, { phase: 'planning' }, [
+      'walk',
+      'drive',
+    ])
+    expect(revision.constraintCheck.status).toBe('satisfied')
+    expect((await saveRevision(owner.request('POST', body), context)).status).toBe(201)
+    maps.computeRoute.mockClear().mockImplementation(async ({ mode }) => {
+      if (mode === 'WALK') throw new Error('injected walking route outage')
+      return route(10)
+    })
+
+    const response = await applyRevision(owner.request('POST', approval), context)
+
+    expect(response.status).toBe(200)
+    expect(readRevisionApplyResponse(await response.json(), request, revision)).toMatchObject({
+      status: 'applied',
+      trip: { version: trip.version + 1 },
+      receipt: { revision: { approval: { status: 'approved' } } },
+    })
+    expect(maps.computeRoute.mock.calls.map(([{ mode }]) => mode).sort()).toEqual([
+      'DRIVE',
+      'DRIVE',
+      'WALK',
+      'WALK',
+    ])
+  })
+
   it('保存済みの本人報告を省いた再発行では候補を適用できない', async () => {
     const trip = await seedTrip()
     const conflict = {
