@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { sampleRevision, sampleTrip } from '@/domain/samples'
+import { sampleLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 
 import { fakeAppCheck } from '../../../tests/helpers/fake-app-check'
 import { fakeAuth } from '../../../tests/helpers/fake-auth-client'
@@ -42,6 +42,79 @@ afterEach(() => {
 
 const renderPage = async (searchParams: { tripId?: string; demo?: string }) =>
   render(await ReflectionPage({ searchParams: Promise.resolve(searchParams) }))
+
+function generateDemoLearning() {
+  fireEvent.change(screen.getByLabelText(/感想・変更した理由/), {
+    target: { value: '昼食後は休みたかった' },
+  })
+  fireEvent.click(screen.getByRole('button', { name: '学びの候補を作る' }))
+}
+
+it.each(['終了', 'A→B→A'])(
+  '架空デモの候補APIは認証切替（%s）で中断し、遅延応答を表示しない',
+  async (change) => {
+    fakeAuth.signInAs('user-1')
+    const response = Promise.withResolvers<Response>()
+    const api = vi.fn<typeof fetch>(() => response.promise)
+    vi.stubGlobal('fetch', api)
+    await renderPage({ demo: '1' })
+    generateDemoLearning()
+    await waitFor(() => expect(api).toHaveBeenCalledOnce())
+    expect(api.mock.calls[0][0]).toBe('/api/learnings/candidates')
+    expect(new Headers(api.mock.calls[0][1]?.headers).get('Authorization')).toBe(
+      'Bearer token-of-user-1',
+    )
+    const signal = api.mock.calls[0][1]?.signal
+
+    if (change === '終了') fakeAuth.endSession()
+    else {
+      fakeAuth.signInAs('user-2')
+      fakeAuth.signInAs('user-1')
+    }
+    await act(async () =>
+      response.resolve(Response.json({ status: 'proposed', learnings: [sampleLearning] })),
+    )
+
+    expect(screen.queryByDisplayValue(sampleLearning.content)).toBeNull()
+    expect(screen.queryByText(sampleLearning.content)).toBeNull()
+    expect(signal?.aborted).toBe(true)
+  },
+)
+
+it('架空デモでもヘッダー取得中に世代が変わったら候補APIを送信しない', async () => {
+  fakeAuth.signInAs('user-1')
+  const pending = Promise.withResolvers<{ token: string }>()
+  fakeAppCheck.getToken.mockReturnValueOnce(pending.promise)
+  const api = vi.fn<typeof fetch>()
+  vi.stubGlobal('fetch', api)
+  await renderPage({ demo: '1' })
+  generateDemoLearning()
+  await waitFor(() => expect(fakeAppCheck.getToken).toHaveBeenCalledOnce())
+  fakeAuth.signInAs('user-2')
+  fakeAuth.signInAs('user-1')
+  await act(async () => pending.resolve({ token: 'test.app.check' }))
+  expect(api).not.toHaveBeenCalled()
+})
+
+it('架空デモでも認証スコープがなければヘッダーを取得せず送信しない', async () => {
+  await renderPage({ demo: '1' })
+  generateDemoLearning()
+  await screen.findByRole('alert')
+  expect(fakeAppCheck.getToken).not.toHaveBeenCalled()
+  expect(backend.fetchFn).not.toHaveBeenCalled()
+})
+
+it('同じ認証世代で届いた架空デモの候補は採用する', async () => {
+  fakeAuth.signInAs('user-1')
+  const api = vi
+    .fn<typeof fetch>()
+    .mockResolvedValue(Response.json({ status: 'proposed', learnings: [sampleLearning] }))
+  vi.stubGlobal('fetch', api)
+  await renderPage({ demo: '1' })
+  generateDemoLearning()
+  expect(await screen.findByDisplayValue(sampleLearning.content)).toBeTruthy()
+  expect(api).toHaveBeenCalledOnce()
+})
 
 describe('/reflection のページ', () => {
   it('?demo=1 だけは、架空デモと明示し、保存先へつながず、保存の操作も出さない', async () => {

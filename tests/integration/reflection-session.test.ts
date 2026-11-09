@@ -6,11 +6,13 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { POST as approveLearning } from '@/app/api/learnings/[learningId]/approve/route'
 import { DELETE as revokeLearning } from '@/app/api/learnings/[learningId]/route'
+import { POST as generateCandidates } from '@/app/api/learnings/candidates/route'
 import { GET as listLearnings } from '@/app/api/learnings/route'
 import { GET as listRevisions } from '@/app/api/trips/[tripId]/revisions/route'
 import { GET as getTrip } from '@/app/api/trips/[tripId]/route'
 import { GET as listTrips, POST as createTrip } from '@/app/api/trips/route'
 import { sampleApprovedLearning, sampleTrip } from '@/domain/samples'
+import { requestLearningCandidates } from '@/features/learning-review/api-client'
 import { captureSessionScope } from '@/lib/auth/session-scope'
 import { LearningListResponseSchema } from '@/server/persistence/contracts'
 import { createFirestoreLearningStore } from '@/features/reflection-flow/api-client'
@@ -24,6 +26,11 @@ vi.mock(
   async () => (await import('../helpers/fake-app-check')).appCheckModule,
 )
 vi.mock('@/lib/firebase/client', () => ({ getClientAuth: () => ({ app: {} }) }))
+const { generateJson } = vi.hoisted(() => ({ generateJson: vi.fn() }))
+vi.mock('@/server/gemini/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/server/gemini/client')>()),
+  createLazyVertexGeminiClient: () => ({ generateJson }),
+}))
 
 // 認証クライアントだけを差し替える（IDトークンは、Auth Emulatorが発行した本物を使う）。
 // 保存API（Route Handlers）・Firestore Emulator・セッションスコープ・保存ポートは、すべて本物。
@@ -179,6 +186,53 @@ const scopeFor = async (uid: string) => {
 
 afterAll(async () => {
   await Promise.all(apps.map(deleteApp))
+})
+
+it('保護された候補APIの実際の200応答でも、認証終了後の遅延配送は破棄する', async () => {
+  vi.stubEnv('LEARNING_CANDIDATES_ENABLED', 'true')
+  generateJson.mockResolvedValueOnce(
+    JSON.stringify({
+      failure: null,
+      candidates: [
+        { category: 'preference', content: '昼食後に休憩を入れたい', scope: 'all_trips' },
+      ],
+    }),
+  )
+  const scope = await scopeFor(a.uid)
+  const ready = Promise.withResolvers<Response>()
+  const deliver = Promise.withResolvers<void>()
+  const fetchFn = vi.fn<typeof fetch>(async (input, init) => {
+    try {
+      const response = await generateCandidates(
+        new Request(new URL(String(input), 'http://localhost'), init),
+      )
+      ready.resolve(response.clone())
+      // サーバーはすでに処理済みで、クライアントの中断後にも応答が届く順序を再現する。
+      await deliver.promise
+      return response
+    } catch (error) {
+      ready.reject(error)
+      throw error
+    }
+  })
+  const result = requestLearningCandidates(
+    { trip: sampleTrip, revisions: [], feedback: '昼食後は休みたかった' },
+    { scope, fetchFn },
+  )
+  try {
+    const response = await ready.promise
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      status: 'proposed',
+      learnings: [{ sourceTripId: sampleTrip.id, approval: { status: 'pending' } }],
+    })
+    fakeAuth.endSession()
+    expect(fetchFn.mock.calls[0][1]?.signal?.aborted).toBe(true)
+  } finally {
+    deliver.resolve()
+    vi.unstubAllEnvs()
+  }
+  await expect(result).resolves.toMatchObject({ ok: false, failure: { kind: 'session_changed' } })
 })
 
 describe('振り返りの保存：セッション・結果不明・競合（Firestore Emulator＋認証済みRoute Handlers）', () => {

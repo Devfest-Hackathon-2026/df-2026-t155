@@ -7,6 +7,13 @@ export class FirebaseConfigurationError extends Error {
   }
 }
 
+export class DemoSessionExitPendingError extends Error {
+  constructor() {
+    super('デモの終了操作を完了してください')
+    this.name = 'DemoSessionExitPendingError'
+  }
+}
+
 const ProjectIdSchema = z.string().regex(/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/)
 const EmulatorFlagSchema = z.enum(['true', 'false']).optional()
 

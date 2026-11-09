@@ -61,7 +61,7 @@ export interface CandidatesOptions {
   signal?: AbortSignal
   // trip・revisionsを取得した認証セッション。指定すると、そのセッションのBearer＋App Checkだけで送り、
   // 送信直前と応答後にも世代の一致を確かめる（別のUIDのトークンで、前のセッションのデータを送らない）。
-  // 振り返り画面など、保存済みデータを送る呼び出しは必ず指定する。架空のデモデータだけ省略できる。
+  // 振り返り画面は実APIへ送るため、保存済み・架空の旅程のどちらでも指定する。
   scope?: SessionScope
   // 既定は本人のBearer＋App Check（scope指定時はscopeに束縛したもの）。テストでは差し替える。
   // scope指定時に、現在のUIDで新しく作り直す関数へ差し替えてはいけない。
@@ -108,35 +108,24 @@ export async function requestLearningCandidates(
   const headerSource =
     getHeaders ??
     (scope ? () => getProtectedApiHeadersForScope(scope) : () => getProtectedApiHeaders())
-  // ヘッダーを用意できなければ送信しない（課金APIを呼ばない・再試行しない）。
-  let headers: Headers
-  try {
-    headers = await headerSource(scope)
-  } catch (error) {
-    if (error instanceof SessionChangedError) {
-      return failure('session_changed', SESSION_CHANGED_MESSAGE)
-    }
-    const kind = classifyProtectedHeaderError(error)
-    return failure(kind, PROTECTED_FAILURE_MESSAGES[kind])
-  }
-  headers.set('Content-Type', 'application/json')
-
-  // ヘッダー取得（App Check待ちを含む）の後、fetchと同じ同期区間で世代を確かめ、通信を世代に登録する。
   let operation: SessionScopeOperation | undefined
-  if (scope) {
+  try {
+    let headers: Headers
     try {
-      operation = beginSessionScopeOperation(scope, signal)
-      operation.assertCurrent('not_sent')
+      // App Checkの待機中も旧世代として中断し、ヘッダー取得後にもう一度確認してから送信する。
+      if (scope) operation = beginSessionScopeOperation(scope, signal)
+      if (operation?.signal.aborted) return failure('interrupted', INTERRUPTED_MESSAGE)
+      headers = await headerSource(scope)
+      operation?.assertCurrent('not_sent')
+      if (operation?.signal.aborted) return failure('interrupted', INTERRUPTED_MESSAGE)
     } catch (error) {
-      operation?.dispose()
       if (error instanceof SessionChangedError) {
         return failure('session_changed', SESSION_CHANGED_MESSAGE)
       }
-      return failure('auth_required', PROTECTED_FAILURE_MESSAGES.auth_required)
+      const kind = classifyProtectedHeaderError(error)
+      return failure(kind, PROTECTED_FAILURE_MESSAGES[kind])
     }
-  }
-
-  try {
+    headers.set('Content-Type', 'application/json')
     return await interpret(request, headers, fetchFn, operation?.signal ?? signal, () => {
       try {
         operation?.assertCurrent('unknown')

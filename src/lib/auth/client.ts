@@ -2,8 +2,8 @@
 
 import { onIdTokenChanged, reload, signInAnonymously, type Auth, type User } from 'firebase/auth'
 
-import { getClientAuth } from '../firebase/client'
-import { FirebaseConfigurationError } from '../firebase/config'
+import { getClientAuth, signOutDemoSession } from '../firebase/client'
+import { DemoSessionExitPendingError, FirebaseConfigurationError } from '../firebase/config'
 
 export type AuthUser = Readonly<{ uid: string; isAnonymous: boolean }>
 // 同じUserから同時に取ったUIDとIDトークンの組。
@@ -16,12 +16,18 @@ export type AuthState =
 
 export class ClientAuthError extends Error {
   constructor(
-    readonly code: 'configuration_error' | 'session_ended' | 'unavailable' | 'sign_in_failed',
+    readonly code:
+      | 'configuration_error'
+      | 'session_ended'
+      | 'demo_exit_pending'
+      | 'unavailable'
+      | 'sign_in_failed',
   ) {
     const messages = {
       configuration_error: '認証の設定を確認してください',
       session_ended:
         '利用可能な認証状態がありません。以前の匿名データを復旧できない場合があります。新しい利用を始めるには明示的な開始操作が必要です',
+      demo_exit_pending: 'ヘッダーの「デモを終了する」から終了操作を完了してください',
       unavailable: '認証サービスに接続できません。時間をおいて再試行してください',
       sign_in_failed: '認証を開始できませんでした。再試行してください',
     }
@@ -33,6 +39,7 @@ export class ClientAuthError extends Error {
 function toClientError(error: unknown): ClientAuthError {
   if (error instanceof ClientAuthError) return error
   if (error instanceof FirebaseConfigurationError) return new ClientAuthError('configuration_error')
+  if (error instanceof DemoSessionExitPendingError) return new ClientAuthError('demo_exit_pending')
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
   if (
     code === 'auth/user-disabled' ||
@@ -67,11 +74,33 @@ type Session = {
 
 const sessions = new WeakMap<Auth, Session>()
 const restoredAuths = new WeakSet<Auth>()
+const blockedDemoAuths = new WeakMap<Auth, ClientAuthError>()
 
 function invalidateSessionOperations(session: Session): void {
   for (const controller of session.activeOperations) controller.abort()
   session.activeOperations.clear()
 }
+
+function invalidateSessionGeneration(session: Session): void {
+  invalidateSessionOperations(session)
+  session.generation += 1
+  session.verified = false
+  session.verification = undefined
+  session.initialization = undefined
+  session.starting = undefined
+}
+
+function discardDemoDocument(auth: Auth): void {
+  if (blockedDemoAuths.has(auth)) return
+  blockedDemoAuths.set(auth, new ClientAuthError('session_ended'))
+  const session = sessions.get(auth)
+  if (session) invalidateSessionGeneration(session)
+}
+
+function getSessionAuth(allowDemo = true): Auth {
+  return getClientAuth({ allowDemo, onDiscardDemoDocument: discardDemoDocument })
+}
+
 const errorListeners = new Set<(error: ClientAuthError, session: Session) => void>()
 
 function currentSession(auth: Auth): Session {
@@ -96,6 +125,8 @@ function isCurrent(session: Session): boolean {
 }
 
 function assertCurrent(session: Session, expectedGeneration = session.generation): void {
+  const blocked = blockedDemoAuths.get(session.auth)
+  if (blocked) throw blocked
   if (!isCurrent(session) || session.generation !== expectedGeneration) {
     throw new ClientAuthError('session_ended')
   }
@@ -121,24 +152,30 @@ function reportError(
 ): ClientAuthError {
   const safeError = toClientError(error)
   // 古い操作は呼び出し元へ失敗を返すだけ。新世代の検証・キャッシュ・通知に触れない。
-  if (isCurrent(session) && session.generation === expectedGeneration) {
+  if (
+    !blockedDemoAuths.has(session.auth) &&
+    isCurrent(session) &&
+    session.generation === expectedGeneration
+  ) {
+    if (safeError.code === 'demo_exit_pending') blockedDemoAuths.set(session.auth, safeError)
     session.verified = false
     session.errorGeneration += 1
     session.lastError = safeError
     // 失効・終了は同じUIDへ戻っても以前の操作を復活させない。
-    if (safeError.code === 'session_ended') {
-      invalidateSessionOperations(session)
-      session.generation += 1
-      session.verified = false
-      session.verification = undefined
-      session.initialization = undefined
-      session.starting = undefined
+    if (safeError.code === 'session_ended' || safeError.code === 'demo_exit_pending') {
+      invalidateSessionGeneration(session)
     }
     errorListeners.forEach((listener) => {
       if (isCurrent(session)) listener(safeError, session)
     })
   }
   return safeError
+}
+
+export function endDemoSession(): Promise<void> {
+  return signOutDemoSession((auth) => {
+    reportError(new ClientAuthError('demo_exit_pending'), currentSession(auth))
+  })
 }
 
 function verifyCurrentUser(session: Session): Promise<void> {
@@ -169,7 +206,7 @@ function verifyCurrentUser(session: Session): Promise<void> {
 export function initializeAnonymousSession(): Promise<AuthUser> {
   let session: Session
   try {
-    session = currentSession(getClientAuth())
+    session = currentSession(getSessionAuth())
   } catch (error) {
     return Promise.reject(toClientError(error))
   }
@@ -203,7 +240,7 @@ export function initializeAnonymousSession(): Promise<AuthUser> {
 export function startNewAnonymousSession(): Promise<AuthUser> {
   let session: Session
   try {
-    session = currentSession(getClientAuth())
+    session = currentSession(getSessionAuth(false))
   } catch (error) {
     return Promise.reject(toClientError(error))
   }
@@ -214,6 +251,7 @@ export function startNewAnonymousSession(): Promise<AuthUser> {
     try {
       session = await restoreSession(session)
       operationGeneration = session.generation
+      assertCurrent(session, operationGeneration)
       if (!session.user) {
         const { user } = await signInAnonymously(session.auth)
         const created = currentSession(session.auth)
@@ -263,7 +301,7 @@ export function observeAuthState(listener: (state: AuthState) => void): () => vo
   }
   let unsubscribe: (() => void) | undefined
   try {
-    auth = getClientAuth()
+    auth = getSessionAuth()
     const initialSession = currentSession(auth)
     listener({ status: 'restoring', sessionGeneration: initialSession.generation })
     errorListeners.add(onError)
@@ -271,7 +309,7 @@ export function observeAuthState(listener: (state: AuthState) => void): () => vo
     // エラーは検証・初期化・サインイン・トークン取得のPromiseで扱う。
     let lastNotifiedUser: User | null | undefined = initialSession.user
     unsubscribe = onIdTokenChanged(auth, (user) => {
-      if (!active) return
+      if (!active || blockedDemoAuths.has(auth)) return
       const previousSession = sessions.get(auth)
       const session = currentSession(auth)
       const sessionReplaced = previousSession !== session
@@ -311,7 +349,12 @@ export function observeAuthState(listener: (state: AuthState) => void): () => vo
       listener({ status: 'restoring', sessionGeneration: session.generation })
       void verifyCurrentUser(session).then(
         () => {
-          if (active && notificationGeneration === observedGeneration && isCurrent(session)) {
+          if (
+            active &&
+            notificationGeneration === observedGeneration &&
+            !blockedDemoAuths.has(auth) &&
+            isCurrent(session)
+          ) {
             listener({
               status: 'authenticated',
               user: summarize(currentUser),
@@ -343,9 +386,10 @@ async function fetchAuthSnapshot(forceRefresh: boolean): Promise<AuthSnapshot> {
   let session: Session | undefined
   let operationGeneration: number | undefined
   try {
-    session = currentSession(getClientAuth())
+    session = currentSession(getSessionAuth())
     session = await restoreSession(session)
     operationGeneration = session.generation
+    assertCurrent(session, operationGeneration)
     const user = session.user
     if (!user) throw new ClientAuthError('session_ended')
     // UIDはトークン取得の待機中に別Userのものへ差し替わらないよう、同じuserから先に読む。
@@ -353,6 +397,8 @@ async function fetchAuthSnapshot(forceRefresh: boolean): Promise<AuthSnapshot> {
     const token = await user.getIdToken(forceRefresh)
     // 待機中にサインアウト・ユーザー変更があれば、組を返さず失敗にする。
     assertCurrent(session, operationGeneration)
+    // 履歴から復元した文書ではSDKのUserが古いままでも、タブ内の目印で切り替えを検出する。
+    if (getClientAuth() !== session.auth) throw new ClientAuthError('session_ended')
     return { uid, token, generation: operationGeneration }
   } catch (error) {
     // 失効・失敗時に新しい匿名ユーザーを自動作成してはいけない。
@@ -376,7 +422,7 @@ export function getAuthSnapshot(): Promise<AuthSnapshot> {
 // currentSessionはcurrentUserの差し替えも検出して進行中操作を同期的に中断する。
 export function isAuthSessionCurrent(uid: string, generation: number): boolean {
   try {
-    const session = currentSession(getClientAuth())
+    const session = currentSession(getSessionAuth())
     return session.user?.uid === uid && session.generation === generation
   } catch {
     return false
@@ -389,7 +435,7 @@ export function registerAuthSessionOperation(
   generation: number,
   controller: AbortController,
 ): (() => void) | undefined {
-  const session = currentSession(getClientAuth())
+  const session = currentSession(getSessionAuth())
   if (session.user?.uid !== uid || session.generation !== generation) return undefined
   session.activeOperations.add(controller)
   return () => session.activeOperations.delete(controller)

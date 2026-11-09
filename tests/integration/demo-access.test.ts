@@ -6,6 +6,7 @@ import {
   EmailAuthProvider,
   getAuth,
   linkWithCredential,
+  signInAnonymously,
   signInWithCustomToken,
   signInWithEmailAndPassword,
 } from 'firebase/auth'
@@ -233,6 +234,95 @@ it('別々のクライアントで同じデモUIDを使い、匿名データと�
   await getAdminAuth().revokeRefreshTokens(uid)
   expect((await listTrips(protectedRequest('/api/trips', demoB))).status).toBe(401)
   expect((await session(protectedRequest('/api/auth/session', anonToken))).status).toBe(200)
+})
+
+it('デモを終了したクライアントだけサインアウトし、通常認証と共有データ・利用枠を保持する', async () => {
+  const sharedUid = 'demo-session-exit-emulator-test'
+  const admin = getAdminAuth()
+  await admin.createUser({ uid: sharedUid })
+  const regular = getClientAuth()
+  const anonymous = regular.currentUser ?? (await signInAnonymously(regular)).user
+  const demo = getDemoClientAuth()
+  const peer = getAuth(
+    initializeApp(
+      { projectId: 'demo-groundtrip', apiKey: 'demo-api-key' },
+      'demo-session-exit-peer',
+    ),
+  )
+  connectAuthEmulator(peer, 'http://127.0.0.1:9099', { disableWarnings: true })
+  await Promise.all(
+    [demo, peer].map(async (auth) =>
+      signInWithCustomToken(auth, await admin.createCustomToken(sharedUid)),
+    ),
+  )
+
+  const db = getAdminFirestore()
+  const owner = db.doc(`users/${sharedUid}`)
+  const trip = owner.collection('trips').doc('trip')
+  const revision = trip.collection('revisions').doc('revision')
+  const learning = owner.collection('learnings').doc('learning')
+  await Promise.all(
+    [trip, revision, learning].map((ref) => ref.set({ ownerUid: sharedUid, id: ref.id })),
+  )
+  await gate.set({
+    ...createControlDocument({
+      ...DEFAULT_LIMITS,
+      enabled: true,
+      startsAt: new Date(Date.now() - 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 600_000).toISOString(),
+    }),
+    counts: { paid: { minute: [], total: 3 }, storage: { minute: [], total: 4 } },
+  })
+  const before = await db.getAll(trip, revision, learning, gate)
+
+  // Auth SDKを保ったまま新しいブラウザ文書のモジュール状態を再現する。
+  const marker = 'groundtrip-demo-session'
+  const storage = new Map([[marker, 'demo-marker']])
+  vi.stubGlobal(
+    'window',
+    Object.assign(new EventTarget(), {
+      location: { pathname: '/' },
+      sessionStorage: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => storage.set(key, value),
+        removeItem: (key: string) => storage.delete(key),
+      },
+    }),
+  )
+  try {
+    vi.resetModules()
+    const current = await import('@/lib/auth/client')
+    await expect(current.getAuthSnapshot()).resolves.toMatchObject({ uid: sharedUid })
+    await current.endDemoSession()
+
+    expect(storage.has(marker)).toBe(false)
+    expect(demo.currentUser).toBeNull()
+    expect(regular.currentUser).toBe(anonymous)
+    expect(peer.currentUser?.uid).toBe(sharedUid)
+    const peerToken = await peer.currentUser?.getIdToken(true)
+    expect(peerToken).toBeTruthy()
+    await expect(admin.verifyIdToken(peerToken ?? '', true)).resolves.toMatchObject({
+      uid: sharedUid,
+    })
+    await expect(admin.getUser(sharedUid)).resolves.toMatchObject({ disabled: false })
+    const after = await db.getAll(trip, revision, learning, gate)
+    expect(after.map((snapshot) => snapshot.data())).toEqual(
+      before.map((snapshot) => snapshot.data()),
+    )
+    expect(after.map((snapshot) => snapshot.updateTime)).toEqual(
+      before.map((snapshot) => snapshot.updateTime),
+    )
+
+    vi.resetModules()
+    const normalEntry = await import('@/lib/auth/client')
+    await expect(normalEntry.initializeAnonymousSession()).resolves.toEqual({
+      uid: anonymous.uid,
+      isAnonymous: true,
+    })
+  } finally {
+    vi.unstubAllGlobals()
+    await db.recursiveDelete(owner)
+  }
 })
 
 // Auth Emulatorは本番のdisabledUserDeletionを強制しない。公開前に止めるべき操作を再現する。

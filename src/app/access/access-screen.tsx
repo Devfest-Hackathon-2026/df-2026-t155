@@ -1,6 +1,5 @@
 'use client'
 
-import { signInWithCustomToken } from 'firebase/auth'
 import { useEffect, useRef, useState } from 'react'
 
 import {
@@ -9,9 +8,9 @@ import {
   demoAccessTokenResponse,
 } from '@/features/demo-access/contract'
 import { getAppCheckToken } from '@/lib/auth/protected-api'
-import { activateDemoSession, getDemoClientAuth, isDemoSessionActive } from '@/lib/firebase/client'
+import { getDemoClientApp, getDemoSessionStatus, prepareDemoSignIn } from '@/lib/firebase/client'
 
-type AccessResult = 'authenticated' | 'invalid' | 'limited' | 'unavailable'
+type AccessResult = 'authenticated' | 'invalid' | 'limited' | 'unavailable' | 'exit_pending'
 
 async function enterDemo(signal: AbortSignal): Promise<AccessResult> {
   const match = /^#ticket=([A-Za-z0-9_-]+)$/.exec(window.location.hash)
@@ -19,9 +18,12 @@ async function enterDemo(signal: AbortSignal): Promise<AccessResult> {
   window.history.replaceState(window.history.state, '', '/access')
   const ticket = demoAccessTicket.safeParse(match?.[1])
   if (!ticket.success) return 'invalid'
+  const status = getDemoSessionStatus()
+  if (status === 'exit_requested') return 'exit_pending'
+  if (status === 'unavailable') return 'unavailable'
 
-  const auth = getDemoClientAuth()
-  const appCheck = await getAppCheckToken(auth.app)
+  const signIn = prepareDemoSignIn()
+  const appCheck = await getAppCheckToken(getDemoClientApp())
   signal.throwIfAborted()
   const response = await fetch(demoAccessExchangePath, {
     method: 'POST',
@@ -41,14 +43,14 @@ async function enterDemo(signal: AbortSignal): Promise<AccessResult> {
 
   const { customToken } = demoAccessTokenResponse.parse(await response.json())
   signal.throwIfAborted()
-  await signInWithCustomToken(auth, customToken)
-  // 画面を離れた後の完了でも、すでに使っていたデモ認証の旧世代を無効にする。
-  if (isDemoSessionActive()) activateDemoSession()
-  return 'authenticated'
+  if (await signIn(customToken, signal)) return 'authenticated'
+  return getDemoSessionStatus() === 'exit_requested' ? 'exit_pending' : 'unavailable'
 }
 
-function startAccess(): Promise<AccessResult> {
+function startAccess() {
   const controller = new AbortController()
+  const onPageHide = () => controller.abort()
+  window.addEventListener('pagehide', onPageHide, { once: true })
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<AccessResult>((resolve) => {
     timer = setTimeout(() => {
@@ -56,27 +58,35 @@ function startAccess(): Promise<AccessResult> {
       resolve('unavailable')
     }, 15_000)
   })
-  return Promise.race([enterDemo(controller.signal), timeout]).finally(() => clearTimeout(timer))
+  const result = Promise.race([enterDemo(controller.signal), timeout]).finally(() => {
+    clearTimeout(timer)
+    window.removeEventListener('pagehide', onPageHide)
+  })
+  return { result, cancel: onPageHide }
 }
 
 const messages = {
   invalid: 'デモへのアクセスを確認できませんでした。提出資料のURLをご確認ください。',
   limited: 'デモのアクセスが集中しています。時間をおいて提出資料のURLを開き直してください。',
   unavailable: 'デモへ接続できませんでした。時間をおいて提出資料のURLを開き直してください。',
+  exit_pending:
+    '前のデモの終了操作が残っています。通常画面に戻り、ヘッダーの「デモを終了する」を押してください。',
 }
 
 export function AccessScreen() {
-  const attempt = useRef<Promise<AccessResult> | null>(null)
+  const attempt = useRef<ReturnType<typeof startAccess> | null>(null)
+  const mounted = useRef(false)
   const [error, setError] = useState<Exclude<AccessResult, 'authenticated'> | null>(null)
 
   useEffect(() => {
     let active = true
-    attempt.current ??= startAccess()
-    void attempt.current
+    mounted.current = true
+    const current = (attempt.current ??= startAccess())
+    void current.result
       .then((result) => {
         if (!active) return
         if (result === 'authenticated') {
-          if (!isDemoSessionActive()) activateDemoSession()
+          if (window.location.pathname !== '/access' || getDemoSessionStatus() !== 'active') return
           // 前の画面のReact状態・認証スコープを引き継がず、通常画面を読み込み直す。
           window.location.replace('/')
         } else {
@@ -88,6 +98,11 @@ export function AccessScreen() {
       })
     return () => {
       active = false
+      mounted.current = false
+      // Strict Modeの同期的な購読の張り直しと実際のSPA離脱を区別する。
+      queueMicrotask(() => {
+        if (!mounted.current) current.cancel()
+      })
     }
   }, [])
 

@@ -12,6 +12,16 @@ import {
 } from 'react'
 
 import type { ApprovedLearning, Learning, Revision, Trip } from '@/domain'
+import { observeAuthState } from '@/lib/auth/client'
+import {
+  classifyProtectedHeaderError,
+  PROTECTED_FAILURE_MESSAGES,
+} from '@/lib/auth/protected-api-errors'
+import {
+  assertCurrentSessionScopeSync,
+  captureSessionScope,
+  type SessionScope,
+} from '@/lib/auth/session-scope'
 import { MAX_LEARNING_CONTENT_LENGTH } from '@/lib/learnings/lifecycle'
 import { hasMaterial, isSimulated, revisionMaterialStatus } from '@/lib/learnings/material'
 
@@ -22,7 +32,6 @@ import {
   type CandidatesRequest,
   type CandidatesResult,
 } from './api-client'
-import { assertCurrentSessionScopeSync, type SessionScope } from '@/lib/auth/session-scope'
 import { validateIncomingCandidates } from './intake'
 import {
   approvedOf,
@@ -45,8 +54,10 @@ export type RequestCandidates = (
 interface LearningReviewProps {
   trip: Trip
   // trip・revisionsを取得した認証セッション。指定すると、候補の生成はこのセッションのトークンでだけ送り、
-  // セッションが変わったら送らず、古い結果も採用しない。実データを渡す画面は必ず指定する（デモの架空データだけ省略可）。
+  // セッションが変わったら送らず、古い結果も採用しない。実データを渡す画面は必ず指定する。
   scope?: SessionScope
+  // 架空の旅程を実APIに送る画面では、表示時ではなく候補生成の操作時に認証世代を取る。
+  bindCandidatesToCurrentSession?: boolean
   // 旅行中に行った部分修正の履歴。承認した、実際の報告に基づくものだけが、学びの材料になる。
   revisions?: Revision[]
   // テスト・先行開発で差し替える。省略時は実際のAPIを呼ぶ。
@@ -117,6 +128,7 @@ type Phase =
 export function LearningReview({
   trip,
   scope,
+  bindCandidatesToCurrentSession = false,
   revisions = NO_REVISIONS,
   requestCandidates = requestLearningCandidates,
   now = () => new Date(),
@@ -285,16 +297,31 @@ export function LearningReview({
     setPhase({ kind: 'generating' })
 
     let result: CandidatesResult
+    let requestScope = scope
+    const bindOnSubmit = bindCandidatesToCurrentSession && !scope
+    // UIDが元に戻る切り替えも世代に反映するため、候補生成の間だけ認証通知を購読する。
+    const stopObserving = bindOnSubmit ? observeAuthState(() => {}) : undefined
     try {
+      if (bindOnSubmit) {
+        requestScope = await captureSessionScope()
+        controller.signal.throwIfAborted()
+      }
       result = await requestCandidates(
         { trip: startedTrip, revisions, feedback: text },
-        { signal: controller.signal, ...(scope ? { scope } : {}) },
+        { signal: controller.signal, ...(requestScope ? { scope: requestScope } : {}) },
       )
-    } catch {
-      result = {
-        ok: false,
-        failure: { kind: 'unexpected', message: '予期しないエラーが発生しました。' },
+    } catch (error) {
+      if (bindOnSubmit && !requestScope) {
+        const kind = classifyProtectedHeaderError(error)
+        result = { ok: false, failure: { kind, message: PROTECTED_FAILURE_MESSAGES[kind] } }
+      } else {
+        result = {
+          ok: false,
+          failure: { kind: 'unexpected', message: '予期しないエラーが発生しました。' },
+        }
       }
+    } finally {
+      stopObserving?.()
     }
 
     // 古い応答（中止された・新しい送信がある・旅程や履歴が更新された）は、採用しない。
@@ -306,9 +333,9 @@ export function LearningReview({
       return
     }
     // 認証セッションが変わっていたら、結果は画面に反映しない（古いセッションの結果を、新しい画面へ入れない）。
-    if (scope) {
+    if (requestScope) {
       try {
-        assertCurrentSessionScopeSync(scope, 'unknown')
+        assertCurrentSessionScopeSync(requestScope, 'unknown')
       } catch {
         inFlightRef.current = false
         controllerRef.current = null

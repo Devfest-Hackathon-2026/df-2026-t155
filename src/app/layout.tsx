@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
+import { DemoExitAction } from '@/features/demo-access/demo-exit-action'
 import { SiteFooter } from '@/features/legal/site-footer'
 import './globals.css'
 
@@ -33,7 +34,10 @@ export default function RootLayout({
     <html lang="ja">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <header className="border-b border-gt-rule px-4 py-3">
-          <p className="mx-auto w-full max-w-xl font-semibold">GroundTrip</p>
+          <div className="mx-auto flex w-full max-w-xl flex-wrap items-center justify-between gap-x-3">
+            <p className="font-semibold">GroundTrip</p>
+            <DemoExitAction />
+          </div>
         </header>
         <main className="mx-auto w-full max-w-xl px-4 py-6">{children}</main>
         <SiteFooter />

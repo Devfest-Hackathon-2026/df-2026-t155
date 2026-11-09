@@ -18,7 +18,7 @@ export default async function ReflectionPage({
           デモ用の想定です。旅程・変更は架空で、実際の旅行の記録ではありません。
           この画面ではFirestoreへ保存せず、次の旅にも反映されません。
         </p>
-        <LearningReview trip={sampleTrip} />
+        <LearningReview trip={sampleTrip} bindCandidatesToCurrentSession />
       </>
     )
   }
