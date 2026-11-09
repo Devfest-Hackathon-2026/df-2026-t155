@@ -7,6 +7,8 @@ for (const width of [320, 375, 390]) {
     await page.setViewportSize({ width, height: 900 })
     await page.addInitScript(() => localStorage.setItem('groundtrip:welcome-completed:v1', 'true'))
     await page.goto('/')
+    await page.getByRole('button', { name: /城と歴史/ }).click()
+    await page.getByRole('button', { name: '旅の条件へ進む' }).click()
     await page.getByLabel('旅行先（必須）').fill('京都市')
     await page.getByRole('button', { name: '固定予定を追加' }).click()
     await page.getByLabel('予定の名前').fill('架空の展示')

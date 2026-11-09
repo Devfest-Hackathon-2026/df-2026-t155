@@ -1,9 +1,22 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode,
+} from 'react'
 import type { ApprovedLearning, Trip } from '@/domain'
 
 import { LearningApplicationSummary } from '@/features/learning-reuse/learning-application-summary'
+import { ReflectionFlow } from '@/features/reflection-flow/reflection-flow'
+import {
+  DiscoveryHome,
+  type DiscoveryDraft,
+  type DiscoveryMode,
+} from '@/features/discovery/discovery-home'
 import type {
   LearningReuseSelection,
   LoadLearningOptions,
@@ -11,7 +24,7 @@ import type {
 import type { ApplyRevision, GenerateRevisions } from '@/features/revision-review/api-client'
 import { SHOW_HOME_EVENT } from '@/features/screen-chrome/screen-header'
 import { requestTripGeneration } from '@/features/trip-planner/api-client'
-import { TripPlanner } from '@/features/trip-planner/trip-planner'
+import { TripPlanner, type TripPlannerDraft } from '@/features/trip-planner/trip-planner'
 import type { GenerateTrip } from '@/features/trip-planner/use-trip-generation'
 import type { SaveTrip } from '@/features/trip-save/trip-save-panel'
 import { verifyTripWithProtectedApi } from '@/features/trip-verification/protected-verify'
@@ -23,7 +36,11 @@ import { useSessionScope } from '@/lib/auth/use-session-scope'
 import { HomeLearningPicker } from './home-learning-picker'
 import { TripJourney } from './trip-journey'
 import { SavedTripChooser } from './saved-trip-chooser'
-import { useJourneyHistory, type JourneyScreen } from './use-journey-history'
+import {
+  useJourneyHistory,
+  type HomeHistoryScreen,
+  type JourneyScreen,
+} from './use-journey-history'
 
 interface HomePlannerProps {
   // 以下はテスト用の差し替え口。省略時は実際のAPIを呼ぶ（本人のBearer＋App Check付き。取得できなければ送信しない）。
@@ -37,6 +54,8 @@ interface HomePlannerProps {
   loadLearnings?: LoadLearningOptions
   // 旅行先の入力が落ち着いてから、保存済みの学びを読み込むまでの待ち時間。
   learningPickerDelayMs?: number
+  showDiscoveryHome?: boolean
+  statusContent?: ReactNode
 }
 
 // 認証セッションの見え方。UID・認証世代が変わったら discard を進め、前のセッションの結果を捨てる。
@@ -44,6 +63,19 @@ interface SessionView {
   epoch: number
   scope: SessionScope | null
   discard: number
+}
+
+function isJourneyScreen(screen: string | undefined): screen is JourneyScreen {
+  return (
+    screen === 'before' ||
+    screen === 'during' ||
+    screen === 'reflection' ||
+    screen === 'check-saved'
+  )
+}
+
+function modeForHistoryScreen(screen: HomeHistoryScreen): DiscoveryMode {
+  return screen === 'discovery' ? 'home' : screen
 }
 
 // トップ画面：旅程の通し導線。
@@ -61,6 +93,8 @@ export function HomePlanner({
   saveTrip,
   loadLearnings,
   learningPickerDelayMs = 500,
+  showDiscoveryHome = false,
+  statusContent,
 }: HomePlannerProps) {
   const auth = useSessionScope()
   const authScope = auth.status === 'authenticated' ? auth.scope : null
@@ -80,7 +114,7 @@ export function HomePlanner({
     learnings: readonly ApprovedLearning[]
   } | null>(null)
   const nextJourneyKey = useRef(0)
-  const { entry, navigate } = useJourneyHistory()
+  const { entry, navigate, initialize } = useJourneyHistory()
   const changed =
     auth.scopeEpoch !== view.epoch ||
     (authScope !== null && view.scope !== null && authScope.uid !== view.scope.uid)
@@ -101,6 +135,9 @@ export function HomePlanner({
   }, [])
   // 学びの一覧を読み込み直すための札（選び直しが必要になったとき、学びを保存したとき）。
   const [pickerKey, setPickerKey] = useState(0)
+  const [homeMode, setHomeMode] = useState<DiscoveryMode>(showDiscoveryHome ? 'home' : 'create')
+  const [tripDraft, setTripDraft] = useState<TripPlannerDraft>()
+  const nextDraftRevision = useRef(0)
   const [choiceSeq, setChoiceSeq] = useState(0)
   const [chooserSeq, setChooserSeq] = useState(0)
   const [chosen, setChosen] = useState<{ trip: Trip; discard: number; key: number } | null>(null)
@@ -137,15 +174,57 @@ export function HomePlanner({
   const journey = selected ?? generation
   const trip = journey?.trip
   const activeView = entry?.view.journeyKey === journey?.key ? entry?.view.screen : undefined
-  const journeyScreen = activeView && activeView !== 'home' ? activeView : null
-  const showInput = journeyScreen === null
+  const journeyScreen = isJourneyScreen(activeView) ? activeView : null
+  const journeyVisible = Boolean(journey && journeyScreen)
+  const showInput = journeyScreen === null && (!showDiscoveryHome || homeMode === 'create')
+  const historyHomeMode =
+    entry?.view.journeyKey === 0 &&
+    entry.view.screen !== 'home' &&
+    !isJourneyScreen(entry.view.screen)
+      ? modeForHistoryScreen(entry.view.screen)
+      : entry && entry.view.journeyKey === journey?.key && entry.view.screen === 'home'
+        ? 'home'
+        : undefined
   const previous =
     entry?.previous?.journeyKey === journey?.key ? entry?.previous?.screen : undefined
   const inputHeading = useRef<HTMLHeadingElement>(null)
+  const openHomeMode = useCallback(
+    (mode: DiscoveryMode) => {
+      if (showDiscoveryHome) {
+        const screen: HomeHistoryScreen = mode === 'home' ? 'discovery' : mode
+        navigate({ screen, journeyKey: 0 })
+      }
+      setHomeMode(mode)
+    },
+    [navigate, showDiscoveryHome],
+  )
+
   const showHome = useCallback(() => {
-    if (showInput) inputHeading.current?.focus()
-    else if (journey) navigate({ screen: 'home', journeyKey: journey.key })
-  }, [journey, navigate, showInput])
+    if (journey) {
+      navigate({ screen: 'home', journeyKey: journey.key })
+      if (showDiscoveryHome) setHomeMode('home')
+    } else if (showDiscoveryHome) openHomeMode('home')
+    else if (showInput) inputHeading.current?.focus()
+  }, [journey, navigate, openHomeMode, showDiscoveryHome, showInput])
+
+  const createFromDiscovery = useCallback(
+    (draft: DiscoveryDraft) => {
+      setTripDraft({ ...draft, revision: ++nextDraftRevision.current })
+      openHomeMode('create')
+    },
+    [openHomeMode],
+  )
+
+  const chooseSavedTrip = useCallback(
+    (trip: Trip) => {
+      const key = ++nextJourneyKey.current
+      if (!navigate({ screen: 'before', journeyKey: key })) return
+      setChoiceSeq((count) => count + 1)
+      setChosen({ trip, discard: session.discard, key })
+      setGeneration(null)
+    },
+    [navigate, session.discard],
+  )
 
   useEffect(() => {
     const onShowHome = (event: Event) => {
@@ -156,12 +235,78 @@ export function HomePlanner({
     return () => window.removeEventListener(SHOW_HOME_EVENT, onShowHome)
   }, [showHome])
   useEffect(() => {
+    if (showDiscoveryHome && !entry) initialize({ screen: 'discovery', journeyKey: 0 })
+  }, [entry, initialize, showDiscoveryHome])
+  useEffect(() => {
+    if (showDiscoveryHome && historyHomeMode) setHomeMode(historyHomeMode)
+  }, [historyHomeMode, showDiscoveryHome])
+  useEffect(() => {
     if (showInput && trip) inputHeading.current?.focus()
   }, [showInput, trip])
 
   return (
     <>
-      <div hidden={!showInput} className="space-y-4">
+      {statusContent && (
+        <div className="mx-auto w-full max-w-xl px-4 pt-2" data-session-status>
+          {statusContent}
+        </div>
+      )}
+      {showDiscoveryHome ? (
+        <div hidden={journeyVisible} data-discovery-active={!journeyVisible ? 'true' : undefined}>
+          <DiscoveryHome
+            mode={homeMode}
+            currentTrip={
+              journey ? { region: journey.trip.region, date: journey.trip.date } : undefined
+            }
+            onOpenHome={showHome}
+            onResumeTrip={() => {
+              if (journey) navigate({ screen: 'before', journeyKey: journey.key })
+            }}
+            onOpenTrips={() => openHomeMode('bookmarks')}
+            onOpenRecords={() => openHomeMode('records')}
+            onCreate={createFromDiscovery}
+            bookmarksContent={
+              <SavedTripChooser
+                key={`${session.discard}:${chooserSeq}:bookmarks`}
+                scope={authScope}
+                onChoose={chooseSavedTrip}
+              />
+            }
+            recordsContent={
+              <ReflectionFlow
+                embedded
+                active={homeMode === 'records' && !journeyVisible}
+                onLearningsChanged={() => setPickerKey((count) => count + 1)}
+              />
+            }
+            createContent={
+              <div hidden={!showInput} className="space-y-4">
+                {inputContent()}
+              </div>
+            }
+          />
+        </div>
+      ) : (
+        <div hidden={!showInput} className="space-y-4">
+          {inputContent()}
+        </div>
+      )}
+      {journey && (
+        <div hidden={!journeyVisible}>
+          <VerifiableTrip
+            key={journey.key}
+            trip={journey.trip}
+            verify={verify ?? verifyTripWithProtectedApi}
+            renderContent={renderJourney}
+          />
+        </div>
+      )}
+    </>
+  )
+
+  function inputContent() {
+    return (
+      <>
         <h1 ref={inputHeading} tabIndex={-1} className="gt-screen-title">
           日帰り旅程を作る
         </h1>
@@ -185,17 +330,12 @@ export function HomePlanner({
         <SavedTripChooser
           key={`${session.discard}:${chooserSeq}`}
           scope={authScope}
-          onChoose={(trip) => {
-            const key = ++nextJourneyKey.current
-            if (!navigate({ screen: 'before', journeyKey: key })) return
-            setChoiceSeq((count) => count + 1)
-            setChosen({ trip, discard: session.discard, key })
-            setGeneration(null)
-          }}
+          onChoose={chooseSavedTrip}
         />
         <TripPlanner
           generate={generateWithSelection}
           active={showInput}
+          draft={tripDraft}
           discardKey={`${session.discard}:${choiceSeq}`}
           renderTrip={null}
           renderLearningPicker={(region) => (
@@ -210,57 +350,58 @@ export function HomePlanner({
             />
           )}
         />
-      </div>
-      {journey && (
-        <div hidden={showInput}>
-          <VerifiableTrip
-            key={journey.key}
-            trip={journey.trip}
-            verify={verify ?? verifyTripWithProtectedApi}
-            renderContent={({
-              trip: current,
-              adoptExternalChange,
-              routeTrip,
-              adoptRouteChange,
-              verificationPanel,
-              placeSaveProof,
-            }) => (
-              <TripJourney
-                trip={current}
-                routeTrip={routeTrip}
-                adoptRouteChange={adoptRouteChange}
-                adoptTripChange={adoptExternalChange}
-                scope={authScope}
-                generateRevisions={generateRevisions}
-                applyRevision={applyRevision}
-                saveTrip={saveTrip}
-                initialSavedTrip={selected?.trip}
-                learningSaveProof={selected ? undefined : generation?.learningSaveProof}
-                learningSaveUnavailable={selected ? undefined : generation?.learningSaveUnavailable}
-                placeSaveProof={placeSaveProof}
-                verificationPanel={verificationPanel}
-                learningSummary={
-                  <LearningApplicationSummary
-                    trip={current}
-                    learnings={selected ? [] : (generation?.learnings ?? [])}
-                  />
-                }
-                visible={!showInput}
-                screen={journeyScreen ?? 'before'}
-                onNavigate={(screen: JourneyScreen, back?: boolean) =>
-                  navigate({ screen, journeyKey: journey.key }, back)
-                }
-                onCloseReflection={() => {
-                  const screen = previous === 'during' ? 'during' : 'before'
-                  navigate({ screen, journeyKey: journey.key }, true)
-                }}
-                onEditInput={showHome}
-                onLearningsChanged={() => setPickerKey((count) => count + 1)}
-              />
-            )}
+      </>
+    )
+  }
+
+  function renderJourney({
+    trip: current,
+    adoptExternalChange,
+    routeTrip,
+    adoptRouteChange,
+    verificationPanel,
+    placeSaveProof,
+  }: Parameters<NonNullable<ComponentProps<typeof VerifiableTrip>['renderContent']>>[0]) {
+    return (
+      <TripJourney
+        trip={current}
+        routeTrip={routeTrip}
+        adoptRouteChange={adoptRouteChange}
+        adoptTripChange={adoptExternalChange}
+        scope={authScope}
+        generateRevisions={generateRevisions}
+        applyRevision={applyRevision}
+        saveTrip={saveTrip}
+        initialSavedTrip={selected?.trip}
+        learningSaveProof={selected ? undefined : generation?.learningSaveProof}
+        learningSaveUnavailable={selected ? undefined : generation?.learningSaveUnavailable}
+        placeSaveProof={placeSaveProof}
+        verificationPanel={verificationPanel}
+        learningSummary={
+          <LearningApplicationSummary
+            trip={current}
+            learnings={selected ? [] : (generation?.learnings ?? [])}
           />
-        </div>
-      )}
-    </>
-  )
+        }
+        visible={journeyVisible}
+        screen={journeyScreen ?? 'before'}
+        onNavigate={(screen: JourneyScreen, back?: boolean) => {
+          if (journey) navigate({ screen, journeyKey: journey.key }, back)
+        }}
+        onCloseReflection={() => {
+          if (!journey) return
+          const screen = previous === 'during' ? 'during' : 'before'
+          navigate({ screen, journeyKey: journey.key }, true)
+        }}
+        onEditInput={() => {
+          if (showDiscoveryHome) openHomeMode('create')
+          else if (journey) {
+            setHomeMode('create')
+            navigate({ screen: 'home', journeyKey: journey.key })
+          }
+        }}
+        onLearningsChanged={() => setPickerKey((count) => count + 1)}
+      />
+    )
+  }
 }

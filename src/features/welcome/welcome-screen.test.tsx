@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
@@ -29,4 +29,16 @@ it('continues once even when browser storage is unavailable', async () => {
 
   expect(replace).toHaveBeenCalledTimes(1)
   expect(replace).toHaveBeenCalledWith('/')
+})
+
+it('does not navigate after unmount while the exit animation timer is pending', () => {
+  vi.useFakeTimers()
+  vi.stubGlobal('matchMedia', () => ({ matches: false }))
+  const { unmount } = render(<WelcomeScreen />)
+
+  fireEvent.click(screen.getByRole('button', { name: '旅をはじめる' }))
+  unmount()
+  vi.advanceTimersByTime(220)
+
+  expect(replace).not.toHaveBeenCalled()
 })

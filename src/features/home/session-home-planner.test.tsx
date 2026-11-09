@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
+import type { ReactNode } from 'react'
 
 const mocks = vi.hoisted(() => ({
   session: vi.fn(),
@@ -22,12 +23,21 @@ vi.mock('@/lib/auth/session-scope', () => ({
   }),
 }))
 vi.mock('./home-planner', () => ({
-  HomePlanner: ({ generate }: { generate: (request: object, options: object) => void }) => (
-    <button
-      onClick={() => generate({}, { learningSelection: { value: [{ id: 'a', version: 1 }] } })}
-    >
-      generate
-    </button>
+  HomePlanner: ({
+    generate,
+    statusContent,
+  }: {
+    generate: (request: object, options: object) => void
+    statusContent?: ReactNode
+  }) => (
+    <>
+      {statusContent}
+      <button
+        onClick={() => generate({}, { learningSelection: { value: [{ id: 'a', version: 1 }] } })}
+      >
+        generate
+      </button>
+    </>
   ),
 }))
 import { SessionHomePlanner } from './session-home-planner'

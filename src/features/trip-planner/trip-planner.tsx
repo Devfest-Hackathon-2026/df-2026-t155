@@ -34,6 +34,13 @@ interface TripPlannerProps {
   // 入力欄の値は利用者が入れたものなので、捨てずに残す。
   discardKey?: string
   active?: boolean
+  draft?: TripPlannerDraft
+}
+
+export interface TripPlannerDraft {
+  revision: number
+  region: string
+  preferences: string
 }
 
 const defaultRenderTrip = (trip: Trip) => <TripProposalPreview trip={trip} />
@@ -48,12 +55,14 @@ export function TripPlanner({
   renderLearningPicker,
   discardKey = '',
   active = true,
+  draft,
 }: TripPlannerProps) {
   const [values, setValues] = useState<TripFormValues>(initialFormValues)
   const [errors, setErrors] = useState<TripFormErrors>({})
   const [fixedStopErrors, setFixedStopErrors] = useState<FixedStopErrorMap>({})
   const [fixedStopNotice, setFixedStopNotice] = useState('')
   const initialDiscardKey = useRef(discardKey)
+  const appliedDraft = useRef<number | null>(null)
   // 追加した行の画面上の識別子（入力欄の対応づけ用）。
   const nextRowKey = useRef(1)
   const addFixedStopRef = useRef<HTMLButtonElement>(null)
@@ -76,6 +85,13 @@ export function TripPlanner({
       reset()
     }
   }, [discardKey, reset])
+
+  useEffect(() => {
+    if (!draft || appliedDraft.current === draft.revision) return
+    appliedDraft.current = draft.revision
+    setValues((current) => ({ ...current, region: draft.region, preferences: draft.preferences }))
+    setErrors((current) => ({ ...current, region: undefined, preferences: undefined }))
+  }, [draft])
 
   const fieldRefs = useRef<Record<TripFormField, HTMLInputElement | HTMLTextAreaElement | null>>({
     region: null,

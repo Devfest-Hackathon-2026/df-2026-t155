@@ -82,6 +82,22 @@ body:has(main [data-welcome-screen]) > main:has([data-welcome-screen]) {
   transform: scale(1.025);
 }
 
+.gt-discovery-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  aspect-ratio: 1.45;
+  border-radius: 1.25rem;
+  background: #e9e7df;
+}
+
+.gt-discovery-theme {
+  width: min(72vw, 18rem);
+}
+
+body:has(main [data-discovery-active='true']) .gt-site-brand {
+  display: none;
+}
 @media (prefers-reduced-motion: no-preference) {
   .gt-welcome-image {
     animation: gt-welcome-arrive 220ms ease-out both;

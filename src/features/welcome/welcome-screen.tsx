@@ -3,14 +3,22 @@
 import Image from 'next/image'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { completeWelcome } from './welcome-entry'
 
 export function WelcomeScreen() {
   const router = useRouter()
   const starting = useRef(false)
+  const redirectTimer = useRef<number | null>(null)
   const [disabled, setDisabled] = useState(false)
+
+  useEffect(
+    () => () => {
+      if (redirectTimer.current !== null) window.clearTimeout(redirectTimer.current)
+    },
+    [],
+  )
 
   const start = () => {
     if (starting.current) return
@@ -22,7 +30,7 @@ export function WelcomeScreen() {
       router.replace('/')
       return
     }
-    window.setTimeout(() => router.replace('/'), 220)
+    redirectTimer.current = window.setTimeout(() => router.replace('/'), 220)
   }
 
   return (

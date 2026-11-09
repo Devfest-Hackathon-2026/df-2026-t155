@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 export type JourneyScreen = 'before' | 'during' | 'reflection' | 'check-saved'
+export type HomeHistoryScreen = 'discovery' | 'bookmarks' | 'records' | 'create'
 
-type View = { screen: 'home' | JourneyScreen; journeyKey: number }
+type View = { screen: 'home' | JourneyScreen | HomeHistoryScreen; journeyKey: number }
 type Entry = { owner: string; view: View; previous?: View }
 type HistoryState = { groundTripJourney?: Entry } | null
 
@@ -19,7 +20,9 @@ function readEntry(state: HistoryState, owner: string) {
 // 履歴は画面への目印だけを持つ。再読込・別ページから戻った場合は、以前のマウントの目印を使わない。
 export function useJourneyHistory() {
   const [owner] = useState(() => crypto.getRandomValues(new Uint32Array(4)).join('-'))
-  const [entry, setEntry] = useState<Entry | null>(null)
+  const [entry, setEntry] = useState<Entry | null>(() =>
+    typeof window === 'undefined' ? null : readEntry(window.history.state, owner),
+  )
   const returning = useRef(false)
 
   useEffect(() => {
@@ -50,5 +53,19 @@ export function useJourneyHistory() {
     [owner],
   )
 
-  return { entry, navigate }
+  const initialize = useCallback(
+    (view: View) => {
+      const current = readEntry(window.history.state, owner)
+      if (current) {
+        setEntry(current)
+        return
+      }
+      const next = { owner, view }
+      window.history.replaceState({ ...window.history.state, groundTripJourney: next }, '')
+      setEntry(next)
+    },
+    [owner],
+  )
+
+  return { entry, navigate, initialize }
 }
