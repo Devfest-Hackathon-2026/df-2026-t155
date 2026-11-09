@@ -214,23 +214,24 @@ export function TripPlanner({
           </div>
 
           <div className="space-y-1">
-            <label htmlFor="date" className="block font-medium">
-              日付（必須）
+            <label htmlFor="date" className="block space-y-1">
+              <span className="block font-medium">日付（必須）</span>
+              <span className="gt-field gt-date-time-field block">
+                <input
+                  id="date"
+                  name="date"
+                  type="date"
+                  ref={(element) => {
+                    fieldRefs.current.date = element
+                  }}
+                  value={values.date}
+                  onChange={(event) => update('date', event.target.value)}
+                  aria-required="true"
+                  aria-invalid={errors.date !== undefined}
+                  aria-describedby={errors.date ? 'date-error' : undefined}
+                />
+              </span>
             </label>
-            <input
-              id="date"
-              name="date"
-              type="date"
-              ref={(element) => {
-                fieldRefs.current.date = element
-              }}
-              value={values.date}
-              onChange={(event) => update('date', event.target.value)}
-              aria-required="true"
-              aria-invalid={errors.date !== undefined}
-              aria-describedby={errors.date ? 'date-error' : undefined}
-              className={inputClassName}
-            />
             {errors.date && (
               <p id="date-error" className="text-sm font-medium">
                 入力エラー：{errors.date}
@@ -256,7 +257,9 @@ export function TripPlanner({
               className={inputClassName}
             />
             <p id="preferences-hint" className="text-sm">
-              1行に1つ書いてください。例：ゆっくり歩きたい
+              1行に1つ書いてください。
+              <br />
+              例：ゆっくり歩きたい
             </p>
             {errors.preferences && (
               <p id="preferences-error" className="text-sm font-medium">

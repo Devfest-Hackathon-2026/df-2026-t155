@@ -78,6 +78,7 @@ export function ReflectionFlow({
   active = true,
   onLearningsChanged,
 }: ReflectionFlowProps) {
+  const directTripId = embedded ? initialTripId : undefined
   const auth = useSessionScope()
   const activeRef = useRef(active)
   useLayoutEffect(() => {
@@ -96,7 +97,8 @@ export function ReflectionFlow({
 
   const [tripsBound, setTripsBound] = useState<Bound<TripsPhase> | null>(null)
   const [tripsAttempt, setTripsAttempt] = useState(0)
-  const [selectedTripId, setSelectedTripId] = useState<string | null>(null)
+  const [pickedTripId, setSelectedTripId] = useState<string | null>(null)
+  const selectedTripId = directTripId ?? pickedTripId
   // 未保存の承認があるときに、別の旅行へ切り替える前の確認を待っている切り替え先。
   const [pendingTripId, setPendingTripId] = useState<string | null>(null)
   const [historyBound, setHistoryBound] = useState<Bound<HistoryPhase> | null>(null)
@@ -177,7 +179,7 @@ export function ReflectionFlow({
           ? ''
           : '一部の旅程を表示できません。保存データの状態を確認してください。'
         setTripsBound(bind(visibleHeld, { kind: 'ready', trips: list.trips, warning }))
-        if (initialTripId && list.trips.some((trip) => trip.id === initialTripId)) {
+        if (!embedded && initialTripId && list.trips.some((trip) => trip.id === initialTripId)) {
           setSelectedTripId((current) => current ?? initialTripId)
         }
       },
@@ -187,14 +189,14 @@ export function ReflectionFlow({
       },
     )
     return () => tripsGate.cancel()
-  }, [active, visibleHeld, tripsAttempt, initialTripId, tripsGate])
+  }, [active, visibleHeld, tripsAttempt, initialTripId, embedded, tripsGate])
 
   const trips = valueIn(tripsBound, visibleHeld)
-  const tripsReady = trips?.kind === 'ready'
+  const canLoadHistory = Boolean(directTripId) || trips?.kind === 'ready'
 
   // 選んだ旅行と変更履歴の取得。旅行を選び直したときは、古い応答を採用しない。
   useEffect(() => {
-    if (!active || !visibleHeld || !selectedTripId || !tripsReady) return
+    if (!active || !visibleHeld || !selectedTripId || !canLoadHistory) return
     const tripId = selectedTripId
     const key = JSON.stringify([tripId, reloadAttempt])
     if (historyLoaded.current?.session === visibleHeld && historyLoaded.current.key === key) return
@@ -217,7 +219,7 @@ export function ReflectionFlow({
       },
     )
     return () => historyGate.cancel()
-  }, [active, visibleHeld, selectedTripId, tripsReady, reloadAttempt, historyGate])
+  }, [active, visibleHeld, selectedTripId, canLoadHistory, reloadAttempt, historyGate])
 
   const historyValue = valueIn(historyBound, visibleHeld)
   const history = selectedTripId && historyValue?.tripId === selectedTripId ? historyValue : null
@@ -320,10 +322,10 @@ export function ReflectionFlow({
     bootError ??
     (authProblem
       ? { message: authProblem.message, canStartNew: authProblem.code === 'session_ended' }
-      : trips?.kind === 'error'
+      : !directTripId && trips?.kind === 'error'
         ? { message: trips.message, canStartNew: false }
         : null)
-  const loading = !topError && !tripsReady
+  const loading = !topError && (!canLoadHistory || (Boolean(directTripId) && !history))
   // 表示中の内容は残したまま、認証を確認し直している間。確認できるまで保存はできない。
   const authPending = held !== null && auth.status === 'restoring'
 
@@ -336,7 +338,10 @@ export function ReflectionFlow({
   const sessionTrips = trips?.kind === 'ready' ? trips.trips : []
   const pendingTrip = sessionTrips.find((trip) => trip.id === pendingTripId)
   const sourceTripLabel = (sourceTripId: string): string => {
-    const trip = sessionTrips.find((candidate) => candidate.id === sourceTripId)
+    const trip =
+      history?.kind === 'ready' && history.history.trip.id === sourceTripId
+        ? history.history.trip
+        : sessionTrips.find((candidate) => candidate.id === sourceTripId)
     return trip ? trip.region + '（' + trip.date + '）' : '保存済みの旅行の一覧にない旅行'
   }
 
@@ -345,7 +350,9 @@ export function ReflectionFlow({
       <header className="space-y-2">
         {!embedded && <h1 className="gt-screen-title">保存した旅行を振り返る</h1>}
         <p className="text-sm">
-          保存した旅程を選び、感想と変更履歴から次の旅のための学びを作ります。
+          {directTripId
+            ? 'この旅行の感想と変更履歴から次の旅のための学びを作ります。'
+            : '保存した旅程を選び、感想と変更履歴から次の旅のための学びを作ります。'}
           自分で確認して保存した学びは、次の旅程を作るときに選べます。
         </p>
       </header>
@@ -391,7 +398,7 @@ export function ReflectionFlow({
           </div>
         </section>
       )}
-      {trips?.kind === 'ready' && (
+      {!directTripId && trips?.kind === 'ready' && (
         <section className="space-y-3" aria-labelledby="saved-trips-heading">
           <h2 id="saved-trips-heading" className="text-lg font-semibold">
             保存済みの旅行

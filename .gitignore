@@ -19,6 +19,7 @@ dist/
 build/
 out/
 .next/
+test-results/
 .wrangler/
 __pycache__/
 *.pyc

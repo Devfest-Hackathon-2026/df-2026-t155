@@ -181,6 +181,12 @@ Geminiを選んだ理由と、各APIを選んだ理由の文面は、`docs/` に
     pnpm test
     pnpm build
 
+日時入力と旅程のブラウザ履歴は、PlaywrightでChromium・Firefox・WebKitを検証できます。
+初回はブラウザをインストールしてから実行します。テストはローカルの開発サーバーを起動し、認証と旅程APIにはテスト用の応答を使います。
+
+    pnpm exec playwright install chromium firefox webkit
+    pnpm test:browser
+
 共通データモデル・入出力契約の利用方法と未決定事項は
 [`docs/DOMAIN_CONTRACTS.md`](docs/DOMAIN_CONTRACTS.md)を参照してください。
 

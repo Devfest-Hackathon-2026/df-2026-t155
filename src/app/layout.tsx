@@ -34,8 +34,8 @@ export default function RootLayout({
     <html lang="ja">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <header className="bg-gt-paper px-4">
-          <div className="mx-auto flex w-full max-w-[34rem] flex-wrap items-center justify-between gap-x-3">
-            <div className="gt-site-brand flex min-h-[69px] min-w-0 max-w-full items-center">
+          <div className="mx-auto grid w-full max-w-[34rem] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3">
+            <div className="gt-site-brand col-start-1 row-start-1 flex min-h-[69px] min-w-0 items-center">
               <GroundTripBrand />
             </div>
             <DemoExitAction />

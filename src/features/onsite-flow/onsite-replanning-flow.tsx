@@ -14,7 +14,10 @@ import {
   readUnresolvedApply,
   subscribeApplyLock,
 } from '@/features/revision-review/unresolved-apply'
-import { TripProgressView } from '@/features/trip-progress/trip-progress-view'
+import {
+  TripProgressView,
+  type FinishTripAction,
+} from '@/features/trip-progress/trip-progress-view'
 
 import { guardOnSiteProposal } from './onsite-approval-guard'
 import type { scopedReportControl } from './onsite-persistence'
@@ -37,6 +40,7 @@ interface OnSiteReplanningFlowProps {
   ) => Promise<unknown>
   initialIndex?: number
   active?: boolean
+  finishAction?: FinishTripAction
 }
 
 type Step = 'progress' | 'report' | 'review'
@@ -75,6 +79,7 @@ export function OnSiteReplanningFlow({
   onTripChange,
   initialIndex,
   active = true,
+  finishAction,
   ownerUid,
   reportControl,
   lockManagedByApply,
@@ -329,6 +334,7 @@ export function OnSiteReplanningFlow({
           trip={trip}
           initialIndex={initialIndex}
           onReplan={generate ? startReport : undefined}
+          finishAction={finishAction}
         />
         {!generate && (
           <p className="px-4 text-sm text-gt-muted">

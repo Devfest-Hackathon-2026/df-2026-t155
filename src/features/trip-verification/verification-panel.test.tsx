@@ -228,6 +228,10 @@ describe('VerificationPanel: 説明の正確さ', () => {
   it('アプリのサーバーへの依頼は1回で、サーバーが外部へ複数回問い合わせることを伝える（外部の呼び出しが1回とは言わない）', () => {
     renderPanel({ kind: 'unverified' })
 
+    expect(
+      screen.getByText(/予定の施設・営業時間・移動時間を外部の情報源で確認します/),
+    ).toBeTruthy()
+    expect(screen.getByText('確認に使う情報源と仕組み').closest('details')?.open).toBe(false)
     const text = regionText()
     expect(text).toContain('このアプリのサーバーへ、照合を1回依頼します')
     expect(text).toContain('予定の数に応じて')

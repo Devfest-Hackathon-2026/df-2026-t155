@@ -49,6 +49,12 @@ describe('TripPlanner: 固定予定の入力', () => {
 
     await user.click(addButton())
 
+    expect(field(/日付/).getAttribute('type')).toBe('date')
+    expect(field('開始時刻').getAttribute('type')).toBe('time')
+    const timing = field('開始時刻').closest('.grid')
+    expect(timing?.contains(field('滞在時間（分）'))).toBe(true)
+    expect(timing?.classList).toContain('grid-cols-1')
+    expect(timing?.classList).toContain('sm:grid-cols-2')
     expect(screen.getByText('固定予定 1')).toBeTruthy()
     expect(screen.getByText('1 / 4件')).toBeTruthy()
     expect(document.activeElement).toBe(field('予定の名前'))
@@ -93,6 +99,10 @@ describe('TripPlanner: 固定予定の入力', () => {
 
     expect(screen.getByText('入力エラー：開始時刻を入力してください')).toBeTruthy()
     expect(field('開始時刻').getAttribute('aria-invalid')).toBe('true')
+    expect(
+      document.getElementById(field('開始時刻').getAttribute('aria-describedby') ?? '')
+        ?.textContent,
+    ).toContain('開始時刻を入力してください')
     expect(document.activeElement).toBe(field('開始時刻'))
     expect(generate).not.toHaveBeenCalled()
   })

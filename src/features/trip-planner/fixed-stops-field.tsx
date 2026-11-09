@@ -41,7 +41,7 @@ export function FixedStopsField({
   const atMax = rows.length >= MAX_FIXED_STOPS
 
   return (
-    <fieldset className="space-y-3">
+    <fieldset className="min-w-0 space-y-3">
       <legend className="font-medium">固定予定（任意）</legend>
       <p id="fixed-stops-note" className="text-sm">
         時刻が決まっている予定（展示・新幹線・イベントなど）を入れると、その時刻と場所を動かさずに旅程を作ります。
@@ -84,23 +84,29 @@ export function FixedStopsField({
               )}
             </div>
 
-            <div className="flex gap-3">
-              <div className="min-w-0 flex-1 space-y-1">
-                <label htmlFor={field('startTime')} className="block text-sm font-medium">
-                  開始時刻
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="min-w-0 space-y-1">
+                <label htmlFor={field('startTime')} className="block space-y-1">
+                  <span className="block text-sm font-medium">開始時刻</span>
+                  <span className="gt-field gt-date-time-field block">
+                    <input
+                      id={field('startTime')}
+                      type="time"
+                      value={row.startTime}
+                      onChange={(event) => onChange(row.key, 'startTime', event.target.value)}
+                      aria-required="true"
+                      aria-invalid={rowErrors.startTime !== undefined}
+                      aria-describedby={describedBy('startTime')}
+                    />
+                  </span>
                 </label>
-                <input
-                  id={field('startTime')}
-                  type="time"
-                  value={row.startTime}
-                  onChange={(event) => onChange(row.key, 'startTime', event.target.value)}
-                  aria-required="true"
-                  aria-invalid={rowErrors.startTime !== undefined}
-                  aria-describedby={describedBy('startTime')}
-                  className={inputClassName}
-                />
+                {rowErrors.startTime && (
+                  <p id={`${field('startTime')}-error`} className="text-sm font-medium">
+                    入力エラー：{rowErrors.startTime}
+                  </p>
+                )}
               </div>
-              <div className="min-w-0 flex-1 space-y-1">
+              <div className="min-w-0 space-y-1">
                 <label htmlFor={field('duration')} className="block text-sm font-medium">
                   滞在時間（分）
                 </label>
@@ -112,22 +118,20 @@ export function FixedStopsField({
                   onChange={(event) => onChange(row.key, 'duration', event.target.value)}
                   aria-required="true"
                   aria-invalid={rowErrors.duration !== undefined}
-                  aria-describedby={describedBy('duration')}
+                  aria-describedby={`${field('duration')}-hint${rowErrors.duration ? ` ${field('duration')}-error` : ''}`}
                   autoComplete="off"
                   className={inputClassName}
                 />
+                <p id={`${field('duration')}-hint`} className="text-sm text-gt-muted">
+                  例：60
+                </p>
+                {rowErrors.duration && (
+                  <p id={`${field('duration')}-error`} className="text-sm font-medium">
+                    入力エラー：{rowErrors.duration}
+                  </p>
+                )}
               </div>
             </div>
-            {rowErrors.startTime && (
-              <p id={`${field('startTime')}-error`} className="text-sm font-medium">
-                入力エラー：{rowErrors.startTime}
-              </p>
-            )}
-            {rowErrors.duration && (
-              <p id={`${field('duration')}-error`} className="text-sm font-medium">
-                入力エラー：{rowErrors.duration}
-              </p>
-            )}
 
             <button
               type="button"

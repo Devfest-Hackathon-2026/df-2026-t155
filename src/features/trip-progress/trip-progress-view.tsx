@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, type MouseEventHandler } from 'react'
 
 import { revisionTargetRestriction, type Stop, type Trip } from '@/domain'
 import { GoogleMapsAttribution } from '@/features/legal/google-maps-attribution'
@@ -23,12 +23,17 @@ import { CheckIcon, ProgressChip, StatusLine } from './progress-parts'
 import { LockIcon } from '@/features/trip-map/icons'
 import { FixedChip } from '@/features/trip-map/route-map'
 
+export type FinishTripAction =
+  | { onFinish: MouseEventHandler<HTMLButtonElement>; unavailableReason?: never }
+  | { onFinish?: never; unavailableReason: string }
+
 interface TripProgressViewProps {
   trip: Trip
   // 最初に「いまの予定」とする位置（0始まり）。省略時は最初の予定。範囲外は範囲内に収める。
   initialIndex?: number
   // 再計画の入口。渡されたときだけ、変更ボタンを表示する（未実装の操作を見せない）。
   onReplan?: (stopId: string) => void
+  finishAction?: FinishTripAction
 }
 
 // 進行状態は画面内の状態（保存しない）。利用者の手動操作だけで変わる。
@@ -48,7 +53,12 @@ const formatStopLabel = (stop: Stop) => `${stop.name}（${stop.plannedStartTime}
 
 // 旅行中の画面：いまの予定と次の予定、縦の路線、手動の進行操作。
 // 位置情報・現在時刻は使わない。進行状況は、本人のボタン操作だけで更新する。
-export function TripProgressView({ trip, initialIndex = 0, onReplan }: TripProgressViewProps) {
+export function TripProgressView({
+  trip,
+  initialIndex = 0,
+  onReplan,
+  finishAction,
+}: TripProgressViewProps) {
   const stops = trip.stops
   const [state, setState] = useState<ProgressState>(() => ({
     tripId: trip.id,
@@ -72,6 +82,7 @@ export function TripProgressView({ trip, initialIndex = 0, onReplan }: TripProgr
   const currentIndex = clampIndex(view.index, stops.length)
   const current = stops[currentIndex]
   const next = stops[currentIndex + 1]
+  const finishUnavailableReason = next ? undefined : finishAction?.unavailableReason
 
   if (!current) {
     return (
@@ -86,10 +97,6 @@ export function TripProgressView({ trip, initialIndex = 0, onReplan }: TripProgr
 
   const handleForward = () => {
     const result = stepForward(currentIndex, stops.length)
-    if (!result.moved) {
-      announce('旅程の最後です。これ以上は進めません。', result.index)
-      return
-    }
     announce(`いまの予定：${formatStopLabel(stops[result.index])}に進みました`, result.index)
   }
 
@@ -113,13 +120,22 @@ export function TripProgressView({ trip, initialIndex = 0, onReplan }: TripProgr
       <Route stops={stops} currentIndex={currentIndex} />
 
       <div role="group" aria-label="進行状況の更新" className="mt-4 grid gap-2.5">
-        <button
-          type="button"
-          onClick={handleForward}
-          className="gt-button-primary min-h-[52px] w-full text-base font-bold"
-        >
-          次の予定へ進む
-        </button>
+        {(next || finishAction) && (
+          <button
+            type="button"
+            onClick={next ? handleForward : finishAction?.onFinish}
+            aria-disabled={finishUnavailableReason ? true : undefined}
+            aria-describedby={finishUnavailableReason ? 'trip-finish-unavailable' : undefined}
+            className="gt-button-primary min-h-[52px] w-full text-base font-bold"
+          >
+            {next ? '次の予定へ進む' : '旅行を終えて振り返る'}
+          </button>
+        )}
+        {finishUnavailableReason && (
+          <p id="trip-finish-unavailable" className="text-sm text-gt-muted">
+            {finishUnavailableReason}
+          </p>
+        )}
         <button type="button" onClick={handleBack} className={secondaryAction}>
           ひとつ前に戻す
         </button>

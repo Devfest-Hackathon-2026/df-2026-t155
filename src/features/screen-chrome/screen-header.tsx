@@ -1,19 +1,32 @@
+'use client'
+
+import Link from 'next/link'
 import type { ReactNode, Ref } from 'react'
 
-export function GroundTripBrand({ subtitle }: { subtitle?: string }) {
+export const SHOW_HOME_EVENT = 'groundtrip:show-home'
+
+export function GroundTripBrand() {
   return (
-    <div data-journey-brand className="flex min-w-0 items-center gap-2.5">
+    <Link
+      href="/"
+      aria-label="GroundTrip ホーム"
+      onNavigate={(event) => {
+        // 同じURLの旅程画面からは、入力や旅程を保持したままホームを表示する。
+        if (window.location.pathname !== '/') return
+        if (!window.dispatchEvent(new Event(SHOW_HOME_EVENT, { cancelable: true }))) {
+          event.preventDefault()
+        }
+      }}
+      className="inline-flex min-h-11 min-w-0 items-center gap-2.5 rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview"
+    >
       <span
         aria-hidden="true"
         className="grid size-9 shrink-0 place-items-center rounded-full bg-gt-action text-lg font-bold text-white"
       >
         G
       </span>
-      <div className="min-w-0">
-        <p className="text-lg leading-tight font-bold wrap-anywhere">GroundTrip</p>
-        {subtitle && <p className="truncate text-[10px] text-gt-muted">{subtitle}</p>}
-      </div>
-    </div>
+      <span className="min-w-0 text-lg leading-tight font-bold wrap-anywhere">GroundTrip</span>
+    </Link>
   )
 }
 

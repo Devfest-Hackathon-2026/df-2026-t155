@@ -340,7 +340,6 @@ export function OnSiteReportForm({
             id={id('note')}
             ref={noteRef}
             rows={2}
-            placeholder="例：入口に「本日休業」の貼り紙がありました"
             value={current.note}
             readOnly={submitting}
             onChange={(event) => update('note', { note: event.target.value })}
@@ -350,7 +349,9 @@ export function OnSiteReportForm({
             className={textareaClass}
           />
           <p id={id('note-hint')} className="text-sm text-(--of-muted)">
-            {noteLength} / {MAX_NOTE_LENGTH}文字。例：臨時休業の貼り紙があった
+            例：入口に「本日休業」の貼り紙がありました
+            <br />
+            {noteLength} / {MAX_NOTE_LENGTH}文字
           </p>
         </div>
 

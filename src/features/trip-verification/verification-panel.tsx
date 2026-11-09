@@ -284,12 +284,20 @@ export function VerificationPanel({
           {label}
         </button>
         <p className="text-xs text-gt-muted">
-          押すと、このアプリのサーバーへ、照合を1回依頼します。サーバーは、予定の数に応じて、外部の情報源（Google
-          Maps Platform の Places・Routes）へ複数回問い合わせます。自動では行いません。
+          予定の施設・営業時間・移動時間を外部の情報源で確認します。確認はボタンを押したときに行います。
         </p>
         <p className="text-xs text-gt-muted">
           この操作は、旅程を確定・予約・保存するものではありません。旅程も変わりません。
         </p>
+        <details className="text-xs text-gt-muted">
+          <summary className="min-h-11 cursor-pointer content-center font-semibold">
+            確認に使う情報源と仕組み
+          </summary>
+          <p>
+            このアプリのサーバーへ、照合を1回依頼します。サーバーは、予定の数に応じて、外部の情報源（Google
+            Maps Platform の Places・Routes）へ複数回問い合わせます。
+          </p>
+        </details>
       </div>
     </section>
   )

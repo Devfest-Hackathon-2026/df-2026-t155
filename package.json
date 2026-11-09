@@ -14,6 +14,7 @@
     "format:check": "prettier . --check",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
+    "test:browser": "playwright test",
     "emulators": "node scripts/run-emulators.mjs start",
     "test:emulators": "node scripts/run-emulators.mjs test"
   },
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@eslint/eslintrc": "^3",
     "@firebase/rules-unit-testing": "^6.0.0",
+    "@playwright/test": "1.65.0",
     "@tailwindcss/postcss": "^4",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",

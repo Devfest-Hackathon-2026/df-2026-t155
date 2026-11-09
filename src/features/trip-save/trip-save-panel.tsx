@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useRef, useState, type Ref } from 'react'
 
 import type { Trip } from '@/domain'
 import { sameSavedTrip } from '@/features/onsite-flow/saved-snapshot'
@@ -51,6 +51,7 @@ export function TripSavePanel({
   onReflect,
   onRestore,
   initialSavedTrip,
+  panelRef,
 }: {
   trip: Trip
   // 認証済みのセッション。なければ保存を始めない。
@@ -62,10 +63,11 @@ export function TripSavePanel({
   onEditInput?: () => void
   onSaved: (saved: Trip) => void
   // 結果不明のとき、保存済みの旅行の一覧で確かめる操作。
-  onCheckSaved: () => void
-  onReflect?: () => void
+  onCheckSaved: (control: HTMLButtonElement) => void
+  onReflect?: (control: HTMLButtonElement) => void
   onRestore?: () => void
   initialSavedTrip?: Trip
+  panelRef?: Ref<HTMLElement>
 }) {
   const [state, setState] = useState<SaveState>(() =>
     initialSavedTrip ? { phase: 'saved', trip: initialSavedTrip } : { phase: 'idle' },
@@ -145,10 +147,21 @@ export function TripSavePanel({
   const saving = state.phase === 'saving'
 
   return (
-    <section aria-labelledby="trip-save-heading" className="gt-card space-y-3">
+    <section
+      ref={panelRef}
+      tabIndex={-1}
+      aria-labelledby="trip-save-heading"
+      className="gt-card scroll-mt-4 space-y-3 focus:outline-2 focus:outline-gt-preview"
+    >
       <h3 id="trip-save-heading" className="text-base font-semibold">
         旅程の保存
       </h3>
+      <div className="space-y-1 text-sm text-gt-muted">
+        <p className="font-medium">保存される内容</p>
+        <p>
+          予定の名前・時刻・場所の識別子を保存します。営業時間や評価は保存しません。予約状況や当日の営業は別途ご確認ください。
+        </p>
+      </div>
       {state.phase === 'saved' ? (
         <div role="status" className="space-y-1 text-sm">
           <p className="font-semibold text-gt-ok">保存を確認しました。</p>
@@ -204,7 +217,11 @@ export function TripSavePanel({
                     <p>
                       保存できたかどうか、確認できませんでした。もう一度押す前に、保存済みの旅行に入っているか確かめてください。
                     </p>
-                    <button type="button" onClick={onCheckSaved} className="gt-button-secondary">
+                    <button
+                      type="button"
+                      onClick={(event) => onCheckSaved(event.currentTarget)}
+                      className="gt-button-secondary"
+                    >
                       保存済みの旅行を確認する
                     </button>
                   </>
@@ -213,21 +230,17 @@ export function TripSavePanel({
             )}
         </>
       )}
-      <details className="text-sm text-gt-muted">
-        <summary className="flex min-h-11 cursor-pointer items-center font-medium">
-          保存される内容
-        </summary>
-        <p>
-          予定の名前・時刻・場所の識別子を保存します。営業時間や評価は保存しません。予約状況や当日の営業は別途ご確認ください。
-        </p>
-      </details>
       {onRestore && (
         <button type="button" onClick={onRestore} className="gt-button-secondary">
           保存済みの旅程へ戻す
         </button>
       )}
       {onReflect && (
-        <button type="button" onClick={onReflect} className="gt-button-secondary">
+        <button
+          type="button"
+          onClick={(event) => onReflect(event.currentTarget)}
+          className="gt-button-secondary"
+        >
           保存した旅行を振り返る
         </button>
       )}

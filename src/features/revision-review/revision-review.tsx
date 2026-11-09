@@ -598,19 +598,30 @@ export function RevisionReview({
               <span>希望条件（任意）</span>
               <textarea
                 ref={preferencesField}
-                placeholder={isMeal ? '例：あたたかい麺、和食' : undefined}
                 rows={1}
                 maxLength={500}
                 className={inputClass}
                 value={preferences}
                 aria-invalid={reasonLength !== null}
-                aria-describedby={reasonLength !== null ? `${id}-length-error` : undefined}
+                aria-describedby={
+                  [
+                    isMeal && `${id}-preferences-hint`,
+                    reasonLength !== null && `${id}-length-error`,
+                  ]
+                    .filter(Boolean)
+                    .join(' ') || undefined
+                }
                 onChange={(event) => {
                   setPreferences(event.target.value)
                   setReasonLength(null)
                 }}
               />
             </label>
+            {isMeal && (
+              <p id={`${id}-preferences-hint`} className="text-sm text-gt-muted">
+                例：あたたかい麺、和食
+              </p>
+            )}
             {reasonLength !== null && (
               <p id={`${id}-length-error`} role="alert" className="text-sm text-gt-warn">
                 {`${onSiteReport ? '現地の報告内容' : '修正理由'}と希望条件を合わせて${MAX_REASON_LENGTH}文字以内にしてください（現在${reasonLength}文字）。${onSiteReport ? '希望条件' : '修正理由か希望条件'}を短くしてから、もう一度送ってください。`}

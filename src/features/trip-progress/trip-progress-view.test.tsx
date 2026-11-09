@@ -144,15 +144,20 @@ describe('進む・戻る', () => {
     expect(status().textContent).toContain('いまの予定：昼食店A（架空）（12:00）に戻しました')
   })
 
-  it('最後の予定では、ボタンは押せるが進まず、理由を案内する', async () => {
-    render(<TripProgressView trip={sampleTrip} initialIndex={2} />)
+  it('最後の予定では、進行ボタンが振り返りに変わり、本人が押したときだけ開く', async () => {
+    const onFinish = vi.fn()
+    render(<TripProgressView trip={sampleTrip} initialIndex={1} finishAction={{ onFinish }} />)
     const button = forwardButton()
-    expect((button as HTMLButtonElement).disabled).toBe(false)
-    expect(button.getAttribute('aria-disabled')).toBeNull()
     await user().click(button)
+    expect(screen.queryByRole('button', { name: '次の予定へ進む' })).toBeNull()
+    const finish = screen.getByRole('button', { name: '旅行を終えて振り返る' })
+    expect(finish).toBe(button)
+    expect(document.activeElement).toBe(finish)
+    expect(onFinish).not.toHaveBeenCalled()
     expect(within(currentCard()).getByText('14時の予約展示（架空）')).toBeTruthy()
-    expect(status().textContent).toContain('旅程の最後です')
     expect(within(nextCard()).getByText('最後の予定です')).toBeTruthy()
+    await user().click(finish)
+    expect(onFinish).toHaveBeenCalledTimes(1)
   })
 
   it('最初の予定では、戻すボタンは押せるが戻らず、理由を案内する', async () => {
@@ -165,21 +170,23 @@ describe('進む・戻る', () => {
   })
 
   it('境界を何度押しても越えない。同じ案内が続いても、読み上げ直されるよう通知の中身の要素が作り直される', async () => {
-    render(<TripProgressView trip={sampleTrip} initialIndex={2} />)
+    render(<TripProgressView trip={sampleTrip} />)
     const region = status()
-    await user().click(forwardButton())
+    await user().click(backButton())
     const first = region.firstElementChild
-    expect(first?.textContent).toContain('旅程の最後です')
-    await user().click(forwardButton())
+    expect(first?.textContent).toContain('最初の予定です')
+    await user().click(backButton())
     const second = region.firstElementChild
     expect(second?.textContent).toBe(first?.textContent)
     expect(second).not.toBe(first)
     // 常設のライブリージョン自体は作り直さない。
     expect(status()).toBe(region)
-    for (let i = 0; i < 3; i += 1) await user().click(backButton())
     expect(within(currentCard()).getByText('朝の庭園（架空）')).toBeTruthy()
-    for (let i = 0; i < 5; i += 1) await user().click(forwardButton())
+    await user().click(forwardButton())
+    await user().click(forwardButton())
     expect(within(currentCard()).getByText('14時の予約展示（架空）')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '次の予定へ進む' })).toBeNull()
+    expect(screen.queryByRole('button', { name: '旅行を終えて振り返る' })).toBeNull()
   })
 
   it('進行ボタンに44px以上の最小高さを指定する', () => {

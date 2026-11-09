@@ -9,6 +9,7 @@ import type {
   LoadLearningOptions,
 } from '@/features/learning-reuse/learning-reuse-picker'
 import type { ApplyRevision, GenerateRevisions } from '@/features/revision-review/api-client'
+import { SHOW_HOME_EVENT } from '@/features/screen-chrome/screen-header'
 import { requestTripGeneration } from '@/features/trip-planner/api-client'
 import { TripPlanner } from '@/features/trip-planner/trip-planner'
 import type { GenerateTrip } from '@/features/trip-planner/use-trip-generation'
@@ -22,6 +23,7 @@ import { useSessionScope } from '@/lib/auth/use-session-scope'
 import { HomeLearningPicker } from './home-learning-picker'
 import { TripJourney } from './trip-journey'
 import { SavedTripChooser } from './saved-trip-chooser'
+import { useJourneyHistory, type JourneyScreen } from './use-journey-history'
 
 interface HomePlannerProps {
   // 以下はテスト用の差し替え口。省略時は実際のAPIを呼ぶ（本人のBearer＋App Check付き。取得できなければ送信しない）。
@@ -71,13 +73,14 @@ export function HomePlanner({
   })
   // 生成結果と、その送信時点で表示していた学びを組にする。再生成時は下の導線も作り直す。
   const [generation, setGeneration] = useState<{
-    seq: number
+    key: number
     trip: Trip
     learningSaveProof?: string
     learningSaveUnavailable?: 'disabled' | 'signing_unavailable'
     learnings: readonly ApprovedLearning[]
   } | null>(null)
-  const [showInput, setShowInput] = useState(true)
+  const nextJourneyKey = useRef(0)
+  const { entry, navigate } = useJourneyHistory()
   const changed =
     auth.scopeEpoch !== view.epoch ||
     (authScope !== null && view.scope !== null && authScope.uid !== view.scope.uid)
@@ -86,7 +89,6 @@ export function HomePlanner({
     session = { epoch: auth.scopeEpoch, scope: authScope, discard: view.discard + 1 }
     setView(session)
     setGeneration(null)
-    setShowInput(true)
   } else if (authScope !== null && view.scope !== authScope) {
     session = { ...view, scope: authScope }
     setView(session)
@@ -101,8 +103,8 @@ export function HomePlanner({
   const [pickerKey, setPickerKey] = useState(0)
   const [choiceSeq, setChoiceSeq] = useState(0)
   const [chooserSeq, setChooserSeq] = useState(0)
-  const [chosen, setChosen] = useState<{ trip: Trip; discard: number } | null>(null)
-  const selected = chosen?.discard === session.discard ? chosen.trip : null
+  const [chosen, setChosen] = useState<{ trip: Trip; discard: number; key: number } | null>(null)
+  const selected = chosen?.discard === session.discard ? chosen : null
 
   const run = generate ?? requestTripGeneration
   const generateWithSelection = useCallback<GenerateTrip>(
@@ -112,27 +114,47 @@ export function HomePlanner({
       const result = await run(request, { ...options, learningSelection: selection })
       if (options?.signal?.aborted) return result
       if (result.ok) {
+        const key = ++nextJourneyKey.current
+        if (!navigate({ screen: 'before', journeyKey: key })) return result
         setChosen(null)
         setChooserSeq((count) => count + 1)
-        setShowInput(false)
-        setGeneration((previous) => ({
-          seq: (previous?.seq ?? 0) + 1,
+        setGeneration({
+          key,
           trip: result.trip,
           learningSaveProof: result.learningSaveProof,
           learningSaveUnavailable: result.learningSaveUnavailable,
           learnings: selection?.learnings ?? [],
-        }))
+        })
       } else if (result.failure.kind === 'selection_changed') {
         // 選んだ学びが変わっていた：最新の一覧を読み込み直して、選び直してもらう。
         setPickerKey((count) => count + 1)
       }
       return result
     },
-    [run],
+    [navigate, run],
   )
 
-  const trip = selected ?? generation?.trip
+  const journey = selected ?? generation
+  const trip = journey?.trip
+  const activeView = entry?.view.journeyKey === journey?.key ? entry?.view.screen : undefined
+  const journeyScreen = activeView && activeView !== 'home' ? activeView : null
+  const showInput = journeyScreen === null
+  const previous =
+    entry?.previous?.journeyKey === journey?.key ? entry?.previous?.screen : undefined
   const inputHeading = useRef<HTMLHeadingElement>(null)
+  const showHome = useCallback(() => {
+    if (showInput) inputHeading.current?.focus()
+    else if (journey) navigate({ screen: 'home', journeyKey: journey.key })
+  }, [journey, navigate, showInput])
+
+  useEffect(() => {
+    const onShowHome = (event: Event) => {
+      event.preventDefault()
+      showHome()
+    }
+    window.addEventListener(SHOW_HOME_EVENT, onShowHome)
+    return () => window.removeEventListener(SHOW_HOME_EVENT, onShowHome)
+  }, [showHome])
   useEffect(() => {
     if (showInput && trip) inputHeading.current?.focus()
   }, [showInput, trip])
@@ -143,8 +165,20 @@ export function HomePlanner({
         <h1 ref={inputHeading} tabIndex={-1} className="gt-screen-title">
           日帰り旅程を作る
         </h1>
-        {trip && (
-          <button type="button" className="gt-button-secondary" onClick={() => setShowInput(false)}>
+        {journey && (
+          <button
+            type="button"
+            className="gt-button-secondary"
+            onClick={() =>
+              navigate(
+                {
+                  screen: previous && previous !== 'home' ? previous : 'before',
+                  journeyKey: journey.key,
+                },
+                true,
+              )
+            }
+          >
             旅程へ戻る
           </button>
         )}
@@ -152,10 +186,11 @@ export function HomePlanner({
           key={`${session.discard}:${chooserSeq}`}
           scope={authScope}
           onChoose={(trip) => {
+            const key = ++nextJourneyKey.current
+            if (!navigate({ screen: 'before', journeyKey: key })) return
             setChoiceSeq((count) => count + 1)
-            setChosen({ trip, discard: session.discard })
+            setChosen({ trip, discard: session.discard, key })
             setGeneration(null)
-            setShowInput(false)
           }}
         />
         <TripPlanner
@@ -176,13 +211,11 @@ export function HomePlanner({
           )}
         />
       </div>
-      {trip && (
+      {journey && (
         <div hidden={showInput}>
           <VerifiableTrip
-            key={
-              selected ? `saved:${trip.id}:${choiceSeq}` : `generated:${trip.id}:${generation?.seq}`
-            }
-            trip={trip}
+            key={journey.key}
+            trip={journey.trip}
             verify={verify ?? verifyTripWithProtectedApi}
             renderContent={({
               trip: current,
@@ -201,10 +234,10 @@ export function HomePlanner({
                 generateRevisions={generateRevisions}
                 applyRevision={applyRevision}
                 saveTrip={saveTrip}
+                initialSavedTrip={selected?.trip}
                 learningSaveProof={selected ? undefined : generation?.learningSaveProof}
                 learningSaveUnavailable={selected ? undefined : generation?.learningSaveUnavailable}
                 placeSaveProof={placeSaveProof}
-                initialSavedTrip={selected ?? undefined}
                 verificationPanel={verificationPanel}
                 learningSummary={
                   <LearningApplicationSummary
@@ -213,7 +246,15 @@ export function HomePlanner({
                   />
                 }
                 visible={!showInput}
-                onEditInput={() => setShowInput(true)}
+                screen={journeyScreen ?? 'before'}
+                onNavigate={(screen: JourneyScreen, back?: boolean) =>
+                  navigate({ screen, journeyKey: journey.key }, back)
+                }
+                onCloseReflection={() => {
+                  const screen = previous === 'during' ? 'during' : 'before'
+                  navigate({ screen, journeyKey: journey.key }, true)
+                }}
+                onEditInput={showHome}
                 onLearningsChanged={() => setPickerKey((count) => count + 1)}
               />
             )}

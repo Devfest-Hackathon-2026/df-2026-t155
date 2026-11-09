@@ -57,19 +57,27 @@ body {
 }
 
 .gt-field {
-  @apply w-full rounded-xl border border-gt-muted bg-gt-paper text-base text-gt-ink;
+  @apply box-border w-full min-w-0 max-w-full rounded-xl border border-gt-muted bg-gt-paper text-base text-gt-ink;
 }
 
-.gt-field:focus-visible {
+.gt-field:focus-visible,
+.gt-date-time-field:has(> input:focus-visible) {
   @apply outline-2 outline-offset-2 outline-gt-preview;
 }
 
-.gt-field[aria-invalid='true'] {
+.gt-field[aria-invalid='true'],
+.gt-date-time-field:has(> input[aria-invalid='true']) {
   @apply border-2 border-gt-warn;
 }
 
-.gt-field:disabled {
+.gt-field:disabled,
+.gt-date-time-field:has(> input:disabled) {
   @apply bg-gt-bg text-gt-muted;
+}
+
+/* iOS WebKit can add padding to the width of a native date/time input (bug 301648). */
+.gt-date-time-field > input {
+  @apply block box-border min-h-12 w-full min-w-0 max-w-full p-0 focus-visible:outline-none;
 }
 
 @layer components {
@@ -182,8 +190,8 @@ body {
   }
 }
 
-/* The root brand is replaced by the visible journey or subpage header. */
-body:has(main [data-flow-header]:not([hidden] *)) .gt-site-brand {
+/* Subpages have their own back button and title. */
+body:has(main [data-flow-header='subpage']:not([hidden] *)) .gt-site-brand {
   display: none;
 }
 
@@ -191,14 +199,8 @@ body:has(main [data-flow-header]:not([hidden] *)) main {
   padding-top: 0;
 }
 
-.gt-journey:has([data-flow-header='subpage']:not([hidden] *)) .gt-journey-chrome {
-  order: 2;
-}
-
 .gt-journey:has([data-flow-header='subpage']:not([hidden] *))
-  .gt-journey-chrome
-  [data-journey-brand],
-.gt-journey:has([data-flow-header='subpage']:not([hidden] *)) .gt-journey-title {
+  :is(.gt-journey-chrome, .gt-journey-title) {
   display: none;
 }
 
@@ -222,10 +224,6 @@ body:has(main [data-flow-header]:not([hidden] *)) main {
   pointer-events: none;
 }
 
-.gt-mode-switch {
-  margin-inline-start: auto;
-}
-
 .gt-preview-panel {
   position: relative;
   isolation: isolate;
@@ -238,8 +236,4 @@ body:has(main [data-flow-header]:not([hidden] *)) main {
   inset: 0 -1rem;
   border-radius: 22px 22px 0 0;
   background: var(--gt-paper);
-}
-
-.gt-journey-chrome [data-journey-brand] {
-  flex: 1 1 8.5rem;
 }

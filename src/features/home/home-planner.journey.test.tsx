@@ -1,5 +1,5 @@
-import { PLACE_SAVE_PROOF_HEADER } from '@/domain/learning-trip-protocol'
 // @vitest-environment jsdom
+import { PLACE_SAVE_PROOF_HEADER } from '@/domain/learning-trip-protocol'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -11,6 +11,7 @@ import {
   markApplyUnresolved,
   readUnresolvedApply,
 } from '@/features/revision-review/unresolved-apply'
+import type { SaveTrip } from '@/features/trip-save/trip-save-panel'
 import {
   SaveRevisionBodySchema,
   SavedRevisionSchema,
@@ -251,9 +252,21 @@ const showDuring = (user: User) => user.click(screen.getByRole('button', { name:
 const showBefore = (user: User) => user.click(screen.getByRole('button', { name: '旅行前' }))
 const openReflection = (user: User) =>
   user.click(screen.getByRole('button', { name: '保存した旅行を振り返る' }))
-const backToTrip = (user: User) => user.click(screen.getByRole('button', { name: '旅程へ戻る' }))
+const backToTrip = async (user: User) => {
+  await user.click(screen.getByRole('button', { name: '旅程へ戻る' }))
+  await waitFor(() => expect(screen.queryByRole('button', { name: '旅程へ戻る' })).toBeNull())
+}
 const editInput = (user: User) =>
   user.click(screen.getByRole('button', { name: '旅行条件・保存済みの旅程' }))
+
+const traverse = (step: -1 | 1) =>
+  act(
+    () =>
+      new Promise<void>((resolve) => {
+        window.addEventListener('popstate', () => resolve(), { once: true })
+        window.history.go(step)
+      }),
+  )
 
 const goToLunch = async (user: User) => {
   await showDuring(user)
@@ -592,6 +605,7 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await user.click(approve())
     await waitFor(() => expect(applyRevision).toHaveBeenCalledTimes(1))
 
+    await screen.findByRole('heading', { name: '旅行中', level: 1 })
     await showBefore(user)
     // 旅程が変わった：路線図は新しい昼食、照合は取り下げられて未確認に戻る。
     const route = within(screen.getAllByRole('list', { name: '旅程の路線図' })[0])
@@ -696,6 +710,10 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
       await waitFor(() =>
         expect(backend.calls.filter((call) => call.path === applyPath)).toHaveLength(1),
       )
+      await screen.findByRole('heading', {
+        name: phase === 'planning' ? '旅程' : '旅行中',
+        level: 1,
+      })
       await showBefore(user)
       await waitFor(() =>
         expect(
@@ -743,9 +761,14 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await goToLunch(user)
     const reason = screen.getByRole<HTMLInputElement>('radio', { name: /閉店・臨時休業だった/ })
     await user.click(reason)
+    await user.click(screen.getByRole('button', { name: '旅行中の画面に戻る' }))
     await showBefore(user)
     expect(screen.queryByRole('heading', { name: '現地の状況を報告する' })).toBeNull()
     await showDuring(user)
+    expect(
+      within(screen.getByRole('region', { name: 'いまの予定' })).getByText(lunch.name),
+    ).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: '予定が変わった？この予定だけ変更する' }))
     expect(screen.getByRole('radio', { name: /閉店・臨時休業だった/ })).toBe(reason)
     expect(reason.checked).toBe(true)
     await user.click(screen.getByRole('button', { name: '旅行中の画面に戻る' }))
@@ -770,6 +793,9 @@ describe('トップ画面の通し導線：生成→照合→保存→現地報�
     await flush()
 
     expect(applyRevision).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '候補の選択へ戻る' }))
+    await user.click(screen.getByRole('button', { name: '部分修正を閉じる' }))
+    await user.click(screen.getByRole('button', { name: '旅行中の画面に戻る' }))
     await showBefore(user)
     expect(panelStatus()).toContain('照合結果あり')
     expect(
@@ -806,6 +832,100 @@ it('保存済み旅程を開くと振り返りにも進める', async () => {
   expect(await screen.findByRole('heading', { name: '振り返り', level: 1 })).toBeTruthy()
 })
 describe('トップ画面：保存して振り返る（同じページ内で、旅程を失わずに進む）', () => {
+  it('未保存の旅程では上部から保存欄へ移動でき、本人が保存すると案内が消える', async () => {
+    const { backend } = setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    const savePanel = screen.getByRole('region', { name: '旅程の保存' })
+    expect(within(savePanel).getByText('保存される内容').closest('details')).toBeNull()
+    await user.click(screen.getByRole('button', { name: '旅程の保存へ' }))
+    expect(document.activeElement).toBe(savePanel)
+    expect(
+      backend.calls.some(({ method, path }) => method === 'POST' && path === '/api/trips'),
+    ).toBe(false)
+    await saveTripFromScreen(user)
+    expect(screen.queryByRole('button', { name: '旅程の保存へ' })).toBeNull()
+    expect(screen.getByText('保存される内容')).toBeTruthy()
+  })
+
+  it('最終予定は本人の操作でこの旅程を振り返り、戻ると進行位置とフォーカスを保つ', async () => {
+    const { backend } = setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await showDuring(user)
+    expect(screen.getByRole('button', { name: '旅行中' }).getAttribute('aria-pressed')).toBe('true')
+    await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
+    await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
+    const finish = () => screen.getByRole('button', { name: '旅行を終えて振り返る' })
+    expect(finish().getAttribute('aria-disabled')).toBe('true')
+    expect(screen.getByText(/振り返りには旅程の保存が必要/)).toBeTruthy()
+    await user.click(finish())
+    expect(screen.queryByRole('heading', { name: '振り返り', level: 1 })).toBeNull()
+    await user.click(screen.getByRole('button', { name: '旅行前の旅程へ戻る' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: '旅行前' }).getAttribute('aria-pressed')).toBe(
+        'true',
+      ),
+    )
+    await saveTripFromScreen(user)
+
+    // 一覧を読み込めなくても、本人の保存先から指定した旅程と変更履歴を取得する。
+    backend.intercept(
+      ({ method, path }) => method === 'GET' && path === '/api/trips',
+      () => json({}, 503),
+    )
+    await showDuring(user)
+    expect(finish().getAttribute('aria-disabled')).toBeNull()
+    expect(screen.queryByRole('heading', { name: '振り返り', level: 1 })).toBeNull()
+    const finishButton = finish()
+    await user.click(finishButton)
+    const feedback = await screen.findByRole<HTMLTextAreaElement>('textbox', {
+      name: /感想・変更した理由/,
+    })
+    await user.type(feedback, '最終予定の感想')
+    expect(screen.queryByRole('heading', { name: '保存済みの旅行' })).toBeNull()
+    expect(
+      backend.calls.some(
+        ({ method, path }) => method === 'GET' && path === `/api/trips/${generatedTrip.id}`,
+      ),
+    ).toBe(true)
+    await traverse(-1)
+    expect(
+      within(screen.getByRole('region', { name: 'いまの予定' })).getByText(exhibition.name),
+    ).toBeTruthy()
+    expect(document.activeElement).toBe(finishButton)
+    await traverse(1)
+    expect(screen.getByRole('textbox', { name: /感想・変更した理由/ })).toBe(feedback)
+    expect(feedback.value).toBe('最終予定の感想')
+    await backToTrip(user)
+    expect(document.activeElement).toBe(finishButton)
+    await traverse(1)
+    expect(feedback.value).toBe('最終予定の感想')
+  })
+
+  it('保存後に変更した旅程は、保存済みの内容に戻すまで最終予定から振り返れない', async () => {
+    setup()
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await saveTripFromScreen(user)
+    await user.click(screen.getByRole('button', { name: new RegExp(exhibition.name) }))
+    await user.click(screen.getByRole('button', { name: '固定を解除する' }))
+    await user.click(screen.getByRole('button', { name: '閉じる' }))
+    expect(screen.getByText(/保存後の変更あり/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '旅程の保存へ' })).toBeNull()
+    await showDuring(user)
+    await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
+    await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
+    const finish = screen.getByRole('button', { name: '旅行を終えて振り返る' })
+    expect(finish.getAttribute('aria-disabled')).toBe('true')
+    expect(screen.getByText(/現在の旅程は保存時点と異なります/)).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: '保存済みの旅程へ戻す' }))
+    expect(finish.getAttribute('aria-disabled')).toBeNull()
+  })
+
   it('保存後に独立した振り返り画面を開け、往復しても旅程と感想が残る', async () => {
     const { backend } = setup()
     const user = userEvent.setup()
@@ -865,6 +985,33 @@ describe('トップ画面：保存して振り返る（同じページ内で、�
     expect(
       await screen.findByText(new RegExp(sampleTrip.stops.length + '地点・保存済み')),
     ).toBeTruthy()
+    await traverse(-1)
+    expect(screen.getByText(/保存できたかどうか、確認できませんでした/)).toBe(alert)
+    await traverse(1)
+    expect(screen.getByRole('heading', { name: '振り返り', level: 1 })).toBeTruthy()
+    expect(
+      backend.calls.filter((call) => call.method === 'POST' && call.path === '/api/trips'),
+    ).toHaveLength(1)
+  })
+
+  it('保存処理中にブラウザ履歴を往復しても、保存中の状態を保持し二重に送らない', async () => {
+    setup()
+    const user = userEvent.setup()
+    const pending = Promise.withResolvers<Trip>()
+    const saveTrip = vi.fn<SaveTrip>(() => pending.promise)
+    render(<HomePlanner saveTrip={saveTrip} learningPickerDelayMs={0} />)
+    await generate(user)
+    await user.click(screen.getByRole('button', { name: '本人の操作で旅程を保存する' }))
+    const saving = screen.getByRole('button', { name: '保存を確認中…' })
+    await traverse(-1)
+    expect(screen.getByRole('heading', { name: '日帰り旅程を作る' })).toBeTruthy()
+    await traverse(1)
+    expect(screen.getByRole('button', { name: '保存を確認中…' })).toBe(saving)
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    await user.click(saving)
+    expect(saveTrip).toHaveBeenCalledTimes(1)
+    await act(async () => pending.resolve(generatedTrip))
+    expect(screen.getByText('保存を確認しました。')).toBeTruthy()
   })
 
   it('保存ボタンは常に押せる。認証を確認できないときは、送らずに理由を示す', async () => {
@@ -914,7 +1061,7 @@ describe('表示中の旅程と別画面の処理', () => {
     expect(screen.getByRole('button', { name: '旅程を作成する' })).toBeTruthy()
   })
 
-  it('部分修正の生成中に旅行中へ移ると古い候補を捨て、入力を保ったまま再試行できる', async () => {
+  it('部分修正の生成中に旅行条件へ移ると古い候補を捨て、入力を保ったまま再試行できる', async () => {
     setup()
     const user = userEvent.setup()
     renderHome()
@@ -927,14 +1074,14 @@ describe('表示中の旅程と別画面の処理', () => {
     await user.type(screen.getByLabelText('修正理由（必須）'), '静かな店にしたい')
     await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
     const [request, signal] = generateRevisions.mock.calls[0]
-    await showDuring(user)
+    await editInput(user)
     expect(signal?.aborted).toBe(true)
     const response = await generateRevisions.getMockImplementation()!(
       request,
       new AbortController().signal,
     )
     await act(async () => pending.resolve(response))
-    await showBefore(user)
+    await backToTrip(user)
     expect(screen.queryByRole('button', { name: '変更内容を確認する' })).toBeNull()
     expect(screen.getByLabelText<HTMLTextAreaElement>('修正理由（必須）').value).toBe(
       '静かな店にしたい',
@@ -975,7 +1122,7 @@ describe('表示中の旅程と別画面の処理', () => {
     expect(readCount()).toBeGreaterThan(before)
   })
 
-  it('旅行中に切り替えてから旅行前の適用が完了しても、報告を開ける', async () => {
+  it('旅行条件の表示中に旅行前の適用が完了しても、旅程に戻って報告を開ける', async () => {
     setup()
     const user = userEvent.setup()
     renderHome()
@@ -990,10 +1137,23 @@ describe('表示中の旅程と別画面の処理', () => {
     await user.click(await screen.findByRole('button', { name: '変更内容を確認する' }))
     await user.click(approve())
     const [decision, signal] = applyRevision.mock.calls[0]
-    await showDuring(user)
+    await editInput(user)
+    await traverse(-1)
+    const applying = screen.getByRole('button', { name: '適用を確認中…' })
+    expect(applying.getAttribute('aria-disabled')).toBe('true')
+    expect(
+      screen.getByRole<HTMLButtonElement>('button', { name: '候補の選択へ戻る' }).disabled,
+    ).toBe(true)
+    await user.click(applying)
+    expect(applyRevision).toHaveBeenCalledTimes(1)
+    await traverse(1)
+    expect(readUnresolvedApply(A, generatedTrip.id).status).toBe('pending')
+    expect(signal?.aborted).toBe(false)
     const applied = await applyRevision.getMockImplementation()!(decision, signal)
     await act(async () => pending.resolve(applied))
     expect(readUnresolvedApply(A, generatedTrip.id).status).toBe('clear')
+    await backToTrip(user)
+    await showDuring(user)
     await user.click(screen.getByRole('button', { name: '次の予定へ進む' }))
     await user.click(screen.getByRole('button', { name: '予定が変わった？この予定だけ変更する' }))
     expect(screen.getByRole('heading', { name: '現地の状況を報告する' })).toBeTruthy()
@@ -1021,6 +1181,25 @@ describe('表示中の旅程と別画面の処理', () => {
 })
 
 describe('トップ画面：認証セッションが変わったら、前のセッションの結果をすべて捨てる', () => {
+  it('別の認証セッションへ移った後は、履歴から前の旅程や振り返りの感想を復元しない', async () => {
+    setup({ [A]: {}, [B]: {} })
+    const user = userEvent.setup()
+    renderHome()
+    await generate(user)
+    await saveTripFromScreen(user)
+    await openReflection(user)
+    const feedback = await screen.findByRole('textbox', { name: /感想・変更した理由/ })
+    await user.type(feedback, '前のセッションの感想')
+
+    act(() => fakeAuth.signInAs(B))
+    await traverse(-1)
+    expect(screen.getByRole('heading', { name: '日帰り旅程を作る' })).toBeTruthy()
+    expect(screen.queryByRole('list', { name: '旅程の路線図' })).toBeNull()
+    await traverse(1)
+    expect(screen.queryByRole('heading', { name: '振り返り', level: 1 })).toBeNull()
+    expect(feedback.isConnected).toBe(false)
+  })
+
   it('UIDが変わると、旅程・照合・保存・現地報告・振り返りが消え、入力欄の値だけが残る', async () => {
     setup({ [A]: {}, [B]: {} })
     const user = userEvent.setup()
