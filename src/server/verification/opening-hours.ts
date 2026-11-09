@@ -74,7 +74,7 @@ export function checkOpeningHours(
     }
     // 閉店が開店より小さいときだけ、週をまたぐ営業（日曜0:00をまたぐ）として、1週間足す。
     if (close < open) close += WEEK
-    intervals.push([open, close])
+    intervals.push([open - WEEK, close - WEEK], [open, close])
   }
   if (intervals.length === 0) {
     return {
@@ -88,12 +88,14 @@ export function checkOpeningHours(
   const end = start + durationMinutes
   const stayLabel = `${startTime}〜${formatMinutes(toMinutes(startTime) + durationMinutes)}`
 
-  // 週をまたぐ営業（土曜深夜→日曜早朝）も拾うため、1週間ずらした位置でも照合する。
-  const covered = intervals.some(
-    ([open, close]) =>
-      (open <= start && end <= close) || (open <= start + WEEK && end + WEEK <= close),
-  )
-  if (covered) {
+  // 滞在開始から切れ目なく確認できた時刻までを伸ばす。週初の滞在には前週の区間も使う。
+  intervals.sort(([a], [b]) => a - b)
+  let coveredUntil = start
+  for (const [open, close] of intervals) {
+    if (open > coveredUntil) break
+    coveredUntil = Math.max(coveredUntil, close)
+  }
+  if (coveredUntil >= end) {
     return {
       status: 'consistent',
       explanation: `滞在時間帯（${stayLabel}）は、${weekdayName(isoDate)}の通常営業時間の範囲内です。${CAVEAT}`,
@@ -110,11 +112,7 @@ export function checkOpeningHours(
   }
 
   // その曜日に営業の区間が一切ないか（定休日の可能性）、あるが滞在時間帯と合わないか。
-  const touchesDay = intervals.some(
-    ([open, close]) =>
-      (open < dayStart + DAY && close > dayStart) ||
-      (open < dayStart + WEEK + DAY && close > dayStart + WEEK),
-  )
+  const touchesDay = intervals.some(([open, close]) => open < dayStart + DAY && close > dayStart)
   return touchesDay
     ? {
         status: 'conflicting',

@@ -293,6 +293,176 @@ function holdMaps(expected = 1) {
 }
 
 describe('Revision適用 API＋Firestore Emulator', () => {
+  it('連続した営業時間を生成・適用時に再照合する', async () => {
+    const trip = await seedTrip()
+    maps.searchPlaces.mockImplementation(async (options) => {
+      if (options.includeOpeningHours) {
+        return foundPlace(candidateB.name, candidateB.placeId, {
+          status: 'available',
+          periods: [
+            { open: { day: 0, hour: 9, minute: 0 }, close: { day: 0, hour: 13, minute: 0 } },
+            { open: { day: 0, hour: 13, minute: 0 }, close: { day: 0, hour: 17, minute: 0 } },
+          ],
+        })
+      }
+      return normalSearch(options)
+    })
+    const { revision, body, context } = await generate(trip, { phase: 'planning' })
+    expect(revision.constraintCheck.status).toBe('satisfied')
+    expect((await saveRevision(owner.request('POST', body), context)).status).toBe(201)
+    expect(await readTrip()).toEqual(trip)
+    const response = await applyRevision(owner.request('POST', approval), context)
+    expect(response.status).toBe(200)
+    expect((await readTrip()).stops).toEqual(
+      trip.stops.with(1, { ...trip.stops[1], ...candidateB }),
+    )
+    expect(maps.searchPlaces).toHaveBeenCalledTimes(8)
+    expect(maps.computeRoute).toHaveBeenCalledTimes(6)
+  })
+
+  it('営業時間が食い違う施設には署名を発行せず、別施設だけを再照合して適用できる', async () => {
+    const trip = await seedTrip()
+    const closedAlias = '昼食店Bの別名'
+    const closedAtVisit: OpeningHours = {
+      status: 'available',
+      periods: [{ open: { day: 0, hour: 16, minute: 0 }, close: { day: 0, hour: 20, minute: 0 } }],
+    }
+    generateJson.mockResolvedValue(draft(candidateB.name, closedAlias, candidateC.name))
+    maps.searchPlaces.mockImplementation(async (options) =>
+      options.query.startsWith(`${closedAlias} `)
+        ? foundPlace(closedAlias, candidateB.placeId, closedAtVisit)
+        : normalSearch(options),
+    )
+
+    const { proposal, body, context, revision } = await generate(trip, { phase: 'planning' })
+    expect(revision).toMatchObject({
+      diff: { after: { placeId: candidateC.placeId } },
+      constraintCheck: { status: 'satisfied' },
+    })
+    expect(proposal.revisions).toHaveLength(2)
+    const conflicting = proposal.revisions[1]
+    expect(conflicting).toMatchObject({
+      diff: { after: { placeId: candidateB.placeId } },
+      constraintCheck: { status: 'unknown', explanation: expect.stringContaining('食い違') },
+    })
+    expect(Object.keys(proposal.proposalTokens ?? {})).toEqual([revision.id])
+    expect(maps.searchPlaces).toHaveBeenCalledTimes(6)
+    expect(maps.computeRoute).toHaveBeenCalledTimes(6)
+
+    const conflictingContext = {
+      params: Promise.resolve({ tripId: trip.id, revisionId: conflicting.id }),
+    }
+    await expectCode(
+      await saveRevision(
+        owner.request('POST', { ...conflicting, proposalToken: body.proposalToken }),
+        conflictingContext,
+      ),
+      422,
+      'revision_provenance_invalid',
+    )
+    expect(
+      (await saveRevision(owner.request('POST', conflicting), conflictingContext)).status,
+    ).toBe(201)
+    expect((await saveRevision(owner.request('POST', body), context)).status).toBe(201)
+    maps.searchPlaces.mockClear()
+    maps.computeRoute.mockClear()
+    await expectCode(
+      await applyRevision(owner.request('POST', approval), conflictingContext),
+      409,
+      'revision_provenance_missing',
+    )
+    expect(maps.searchPlaces).not.toHaveBeenCalled()
+    expect(maps.computeRoute).not.toHaveBeenCalled()
+    expect(await readTrip()).toEqual(trip)
+
+    maps.searchPlaces.mockImplementation(async (options) =>
+      options.query.startsWith(`${candidateC.name} `)
+        ? foundPlace(candidateC.name, candidateC.placeId, closedAtVisit)
+        : normalSearch(options),
+    )
+    await expectCode(
+      await applyRevision(owner.request('POST', approval), context),
+      422,
+      'revision_not_applicable',
+    )
+    expect(await readTrip()).toEqual(trip)
+
+    maps.searchPlaces.mockImplementation(normalSearch)
+    expect((await applyRevision(owner.request('POST', approval), context)).status).toBe(200)
+    expect((await readTrip()).stops).toEqual(
+      trip.stops.with(1, { ...trip.stops[1], ...candidateC }),
+    )
+  })
+
+  it.each(['生成時', '適用時'] as const)(
+    '%sに判明した同名支店の曖昧さを、通常保存のPlace IDでは解消しない',
+    async (ambiguousFrom) => {
+      // 通常のTrip保存APIに、予約先ではない支店のIDを渡す。
+      const trip = await seedTrip()
+      const fixed = trip.stops[2]
+      const wrongBranch = 'place-3'
+      const reservedBranch = 'reserved-branch'
+      expect(fixed).toMatchObject({
+        isFixed: true,
+        plannedStartTime: '14:00',
+        placeId: wrongBranch,
+      })
+      expect((await readTrip()).stops[2].placeId).toBe(wrongBranch)
+
+      let ambiguous = ambiguousFrom === '生成時'
+      maps.searchPlaces.mockImplementation(async (options) => {
+        const result = await normalSearch(options)
+        if (!ambiguous || !options.query.startsWith(fixed.name) || result.status !== 'found') {
+          return result
+        }
+        const [wrong] = result.candidates
+        return { status: 'found', candidates: [wrong, { ...wrong, placeId: reservedBranch }] }
+      })
+      // 候補の終了は13:15。誤った支店なら10分、予約先なら46分かかる。
+      maps.computeRoute.mockImplementation(async ({ destinationPlaceId }) =>
+        route(destinationPlaceId === reservedBranch ? 46 : 10),
+      )
+      const { revision, proposal, body, context } = await generate(trip, { phase: 'planning' })
+      const comparison = proposal.comparisons?.[0]
+      if (ambiguous) {
+        expect(revision.constraintCheck.status).toBe('unknown')
+        expect(comparison?.routeEndpoints?.nextPlaceId).toBeNull()
+        expect(comparison?.after.toNext).toMatchObject({
+          presence: 'segment',
+          segment: { status: 'unknown', reason: 'not_queried' },
+        })
+        expect(maps.computeRoute.mock.calls.map(([options]) => options.destinationPlaceId)).toEqual(
+          [trip.stops[1].placeId, candidateB.placeId],
+        )
+      } else {
+        // 比較時に一意だった端点を署名した場合も、適用時に新たに見つかった曖昧さを優先する。
+        expect(revision.constraintCheck.status).toBe('satisfied')
+        expect(comparison?.routeEndpoints?.nextPlaceId).toBe(wrongBranch)
+      }
+      expect((await saveRevision(owner.request('POST', body), context)).status).toBe(201)
+
+      ambiguous = true
+      maps.searchPlaces.mockClear()
+      maps.computeRoute.mockClear()
+      await expectCode(
+        await applyRevision(owner.request('POST', approval), context),
+        422,
+        'revision_unverified',
+      )
+      expect(
+        maps.searchPlaces.mock.calls.some(([options]) => options.query.startsWith(fixed.name)),
+      ).toBe(true)
+      expect(maps.computeRoute.mock.calls.map(([options]) => options.destinationPlaceId)).toEqual([
+        candidateB.placeId,
+      ])
+      expect(await readTrip()).toEqual(trip)
+      const stored = await getRevision(owner.request(), context)
+      expect(RevisionResponseSchema.parse(await stored.json()).revision.approval).toEqual({
+        status: 'pending',
+      })
+    },
+  )
+
   it.each([true, false])(
     '通常施設は、保存済みPlace IDの有無（%s）にかかわらず再同定できれば承認・適用できる',
     async (hasPlaceIds) => {

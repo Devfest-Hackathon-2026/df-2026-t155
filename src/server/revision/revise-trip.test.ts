@@ -149,6 +149,93 @@ const proposed = (response: Awaited<ReturnType<typeof reviseTrip>>) => {
   return response.revisions
 }
 
+describe('承認可否の比較シナリオ', () => {
+  const savedTrip = {
+    ...sampleTrip,
+    stops: sampleTrip.stops.map((stop, index) => ({ ...stop, placeId: `P${index + 1}` })),
+  }
+  const ambiguousPlaces = Object.fromEntries(
+    sampleTrip.stops.map(({ name }, index) => [
+      name.split('（')[0],
+      {
+        status: 'found',
+        candidates: ['別施設', `P${index + 1}`].map((placeId) => ({
+          placeId,
+          name,
+          address: KYOTO_ADDRESS,
+          openingHours: { status: 'not_requested' },
+        })),
+      },
+    ]),
+  ) satisfies MapsSetup['places']
+  const opening = (gapMinutes: number): OpeningPeriod[] => [
+    { open: { day: 0, hour: 9, minute: 0 }, close: { day: 0, hour: 13, minute: 0 } },
+    { open: { day: 0, hour: 13, minute: gapMinutes }, close: { day: 0, hour: 17, minute: 0 } },
+  ]
+
+  const scenarios: [
+    string,
+    MapsSetup,
+    ReviseTripRequest['trip'],
+    [satisfied: number, unknown: number, violated: number, otherExclusions: number],
+    ReviseTripRequest['context']?,
+  ][] = [
+    ['保存済みIDと一致する同名施設', { places: ambiguousPlaces }, savedTrip, [0, 1, 0, 0]],
+    ['ID未保存の同名施設', { places: ambiguousPlaces }, sampleTrip, [0, 1, 0, 0]],
+    [
+      '隙間のない営業時間',
+      { places: { 昼食店B: found('P4', '昼食店B', opening(0)) } },
+      sampleTrip,
+      [1, 0, 0, 0],
+    ],
+    [
+      '1分の中休み',
+      { places: { 昼食店B: found('P4', '昼食店B', opening(1)) } },
+      sampleTrip,
+      [0, 0, 1, 0],
+    ],
+    [
+      '営業時間の情報不足',
+      { places: { 昼食店B: found('P4', '昼食店B', []) } },
+      sampleTrip,
+      [0, 1, 0, 0],
+    ],
+    ['経路なし', { routes: route({}) }, sampleTrip, [0, 1, 0, 0]],
+    ['次の固定予定に間に合わない', { routes: route({ WALK: walk(46) }) }, sampleTrip, [0, 0, 1, 0]],
+    [
+      '候補施設の名称が不一致',
+      { places: { 昼食店B: found('P4', '別の店') } },
+      sampleTrip,
+      [0, 0, 0, 1],
+    ],
+    [
+      '候補が隣の予定と同一施設',
+      { places: { 昼食店B: found('P3', '昼食店B') } },
+      sampleTrip,
+      [0, 0, 0, 1],
+    ],
+    ['現地で遅延を報告', {}, sampleTrip, [0, 1, 0, 0], delayContext],
+  ]
+  it.each(scenarios)('%s', async (_label, overrides, trip, expected, context = request.context) => {
+    const { response, events, maps } = await run(
+      { routes: fitting.routes, ...overrides, places: { ...basePlaces, ...overrides.places } },
+      clientReturning(draft([{ name: '昼食店B' }])),
+      { ...request, trip, context },
+    )
+    const revisions = response.status === 'proposed' ? response.revisions : []
+    const counts = events.find((event) => event.kind === 'candidate_counts')
+    if (!counts) throw new Error('候補の集計を期待しました')
+    expect([
+      revisions.filter(({ constraintCheck }) => constraintCheck.status === 'satisfied').length,
+      revisions.filter(({ constraintCheck }) => constraintCheck.status === 'unknown').length,
+      counts.violated,
+      counts.generated - revisions.length - counts.violated,
+    ]).toEqual(expected)
+    expect(maps.searchPlaces).toHaveBeenCalledTimes(4)
+    expect(maps.computeRoute.mock.calls.length).toBeLessThanOrEqual(4)
+  })
+})
+
 describe('現地報告と差し替え先の照合', () => {
   it('元施設の同定に本人報告の矛盾があれば、Placesで別IDが返っても未確認', async () => {
     const report = { ...closureEvidence, subject: 'place_identity' as const }
@@ -359,6 +446,27 @@ describe('reviseTrip: 成功', () => {
     expect(new Set(revisions.map((r) => r.id)).size).toBe(2)
   })
 
+  it('未確認案より成立案を先に返し、比較も同じ候補に結び付ける', async () => {
+    const { response } = await run(
+      { ...fitting, places: { ...basePlaces, 昼食店B: found('P4', '昼食店B', []) } },
+      clientReturning(draft([{ name: '昼食店B' }, { name: '昼食店C' }])),
+    )
+
+    expect(
+      proposed(response).map(({ diff, constraintCheck }) => [
+        diff.after.placeId,
+        constraintCheck.status,
+      ]),
+    ).toEqual([
+      ['P5', 'satisfied'],
+      ['P4', 'unknown'],
+    ])
+    if (response.status !== 'proposed') throw new Error('提案を期待しました')
+    expect(response.comparisons?.map(({ revisionId }) => revisionId)).toEqual(
+      response.revisions.map(({ id }) => id),
+    )
+  })
+
   it('別名の同一Place IDを一つにまとめ、同じ系列の別Place IDは残す', async () => {
     const names = ['食堂（本店）', '本店の別名', '食堂（駅前支店）']
     const places = {
@@ -402,6 +510,14 @@ describe('reviseTrip: 成功', () => {
     expect(prompt).not.toContain(sampleTrip.id)
     expect(prompt).not.toContain('placeId')
     expect(prompt).not.toContain('evidence')
+    const input = JSON.parse(prompt.slice(prompt.indexOf('{')))
+    expect(input).toMatchObject({
+      travelModes: ['walk'],
+      adjacentTravel: {
+        fromPrevious: { name: sampleTrip.stops[0].name, availableMinutes: 60 },
+        toNext: { name: sampleTrip.stops[2].name, isFixed: true, availableMinutes: 45 },
+      },
+    })
   })
 })
 
@@ -490,15 +606,98 @@ describe('reviseTrip: 成立しない候補は提案しない', () => {
         generated: 1,
         filtered: 1,
         identified: 1,
+        unidentified: {},
         mapsFailed: 0,
         violated: 0,
         samePlace: 0,
+        duplicatePlace: 0,
         unknown: 1,
+        unknownReasons: { hours: 1 },
         satisfied: 0,
       })
       expect(JSON.stringify(events)).not.toContain('昼食店')
     },
   )
+})
+
+describe('同一施設の営業時間の照合結果', () => {
+  const missing: PlaceSearchResult = {
+    status: 'found',
+    candidates: [
+      {
+        placeId: 'P4',
+        name: '営業時間なしの別名',
+        address: KYOTO_ADDRESS,
+        openingHours: { status: 'unavailable' },
+      },
+    ],
+  }
+  const placeResults = {
+    ...basePlaces,
+    営業時間なしの別名: missing,
+    営業時間外の別名: found('P4', '営業時間外の別名', [
+      { open: { day: 0, hour: 16, minute: 0 }, close: { day: 0, hour: 17, minute: 0 } },
+    ]),
+    昼食店B: found('P4', '昼食店B'),
+  }
+
+  it.each([
+    ['営業時間なしの別名', '営業時間外の別名', '昼食店B'],
+    ['営業時間外の別名', '昼食店B', '営業時間なしの別名'],
+    ['昼食店B', '営業時間なしの別名', '営業時間外の別名'],
+  ])('営業時間の不一致を順序にかかわらず未確認にする（%s → %s → %s）', async (...names) => {
+    const { response, events, maps } = await run(
+      { ...fitting, places: placeResults },
+      clientReturning(draft(names.map((name) => ({ name })))),
+    )
+    const revisions = proposed(response)
+    expect(revisions).toMatchObject([
+      {
+        diff: { after: { placeId: 'P4' } },
+        constraintCheck: { status: 'unknown', explanation: expect.stringContaining('食い違') },
+      },
+    ])
+    expect(
+      revisions[0].diff.after.evidence.filter(({ subject }) => subject === 'opening_hours'),
+    ).toMatchObject([{ status: 'conflicting', source: { kind: 'places' } }])
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'candidate_counts',
+        violated: 0,
+        duplicatePlace: 2,
+        unknown: 1,
+        unknownReasons: { hours_conflict: 1 },
+        satisfied: 0,
+      }),
+    )
+    expect(maps.searchPlaces).toHaveBeenCalledTimes(6)
+    expect(maps.computeRoute).toHaveBeenCalledTimes(4)
+  })
+
+  it('営業時間の欠落だけでは、同じ施設の別名から得た整合を取り消さない', async () => {
+    const { response } = await run(
+      { ...fitting, places: placeResults },
+      clientReturning(draft([{ name: '営業時間なしの別名' }, { name: '昼食店B' }])),
+    )
+    expect(proposed(response)).toMatchObject([{ constraintCheck: { status: 'satisfied' } }])
+  })
+
+  it('別施設の成立案を残し、照合の食い違いがあっても実際の移動制約違反は除外する', async () => {
+    const client = clientReturning(
+      draft([{ name: '営業時間外の別名' }, { name: '昼食店B' }, { name: '昼食店C' }]),
+    )
+    const { response } = await run(
+      {
+        ...fitting,
+        places: placeResults,
+        routes: ({ originPlaceId }) => walk(originPlaceId === 'P4' ? 46 : 10),
+      },
+      client,
+    )
+    expect(proposed(response)).toMatchObject([
+      { diff: { after: { placeId: 'P5' } }, constraintCheck: { status: 'satisfied' } },
+    ])
+  })
 })
 
 describe('reviseTrip: 隣の予定の区間が未測定のときは「確認できない」', () => {
@@ -746,6 +945,33 @@ describe('reviseTrip: 失敗の区別（元の旅程は維持される）', () =
     const { response } = await run(setup, clientReturning(draft([{ name: '昼食店B' }])))
 
     expect(response.status).toBe('external_service_error')
+  })
+
+  it('施設未同定と検索失敗を別々に数え、確認が途中で止まった全滅を候補なしにしない', async () => {
+    const { response, events, maps } = await run(
+      {
+        ...fitting,
+        places: {
+          ...basePlaces,
+          昼食店B: found('P4', '別の店'),
+          昼食店C: new MapsCallError('network', 'x'),
+        },
+      },
+      clientReturning(draft([{ name: '昼食店B' }, { name: '昼食店C' }])),
+    )
+    expect(response.status).toBe('external_service_error')
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'candidate_counts',
+        generated: 2,
+        unidentified: { mismatch: 1 },
+        mapsFailed: 1,
+        violated: 0,
+        unknown: 0,
+        satisfied: 0,
+      }),
+    )
+    expect(maps.computeRoute).toHaveBeenCalledTimes(2)
   })
 
   it('AIが作れないと申告したら、その状態を返す（AIの回答であることを示す）', async () => {

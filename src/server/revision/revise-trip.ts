@@ -13,6 +13,7 @@ import {
   type Stop,
   type Trip,
   type TravelComparison,
+  type TravelSegment,
   type TravelSegmentSlot,
 } from '../../domain'
 import {
@@ -26,7 +27,7 @@ import {
   type GeminiJsonClient,
 } from '../gemini/client'
 import type { MapsClient } from '../maps'
-import { compareNames, parseName } from '../verification/name-match'
+import { compareNames, parseName, type PlaceSelection } from '../verification/name-match'
 import {
   measureSegment,
   normalizeModes,
@@ -37,26 +38,41 @@ import {
 } from '../verification/segment'
 import { availableMinutes, formatMinutes } from '../verification/travel'
 import { evidence, hoursEvidence, identityEvidence, lookupPlace } from '../verification/verify-trip'
-import { judgeCandidate, type CandidateChecks, type CandidateJudgement } from './constraints'
+import { judgeCandidate, type CandidateJudgement } from './constraints'
 import { buildRevisionResponseJsonSchema, RevisionDraftSchema } from './draft'
 import { buildRevisionPrompt } from './prompt'
 
 // 利用者の入力やAIの出力本文は含めない。原因の区分だけを記録する。
+type IdentityFailure = Exclude<PlaceSelection['status'], 'matched'>
+type RouteUnknownReason = Extract<TravelSegment, { status: 'unknown' }>['reason']
+type UnknownReason =
+  | 'hours'
+  | 'hours_conflict'
+  | 'original_place'
+  | 'report_or_conflict'
+  | `${'from_previous' | 'to_next'}_${RouteUnknownReason}`
+
+type CandidateCounts = {
+  kind: 'candidate_counts'
+  generated: number
+  filtered: number
+  identified: number
+  unidentified: Partial<Record<IdentityFailure, number>>
+  mapsFailed: number
+  violated: number
+  samePlace: number
+  duplicatePlace: number
+  unknown: number
+  unknownReasons: Partial<Record<UnknownReason, number>>
+  satisfied: number
+}
+
 export type RevisionFailureEvent =
   | { kind: 'gemini_call'; reason: GeminiCallFailureReason; status?: number }
   | { kind: 'unexpected_client_error'; errorName: string }
   | { kind: 'invalid_output'; detail: string }
-  | {
-      kind: 'candidate_counts'
-      generated: number
-      filtered: number
-      identified: number
-      mapsFailed: number
-      violated: number
-      samePlace: number
-      unknown: number
-      satisfied: number
-    }
+  | { kind: 'original_place_lookup_failed' }
+  | CandidateCounts
 
 export interface ReviseDeps {
   client: GeminiJsonClient
@@ -121,6 +137,7 @@ async function resolveSurroundings(
       : originalStop
   const previous = trip.stops[index - 1] ?? null
   const next = trip.stops[index + 1] ?? null
+  // 通常保存のPlace IDは、独立した照合結果との不一致検出にだけ使う。
   // 乗車・乗換は施設ではないため、Placesを呼ばない（nullは「照会していない」。経路の根拠はunknownになる）。
   const placeId = async (stop: Stop | null) => {
     if (!stop || stop.kind === 'transport') return { id: null, mismatch: false }
@@ -215,14 +232,17 @@ const evidenceFrom = (
 
 type Evaluation =
   | { kind: 'maps_failed' }
-  | { kind: 'excluded'; explanation: string }
+  | { kind: 'unidentified'; reason: IdentityFailure; explanation: string }
+  | { kind: 'same_place'; explanation: string }
   | {
       kind: 'judged'
-      after: Stop
+      after: Stop & { placeId: string }
       judgement: CandidateJudgement
+      hoursStatus: Evidence['status']
       sides: MeasuredSides
       travelBefore: Evidence | null
       travelAfter: Evidence | null
+      unknownReasons: UnknownReason[]
     }
 
 // 候補（名称だけ差し替えた予定）を、Places・Routesで確認し、制約を判定する。
@@ -240,36 +260,28 @@ async function evaluateCandidate(
   },
 ): Promise<Evaluation> {
   const { maps, modes, checkedAt } = deps
-  const { target, previous, next, originalPlaceId } = surroundings
+  const { target, previous, next, originalPlaceId, previousPlaceId, nextPlaceId } = surroundings
   const candidate: Stop = { ...target, name: candidateName, placeId: null, evidence: [] }
 
-  const { lookup, place } = await lookupPlace(maps, trip, candidate, { includeOpeningHours: true })
+  const { lookup } = await lookupPlace(maps, trip, candidate, { includeOpeningHours: true })
   if (lookup.kind === 'failed') return { kind: 'maps_failed' }
 
   const identity = identityEvidence(trip, candidate, lookup, checkedAt)
-  const noSides: MeasuredSides = { fromPrevious: null, toNext: null }
   // 施設を特定できない候補は、候補にしないため、移動は調べない（Routesの呼び出しを節約）。
-  if (!place) {
-    const checks: CandidateChecks = {
-      identity,
-      hours: null,
-      expectsTravelBefore: previous !== null,
-      travelBefore: null,
-      expectsTravelAfter: next !== null,
-      travelAfter: null,
-    }
+  if (lookup.selection.status !== 'matched') {
     return {
-      kind: 'judged',
-      after: candidate,
-      judgement: judgeCandidate(checks),
-      sides: noSides,
-      travelBefore: null,
-      travelAfter: null,
+      kind: 'unidentified',
+      reason: lookup.selection.status,
+      explanation: identity.explanation,
     }
   }
 
+  const { place } = lookup.selection
   if (place.placeId === originalPlaceId) {
-    return { kind: 'excluded', explanation: '元の予定と同じ施設のため、差し替えられません。' }
+    return { kind: 'same_place', explanation: '元の予定と同じ施設のため、差し替えられません。' }
+  }
+  if (place.placeId === previousPlaceId || place.placeId === nextPlaceId) {
+    return { kind: 'same_place', explanation: '前後の予定と同じ施設のため、差し替えられません。' }
   }
 
   const hours = hoursEvidence(trip, candidate, place, checkedAt)
@@ -313,7 +325,7 @@ async function evaluateCandidate(
   const priorConflicts =
     deps.priorCandidateEvidence?.filter((item) => isRevisionEvidenceConflict(item, 'candidate')) ??
     []
-  const after: Stop = {
+  const after = {
     ...candidate,
     placeId: place.placeId,
     evidence: [
@@ -325,16 +337,24 @@ async function evaluateCandidate(
     ],
   }
   const uncertainties: string[] = []
+  const unknownReasons: UnknownReason[] = []
   if (!originalPlaceId) {
     uncertainties.push('元の施設を特定できず、候補と別の施設か確認できていません。')
+    unknownReasons.push('original_place')
   }
-  if (
+  const hasEvidenceConflict =
     target.evidence.some((item) => isRevisionEvidenceConflict(item, 'original')) ||
     priorConflicts.length > 0
-  ) {
+  if (hasEvidenceConflict) {
     uncertainties.push('承認に関係する根拠の矛盾が解消できていません。')
   }
   if (reportUncertainty) uncertainties.push(reportUncertainty)
+  if (hasEvidenceConflict || reportUncertainty) unknownReasons.push('report_or_conflict')
+  if (hours.status === 'unverifiable') unknownReasons.push('hours')
+  if (sides.fromPrevious?.segment.status === 'unknown')
+    unknownReasons.push(`from_previous_${sides.fromPrevious.segment.reason}`)
+  if (sides.toNext?.segment.status === 'unknown')
+    unknownReasons.push(`to_next_${sides.toNext.segment.reason}`)
   const overlaps = [sides.fromPrevious, sides.toNext].some(
     (side) => side?.fit.status === 'too_long' && side.segment.status === 'unknown',
   )
@@ -348,7 +368,16 @@ async function evaluateCandidate(
     overlaps,
     uncertainties,
   })
-  return { kind: 'judged', after, judgement, sides, travelBefore, travelAfter }
+  return {
+    kind: 'judged',
+    after,
+    judgement,
+    hoursStatus: hours.status,
+    sides,
+    travelBefore,
+    travelAfter,
+    unknownReasons,
+  }
 }
 
 const endTime = (stop: Stop): string =>
@@ -431,7 +460,7 @@ export async function checkRevisionConstraints(
   if (evaluation.kind === 'maps_failed') {
     return { status: 'external_service_error', message: MAPS_FAILURE_MESSAGE }
   }
-  if (evaluation.kind === 'excluded') {
+  if (evaluation.kind === 'same_place' || evaluation.kind === 'unidentified') {
     return { status: 'not_possible', explanation: evaluation.explanation }
   }
   if (evaluation.judgement.status === 'excluded') {
@@ -460,8 +489,20 @@ function impactSummary(
   return parts.join('')
 }
 
-const NO_CANDIDATES_AFTER_CHECK =
-  '元の予定と同じ施設、施設を特定できない、または営業時間・前後の移動の条件を満たさない候補を除いた結果、提案できる候補がありません。理由や条件を変えて、もう一度お試しください。元の旅程は、そのままです。'
+function noCandidatesAfterCheck(counts: CandidateCounts): ProposalFailure {
+  const reasons: string[] = []
+  if (counts.samePlace > 0 || counts.filtered < counts.generated)
+    reasons.push('名称の不備や予定・候補の重複')
+  if (Object.keys(counts.unidentified).length > 0) reasons.push('施設の未同定')
+  if (counts.violated > 0) reasons.push('営業時間または前後の移動の条件違反')
+  return {
+    status: 'no_candidates',
+    message: `${reasons.join('・')}により、提案できる候補がありません。理由や条件を変えて、もう一度お試しください。元の旅程は、そのままです。`,
+  }
+}
+
+const HOURS_CONFLICT =
+  '同じ施設の営業時間の照合結果に食い違いがあり、予定の滞在時間帯に営業しているか確認できません。'
 
 // 1地点の部分修正の候補（未承認のRevision）を作る。元のTripは更新しない。承認・保存・適用はしない。
 // 旅行前（planning）と現地報告（on_site）で、同じ処理を使う。
@@ -551,18 +592,22 @@ export async function reviseTrip(
     taken.add(full)
     return true
   })
+  const counts: CandidateCounts = {
+    kind: 'candidate_counts',
+    generated: draft.candidates.length,
+    filtered: candidates.length,
+    identified: 0,
+    unidentified: {},
+    mapsFailed: 0,
+    violated: 0,
+    samePlace: 0,
+    duplicatePlace: 0,
+    unknown: 0,
+    unknownReasons: {},
+    satisfied: 0,
+  }
   if (candidates.length === 0) {
-    report?.({
-      kind: 'candidate_counts',
-      generated: draft.candidates.length,
-      filtered: 0,
-      identified: 0,
-      mapsFailed: 0,
-      violated: 0,
-      samePlace: 0,
-      unknown: 0,
-      satisfied: 0,
-    })
+    report?.(counts)
     return {
       status: 'no_candidates',
       message:
@@ -572,7 +617,10 @@ export async function reviseTrip(
 
   const checkedAt = (now?.() ?? new Date()).toISOString()
   const surroundings = await resolveSurroundings(trip, index, maps)
-  if (surroundings.originalLookupFailed) return externalFailure(MAPS_FAILURE_MESSAGE)
+  if (surroundings.originalLookupFailed) {
+    report?.({ kind: 'original_place_lookup_failed' })
+    return externalFailure(MAPS_FAILURE_MESSAGE)
+  }
 
   // 変更前の移動区間は、同じリクエストの中で、1回だけ測る（候補どうしで共有する）。
   const beforeSides = await measureSides(surroundings, target, surroundings.originalPlaceId, {
@@ -593,36 +641,16 @@ export async function reviseTrip(
       }),
     ),
   )
-  report?.({
-    kind: 'candidate_counts',
-    generated: draft.candidates.length,
-    filtered: candidates.length,
-    identified: evaluations.filter(
-      (e) => e.kind === 'excluded' || (e.kind === 'judged' && !!e.after.placeId),
-    ).length,
-    mapsFailed: evaluations.filter((e) => e.kind === 'maps_failed').length,
-    violated: evaluations.filter(
-      (e) =>
-        e.kind === 'judged' &&
-        e.judgement.status === 'excluded' &&
-        e.judgement.reason === 'violated',
-    ).length,
-    samePlace: evaluations.filter((e) => e.kind === 'excluded').length,
-    unknown: evaluations.filter(
-      (e) =>
-        e.kind === 'judged' &&
-        e.judgement.status === 'candidate' &&
-        e.judgement.constraintCheck.status === 'unknown',
-    ).length,
-    satisfied: evaluations.filter(
-      (e) =>
-        e.kind === 'judged' &&
-        e.judgement.status === 'candidate' &&
-        e.judgement.constraintCheck.status === 'satisfied',
-    ).length,
-  })
-  if (evaluations.every((evaluation) => evaluation.kind === 'maps_failed')) {
-    return externalFailure(MAPS_FAILURE_MESSAGE)
+  // 除外した別名の根拠も集約する。営業時間の欠落は、営業時間内・外のどちらの根拠にもならない。
+  const hoursByPlace = new Map<string, 'consistent' | 'conflicting' | 'disagreement'>()
+  for (const evaluation of evaluations) {
+    if (evaluation.kind !== 'judged' || evaluation.hoursStatus === 'unverifiable') continue
+    const { after, hoursStatus } = evaluation
+    const existing = hoursByPlace.get(after.placeId)
+    hoursByPlace.set(
+      after.placeId,
+      existing && existing !== hoursStatus ? 'disagreement' : hoursStatus,
+    )
   }
 
   const byPlace = new Map<
@@ -633,25 +661,108 @@ export async function reviseTrip(
       constraintCheck: ConstraintCheck
       travelBefore: Evidence | null
       travelAfter: Evidence | null
+      unknownReasons: UnknownReason[]
     }
   >()
   for (const evaluation of evaluations) {
-    if (evaluation.kind !== 'judged' || evaluation.judgement.status !== 'candidate') continue
-    const { after, judgement, sides, travelBefore, travelAfter } = evaluation
-    if (!after.placeId) continue
+    if (evaluation.kind === 'maps_failed') {
+      counts.mapsFailed += 1
+      continue
+    }
+    if (evaluation.kind === 'unidentified') {
+      const { reason } = evaluation
+      counts.unidentified[reason] = (counts.unidentified[reason] ?? 0) + 1
+      continue
+    }
+    counts.identified += 1
+    if (evaluation.kind === 'same_place') {
+      counts.samePlace += 1
+      continue
+    }
+    const { after, judgement, hoursStatus, sides, travelBefore, travelAfter, unknownReasons } =
+      evaluation
+    if (judgement.status === 'excluded') {
+      if (hoursStatus === 'conflicting' && hoursByPlace.get(after.placeId) === 'disagreement') {
+        counts.duplicatePlace += 1
+      } else {
+        counts.violated += 1
+      }
+      continue
+    }
     const constraintCheck = judgement.constraintCheck
     const existing = byPlace.get(after.placeId)
+    if (existing) counts.duplicatePlace += 1
     if (
       !existing ||
       (existing.constraintCheck.status !== 'satisfied' && constraintCheck.status === 'satisfied')
     ) {
-      byPlace.set(after.placeId, { after, sides, constraintCheck, travelBefore, travelAfter })
+      byPlace.set(after.placeId, {
+        after,
+        sides,
+        constraintCheck,
+        travelBefore,
+        travelAfter,
+        unknownReasons,
+      })
     }
+  }
+
+  for (const [placeId, candidate] of byPlace) {
+    if (hoursByPlace.get(placeId) !== 'disagreement') continue
+    const { after, constraintCheck } = candidate
+    // 照合結果どうしの矛盾を根拠に残し、保存時に失われる矛盾を既存の署名処理で拒む。
+    candidate.after = {
+      ...after,
+      evidence: after.evidence.map((item) =>
+        item.subject === 'opening_hours'
+          ? {
+              ...item,
+              status: 'conflicting',
+              claim: '同じ施設に対する営業時間の照合結果が一致している',
+              explanation: HOURS_CONFLICT,
+            }
+          : item,
+      ),
+    }
+    candidate.constraintCheck = {
+      status: 'unknown',
+      explanation:
+        HOURS_CONFLICT +
+        (constraintCheck.status === 'unknown'
+          ? constraintCheck.explanation
+          : '確認できるまで、承認できません。'),
+    }
+    candidate.unknownReasons = [
+      ...candidate.unknownReasons.filter((reason) => reason !== 'hours'),
+      'hours_conflict',
+    ]
+  }
+
+  // 同じ判定の候補はGeminiの順序を保つ。未確認の候補より、成立を確認できた候補を先に比較できる。
+  const ordered = [...byPlace.values()].sort(
+    (a, b) =>
+      Number(b.constraintCheck.status === 'satisfied') -
+      Number(a.constraintCheck.status === 'satisfied'),
+  )
+  for (const { constraintCheck, unknownReasons } of ordered) {
+    if (constraintCheck.status === 'satisfied') {
+      counts.satisfied += 1
+    } else {
+      counts.unknown += 1
+      for (const reason of unknownReasons)
+        counts.unknownReasons[reason] = (counts.unknownReasons[reason] ?? 0) + 1
+    }
+  }
+  report?.(counts)
+  if (ordered.length === 0) {
+    return counts.mapsFailed > 0
+      ? externalFailure(MAPS_FAILURE_MESSAGE)
+      : noCandidatesAfterCheck(counts)
   }
 
   const revisions: Revision[] = []
   const comparisons: TravelComparison[] = []
-  for (const { after, sides, constraintCheck, travelBefore, travelAfter } of byPlace.values()) {
+  for (const { after, sides, constraintCheck, travelBefore, travelAfter } of ordered) {
     const id = `revision-${createId()}`
     revisions.push({
       id,
@@ -682,8 +793,6 @@ export async function reviseTrip(
       },
     })
   }
-
-  if (revisions.length === 0) return { status: 'no_candidates', message: NO_CANDIDATES_AFTER_CHECK }
 
   // 返却前に、共通契約で検証する。契約に反する結果を、呼び出し側へ流さない。
   const checked = ReviseTripResponseSchema.safeParse({ status: 'proposed', revisions, comparisons })

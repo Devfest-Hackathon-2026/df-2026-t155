@@ -409,6 +409,17 @@ describe('営業時間の照合（通常営業時間）', () => {
     expect(checkOpeningHours(late, '2026-11-08', '01:30', 60).status).toBe('conflicting')
   })
 
+  it('前週から続く区間は日曜の区間と結合し、1分の中断もまたがない', () => {
+    const late = period(open(6, 22), open(0, 2))
+    expect(
+      checkOpeningHours([period(open(0, 2), open(0, 5)), late], '2026-11-08', '01:30', 60).status,
+    ).toBe('consistent')
+    expect(
+      checkOpeningHours([late, period(open(0, 2, 1), open(0, 5))], '2026-11-08', '01:30', 60)
+        .status,
+    ).toBe('conflicting')
+  })
+
   it('24時間営業（日曜0:00開店・閉店なし）は、どの時間帯も consistent', () => {
     expect(checkOpeningHours([period(open(0, 0))], SAT, '03:00', 60).status).toBe('consistent')
   })
