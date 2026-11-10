@@ -5,14 +5,23 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import { revisionTargetRestriction, TripSchema, type Trip } from '@/domain'
 import { OnSiteReportForm } from '@/features/onsite-report/onsite-report-form'
 import type { OnSiteReportSubmission } from '@/features/onsite-report/report-model'
-import type { ApplyRevision, GenerateRevisions } from '@/features/revision-review/api-client'
+import type {
+  ApplyManualRevision,
+  ApplyRevision,
+  GenerateRevisions,
+} from '@/features/revision-review/api-client'
+import { ManualApplyRecoveryActions } from '@/features/revision-review/manual-apply-recovery-actions'
 import { RevisionReview } from '@/features/revision-review/revision-review'
 import {
   clearApplyUnresolved,
+  isManualApply,
   judgeLatestTrip,
   markApplyUnresolved,
   readUnresolvedApply,
   subscribeApplyLock,
+  type ManualRecoveryAction,
+  type RecoverManualApply,
+  type RecoveryVerdict,
 } from '@/features/revision-review/unresolved-apply'
 import {
   TripProgressView,
@@ -28,6 +37,7 @@ interface OnSiteReplanningFlowProps {
   generate?: GenerateRevisions
   generationUnavailableReason?: string
   apply?: ApplyRevision
+  applyManual?: ApplyManualRevision
   applyInFlight?: boolean
   onTripChange?: (trip: Trip) => void
   lockManagedByApply?: boolean
@@ -39,6 +49,7 @@ interface OnSiteReplanningFlowProps {
     revisionId: string,
     signal: AbortSignal,
   ) => Promise<unknown>
+  recoverManualApply?: RecoverManualApply
   initialIndex?: number
   active?: boolean
   finishAction?: FinishTripAction
@@ -78,6 +89,7 @@ export function OnSiteReplanningFlow({
   generate,
   generationUnavailableReason,
   apply,
+  applyManual,
   applyInFlight = false,
   onTripChange,
   initialIndex,
@@ -89,6 +101,7 @@ export function OnSiteReplanningFlow({
   lockManagedByApply,
   loadLatestTrip,
   loadAppliedRevision,
+  recoverManualApply,
 }: OnSiteReplanningFlowProps) {
   const [watch, setWatch] = useState(() => ({
     fingerprint: fingerprintOf(sourceTrip),
@@ -255,8 +268,14 @@ export function OnSiteReplanningFlow({
     onTripChange?.(next)
   }
 
-  const recover = async () => {
-    if (waitingForApply || !ownerUid || !loadLatestTrip || !loadAppliedRevision || checking) return
+  const recover = async (action?: ManualRecoveryAction) => {
+    if (
+      waitingForApply ||
+      !ownerUid ||
+      (action ? !recoverManualApply : !loadLatestTrip || !loadAppliedRevision) ||
+      recoveryAbort.current
+    )
+      return
     const lock = readUnresolvedApply(ownerUid, sourceTrip.id)
     if (lock.status !== 'pending') return
     const controller = new AbortController()
@@ -264,12 +283,24 @@ export function OnSiteReplanningFlow({
     recoveryAbort.current = controller
     setChecking(true)
     try {
-      const latest = await loadLatestTrip(sourceTrip.id, controller.signal)
-      const revision = await loadAppliedRevision(
-        sourceTrip.id,
-        lock.value.revisionId,
-        controller.signal,
-      )
+      let verdict: RecoveryVerdict = { kind: 'unverified' }
+      if (action && recoverManualApply && isManualApply(lock.value)) {
+        verdict = await recoverManualApply(sourceTrip.id, lock.value, action, controller.signal)
+      } else if (!action && loadLatestTrip && loadAppliedRevision) {
+        const latest = await loadLatestTrip(sourceTrip.id, controller.signal)
+        const revision = await loadAppliedRevision(
+          sourceTrip.id,
+          lock.value.revisionId,
+          controller.signal,
+        )
+        verdict = judgeLatestTrip(
+          sourceTrip.id,
+          lock.value.baseVersion,
+          lock.value.revisionId,
+          latest,
+          revision,
+        )
+      }
       if (controller.signal.aborted || epochRef.current !== recoveryEpoch) return
       const current = readUnresolvedApply(ownerUid, sourceTrip.id)
       if (
@@ -278,26 +309,23 @@ export function OnSiteReplanningFlow({
         current.value.baseVersion !== lock.value.baseVersion
       )
         return
-      const verdict = judgeLatestTrip(
-        sourceTrip.id,
-        lock.value.baseVersion,
-        lock.value.revisionId,
-        latest,
-        revision,
-      )
-      if (verdict.kind !== 'applied') {
+      if (verdict.kind === 'unverified') {
         announce('対象の適用を確認できませんでした。再操作は停止したままです。')
         return
       }
       clearApplyUnresolved(ownerUid, sourceTrip.id, lock.value.revisionId)
       applied(verdict.trip)
+      if (verdict.kind === 'not_applied')
+        announce('変更は適用されていません。最新の旅程から再操作できます。')
     } catch {
       if (!controller.signal.aborted)
         announce('対象の適用を確認できませんでした。再操作は停止したままです。')
     } finally {
+      recoveryAbort.current = null
       if (!controller.signal.aborted) setChecking(false)
     }
   }
+  const pending = applyUnresolved ? readUnresolvedApply(ownerUid, sourceTrip.id) : null
   return (
     <section aria-label="旅行中の再計画" className="mx-auto w-full max-w-xl">
       <p
@@ -340,6 +368,18 @@ export function OnSiteReplanningFlow({
                 {checking ? '確認中…' : '最新の旅程を取得して確認する'}
               </button>
             )}
+            {ownerUid &&
+              recoverManualApply &&
+              pending?.status === 'pending' &&
+              isManualApply(pending.value) && (
+                <ManualApplyRecoveryActions
+                  ownerUid={ownerUid}
+                  tripId={sourceTrip.id}
+                  pending={pending.value}
+                  busy={checking}
+                  onRecover={(action) => void recover(action)}
+                />
+              )}
           </div>
         )}
         <TripProgressView
@@ -418,6 +458,9 @@ export function OnSiteReplanningFlow({
             applyUnresolved={applyUnresolved || applyInFlight}
             // 模擬報告では適用の経路そのものを渡さず、承認が旅程へ届かないようにする。
             apply={session.submission.context.report.kind === 'actual' ? apply : undefined}
+            applyManual={
+              session.submission.context.report.kind === 'actual' ? applyManual : undefined
+            }
             applyUnavailableReason={
               session.submission.context.report.kind === 'simulated'
                 ? '模擬報告のため適用できません。'

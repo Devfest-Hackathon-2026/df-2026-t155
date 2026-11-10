@@ -6,6 +6,7 @@ import type { DocumentReference, Transaction } from 'firebase-admin/firestore'
 import type { z } from 'zod'
 
 import type { ReviseTripRequest, Trip } from '@/domain'
+import type { ManualApplyBody } from '@/domain/manual-revision'
 import type { Actor } from '@/lib/auth/server'
 import { getAdminFirestore } from '@/lib/firebase/admin'
 
@@ -28,6 +29,7 @@ import {
 import {
   fromRevisionDocument,
   fromTripDocument,
+  manualApplyEpoch,
   toRevisionDocument,
   toStopDto,
   toTripDocument,
@@ -40,6 +42,7 @@ import {
 import { requireLearningTripReader } from './learning-trip-rollout'
 import { requireVerifiedPlaceIds } from './place-save-provenance'
 import { reserveDocumentSlot, REVISION_LIMIT, TRIP_LIMIT } from './limits'
+import { applyManualRevision, resolveManualRevision } from './manual-revision-apply'
 import { found, listOwned, ownedCollection, readOwned, recordKey } from './paths'
 import { applyStoredRevision, type ApplyGuard, type VerifyRevision } from './revision-apply'
 import { verifyRevisionProposal } from './revision-provenance'
@@ -149,7 +152,11 @@ export class FirestoreTripStore {
       if (reported) states = changeReportState(states, target.id, true)
       if (reported || !storedReportStates(snapshot))
         transaction.update(ref, { revisionReports: states })
-      return { ...reportState(states, target.id), reported }
+      return {
+        ...reportState(states, target.id),
+        reported,
+        manualApplyEpoch: manualApplyEpoch(snapshot),
+      }
     })
   }
 
@@ -311,6 +318,30 @@ export class FirestoreTripStore {
       guard,
       acceptsProtocol,
     )
+  }
+
+  applyManualRevision(
+    actor: Actor,
+    tripId: string,
+    id: string,
+    input: ManualApplyBody,
+    guard: ApplyGuard,
+    acceptsProtocol: boolean,
+  ) {
+    const tripRef = this.trip(actor, parseInput(TripIdSchema, tripId))
+    return applyManualRevision(actor, tripRef, id, input, guard, acceptsProtocol)
+  }
+
+  resolveManualRevision(
+    actor: Actor,
+    tripId: string,
+    id: string,
+    expectedVersion: number,
+    guard: ApplyGuard,
+    acceptsProtocol: boolean,
+  ) {
+    const tripRef = this.trip(actor, parseInput(TripIdSchema, tripId))
+    return resolveManualRevision(actor, tripRef, id, expectedVersion, guard, acceptsProtocol)
   }
 
   async listRevisions(actor: Actor, tripId: string, assertActive: () => void) {

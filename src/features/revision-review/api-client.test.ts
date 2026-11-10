@@ -4,6 +4,7 @@ import { sampleRevision, sampleReviseTripRequest } from '@/domain/samples'
 
 import {
   confirmedTrip,
+  readDemoRevisionProposal,
   readRevisionProposal,
   requestRevisions,
   type RevisionProposal,
@@ -21,6 +22,29 @@ const input = { ...request, travelModes: [...request.travelModes] }
 const signal = new AbortController().signal
 
 describe('候補生成 API の表示境界', () => {
+  it('署名付きの候補は通常の経路で受理し、デモの経路では拒否する', () => {
+    const planningRequest = { ...input, context: { phase: 'planning' } as const }
+    const revision = {
+      ...sampleRevision,
+      context: planningRequest.context,
+      constraintCheck: { status: 'unknown', explanation: '営業時間を確認できませんでした。' },
+    }
+    const proposal = { status: 'proposed', revisions: [revision] }
+    const manualGrants = {
+      [revision.id]: { id: `manual-${revision.id}`, token: `m2.e30.${'A'.repeat(43)}` },
+    }
+    const proposalTokens = { [revision.id]: `v2.1800000000000.e30.${'A'.repeat(43)}` }
+
+    expect(readDemoRevisionProposal(proposal, planningRequest)).toEqual(proposal)
+    for (const signed of [
+      { ...proposal, manualGrants },
+      { ...proposal, proposalTokens },
+    ]) {
+      expect(readRevisionProposal(signed, planningRequest)).toEqual(signed)
+      expect(readDemoRevisionProposal(signed, planningRequest)).toBeNull()
+    }
+  })
+
   it('PR #28 の構造化比較を受け取り、対応する区間を検証する', async () => {
     const [first, target, next] = input.trip.stops
     const fromPrevious = {

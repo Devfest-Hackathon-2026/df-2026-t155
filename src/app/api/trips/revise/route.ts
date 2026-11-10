@@ -1,4 +1,5 @@
 import { isCostlyApiEnabled } from '@/server/costly-api'
+import { issueManualRevisionGrants } from '@/server/persistence/manual-revision-provenance'
 import { issueRevisionProposalTokens } from '@/server/persistence/revision-provenance'
 import { FirestoreTripStore } from '@/server/persistence/trips'
 
@@ -55,7 +56,13 @@ export async function POST(request: Request): Promise<Response> {
         report: logFailure,
       })
       return report
-        ? issueRevisionProposalTokens(actor, tripRequest, result, report.reportVersion)
+        ? issueManualRevisionGrants(
+            actor,
+            tripRequest,
+            issueRevisionProposalTokens(actor, tripRequest, result, report.reportVersion),
+            report.reportVersion,
+            report.manualApplyEpoch,
+          )
         : result
     },
   })

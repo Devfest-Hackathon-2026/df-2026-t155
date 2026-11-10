@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import { deleteApp, initializeApp } from 'firebase/app'
 import { connectAuthEmulator, getAuth, signInAnonymously } from 'firebase/auth'
 import { FieldValue } from 'firebase-admin/firestore'
@@ -6,6 +7,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 // 適用・生成・保存の業務ロジック単独の検証。課金・保存の共通の保護は revision-guards.test.ts で実ストアを使って確かめる。
 import '../helpers/mock-cost-control-commit'
 
+import {
+  PATCH as recoverManualRevision,
+  POST as applyManualRevision,
+} from '@/app/api/trips/[tripId]/revisions/[revisionId]/manual-apply/route'
 import { POST as applyRevision } from '@/app/api/trips/[tripId]/revisions/[revisionId]/apply/route'
 import {
   GET as getReport,
@@ -20,6 +25,7 @@ import { GET as getTrip, PATCH as updateTrip } from '@/app/api/trips/[tripId]/ro
 import { POST as createTrip } from '@/app/api/trips/route'
 import { POST as generateRevision } from '@/app/api/trips/revise/route'
 import { ReviseTripResponseSchema, type ReviseTripRequest, type Stop, type Trip } from '@/domain'
+import { manualOperationId } from '@/domain/manual-revision'
 import { sampleRevision, sampleTrip } from '@/domain/samples'
 import {
   confirmedTrip,
@@ -30,6 +36,8 @@ import { getAdminFirestore } from '@/lib/firebase/admin'
 import type { MapsClient, OpeningHours, PlaceSearchResult, RouteResult } from '@/server/maps'
 import {
   ApplyRevisionResponseSchema,
+  ManualApplyResponseSchema,
+  ManualRecoveryResponseSchema,
   PendingRevisionResponseSchema,
   PendingRevisionSchema,
   RevisionListResponseSchema,
@@ -37,6 +45,9 @@ import {
   TripResponseSchema,
   type SaveRevisionBody,
 } from '@/server/persistence/contracts'
+import { toTripDocument } from '@/server/persistence/dto'
+import { FirestoreTripStore } from '@/server/persistence/trips'
+import { issueManualRevisionGrants } from '@/server/persistence/manual-revision-provenance'
 import * as provenance from '@/server/persistence/revision-provenance'
 import * as revisionChecks from '@/server/revision/revise-trip'
 
@@ -292,6 +303,428 @@ function holdMaps(expected = 1) {
   })
   return { started: started.promise, release: released.resolve }
 }
+
+describe('本人確認による適用 API＋Firestore Emulator', () => {
+  const confirmation = {
+    source: 'https://example.com/opening-hours',
+    checked: '公式サイトで訪問日の営業時間を確認した',
+    remaining: '臨時休業',
+  }
+
+  function legacyGrant(trip: Trip) {
+    const id = 'manual-legacy-review-candidate'
+    const encoded = Buffer.from(
+      JSON.stringify({
+        id,
+        targetStopId: trip.stops[1].id,
+        ...candidateB,
+        reason: '代替候補を確認',
+        context: { phase: 'planning' },
+        reportVersion: 0,
+        expiresAt: Date.now() + 60_000,
+      }),
+    ).toString('base64url')
+    const mac = createHmac('sha256', Buffer.alloc(32, 42))
+      .update(JSON.stringify(['manual-revision-v1', toTripDocument(owner, trip), encoded]))
+      .digest('base64url')
+    return {
+      context: { params: Promise.resolve({ tripId: trip.id, revisionId: id }) },
+      body: {
+        expectedVersion: trip.version,
+        token: `m1.${encoded}.${mac}`,
+        confirmation,
+        confirm: true,
+      },
+    }
+  }
+
+  it('UTCの旅程でも恒久閉業は除外し、修正前の方式で署名された候補も適用しない', async () => {
+    const trip = await seedTrip({ ...tripInput, timeZone: 'UTC' })
+    maps.searchPlaces.mockImplementation(async (options) =>
+      options.includeOpeningHours
+        ? foundPlace(candidateB.name, candidateB.placeId, open, 'CLOSED_PERMANENTLY')
+        : normalSearch(options),
+    )
+    const response = await generateRevision(
+      owner.request('POST', {
+        trip,
+        targetStopId: trip.stops[1].id,
+        context: { phase: 'planning' },
+        reason: '代替候補を確認',
+      }),
+    )
+    expect(response.status).toBe(422)
+    const result = ReviseTripResponseSchema.parse(await response.json())
+    expect(result).toMatchObject({
+      status: 'no_candidates',
+      message: expect.stringContaining('閉業'),
+    })
+    expect(result).not.toHaveProperty('manualGrants')
+
+    const old = legacyGrant(trip)
+    await expectCode(
+      await applyManualRevision(owner.request('POST', old.body), old.context),
+      422,
+      'revision_provenance_invalid',
+    )
+    expect(await readTrip()).toEqual(trip)
+  })
+
+  it.each([true, false])(
+    '固定予定のID不一致と検索結果なしを区別する (不一致=%s)',
+    async (mismatch) => {
+      const trip = await seedTrip()
+      const fixed = trip.stops[2]
+      expect(fixed.isFixed).toBe(true)
+      maps.searchPlaces.mockImplementation(async (options) => {
+        if (!options.query.startsWith(fixed.name)) return normalSearch(options)
+        return mismatch
+          ? foundPlace(fixed.name, 'different-fixed-place')
+          : { status: 'no_candidates' }
+      })
+      const response = await generateRevision(
+        owner.request('POST', {
+          trip,
+          targetStopId: trip.stops[1].id,
+          context: { phase: 'planning' },
+          reason: '代替候補を確認',
+        }),
+      )
+      const result = ReviseTripResponseSchema.parse(await response.json())
+      if (result.status !== 'proposed') throw new Error('Expected proposal')
+      const [candidate] = result.revisions
+      expect(candidate.constraintCheck.status).toBe('unknown')
+      if (!mismatch) {
+        const grant = result.manualGrants?.[candidate.id]
+        if (!grant) throw new Error('Expected grant for missing place lookup')
+        const id = await manualOperationId(grant, confirmation)
+        const applied = await applyManualRevision(
+          owner.request('POST', {
+            expectedVersion: trip.version,
+            token: grant.token,
+            confirmation,
+            confirm: true,
+          }),
+          { params: Promise.resolve({ tripId: trip.id, revisionId: id }) },
+        )
+        expect(applied.status).toBe(200)
+        expect(
+          ManualApplyResponseSchema.parse(await applied.json()).revision.constraintCheck.status,
+        ).toBe('unknown')
+        return
+      }
+      expect(candidate.diff.after.evidence).toContainEqual(
+        expect.objectContaining({ status: 'conflicting', subject: 'other' }),
+      )
+      expect(result.manualGrants?.[candidate.id]).toBeUndefined()
+      expect(result.proposalTokens?.[candidate.id]).toBeUndefined()
+      const old = legacyGrant(trip)
+      await expectCode(
+        await applyManualRevision(owner.request('POST', old.body), old.context),
+        422,
+        'revision_provenance_invalid',
+      )
+
+      // 古いクライアントが矛盾を取り除いて候補を保存しても、自動適用に必要な来歴は得られない。
+      const saved = await saveRevision(
+        owner.request('POST', {
+          ...candidate,
+          diff: { ...candidate.diff, after: { ...candidate.diff.after, evidence: [] } },
+        }),
+        context,
+      )
+      expect(saved.status).toBe(201)
+      maps.searchPlaces.mockImplementation(normalSearch)
+      await expectCode(
+        await applyRevision(owner.request('POST', approval), {
+          params: Promise.resolve({ tripId: trip.id, revisionId: candidate.id }),
+        }),
+        409,
+        'revision_provenance_missing',
+      )
+      expect(await readTrip()).toEqual(trip)
+    },
+  )
+
+  async function manualFixture() {
+    const trip = await seedTrip()
+    maps.searchPlaces.mockImplementation(async (options) =>
+      options.includeOpeningHours
+        ? foundPlace(candidateB.name, candidateB.placeId, { status: 'unavailable' })
+        : normalSearch(options),
+    )
+    const { proposal, revision } = await generate(trip, { phase: 'planning' })
+    expect(revision.constraintCheck.status).toBe('unknown')
+    const grant = proposal.manualGrants?.[revision.id]
+    if (!grant) throw new Error('Expected manual grant')
+    const id = await manualOperationId(grant, confirmation)
+    return {
+      trip,
+      id,
+      manualContext: { params: Promise.resolve({ tripId: trip.id, revisionId: id }) },
+      body: { expectedVersion: trip.version, token: grant.token, confirmation, confirm: true },
+    }
+  }
+
+  it('本人の申告を保存し、対象の1件だけを差し替え、応答を失った場合も再送と取得で確認できる', async () => {
+    const { trip, body, manualContext, id } = await manualFixture()
+    const oldStops: unknown = (await tripRef().get()).get('trip.stops')
+    generateJson.mockClear()
+    maps.searchPlaces.mockClear()
+    maps.computeRoute.mockClear()
+    const submit = () => applyManualRevision(owner.request('POST', body), manualContext)
+    const first = await submit()
+    expect(first.status).toBe(200)
+    // 通信断を想定し、最初の応答本文を使わず、同じ要求をもう一度送る。
+    const replay = ManualApplyResponseSchema.parse(await (await submit()).json())
+    expect(replay.status).toBe('already_applied')
+    expect(replay.trip.version).toBe(trip.version + 1)
+    expect(replay.trip.stops[0]).toEqual(trip.stops[0])
+    expect(replay.trip.stops[2]).toEqual(trip.stops[2])
+    expect(replay.trip.stops[1]).toEqual({
+      ...trip.stops[1],
+      ...candidateB,
+      evidence: [],
+      manualRevisionId: id,
+    })
+    expect(await readTrip()).toEqual(replay.trip)
+    const revision = RevisionResponseSchema.parse(
+      await (await getRevision(owner.request(), manualContext)).json(),
+    ).revision
+    expect(revision).toEqual(replay.revision)
+    expect(revision).toMatchObject({
+      method: 'manual',
+      confirmation,
+      approval: { status: 'approved', decidedAt: expect.any(String) },
+      constraintCheck: { status: 'unknown' },
+    })
+    const newStops: unknown = (await tripRef().get()).get('trip.stops')
+    if (!Array.isArray(oldStops) || !Array.isArray(newStops))
+      throw new Error('Expected saved stops')
+    expect(newStops.with(1, oldStops[1])).toEqual(oldStops)
+    expect(generateJson).not.toHaveBeenCalled()
+    expect(maps.searchPlaces).not.toHaveBeenCalled()
+    expect(maps.computeRoute).not.toHaveBeenCalled()
+    await expectCode(
+      await applyRevision(owner.request('POST', approval), manualContext),
+      422,
+      'revision_not_applicable',
+    )
+    await expectCode(
+      await applyManualRevision(
+        owner.request('POST', { ...body, confirmation: { ...confirmation, checked: '差し替え' } }),
+        manualContext,
+      ),
+      409,
+      'already_exists',
+    )
+    expect(await readTrip()).toEqual(replay.trip)
+  })
+
+  it('他人・署名と候補IDの改ざん・確認の省略・クライアントの検証済み申告・版不一致を拒否する', async () => {
+    const { trip, body, manualContext } = await manualFixture()
+    const submit = (input: unknown) =>
+      applyManualRevision(owner.request('POST', input), manualContext)
+    await expectCode(
+      await applyManualRevision(other.request('POST', body), manualContext),
+      404,
+      'not_found',
+    )
+    const [, payload, mac] = body.token.split('.')
+    const tamperedPayload = Buffer.from(
+      JSON.stringify({
+        ...JSON.parse(Buffer.from(payload, 'base64url').toString()),
+        targetStopId: trip.stops[0].id,
+        name: '改ざんした施設',
+      }),
+    ).toString('base64url')
+    await expectCode(
+      await submit({ ...body, token: `m2.${tamperedPayload}.${mac}` }),
+      422,
+      'revision_provenance_invalid',
+    )
+    await expectCode(
+      await applyManualRevision(owner.request('POST', body), {
+        params: Promise.resolve({ tripId: trip.id, revisionId: 'manual-another-candidate' }),
+      }),
+      422,
+      'revision_provenance_invalid',
+    )
+    await expectCode(
+      await submit({ ...body, confirmation: { ...confirmation, checked: 'コミット前に書き換え' } }),
+      422,
+      'revision_provenance_invalid',
+    )
+    await expectCode(await submit({ ...body, confirm: false }), 400, 'invalid_request')
+    await expectCode(
+      await submit({ ...body, constraintCheck: { status: 'satisfied' } }),
+      400,
+      'invalid_request',
+    )
+    await expectCode(
+      await submit({ ...body, confirmation: { ...confirmation, checked: 'あ'.repeat(1001) } }),
+      400,
+      'invalid_request',
+    )
+    expect(await readTrip()).toEqual(trip)
+
+    const updated = await updateTrip(
+      owner.request('PATCH', { expectedVersion: trip.version, preferences: ['新しい希望'] }),
+      context,
+    )
+    expect(updated.status).toBe(200)
+    await expectCode(await submit(body), 409, 'version_conflict')
+    expect(await readTrip()).toMatchObject({ version: trip.version + 1, stops: trip.stops })
+  })
+
+  it('移動が間に合わない候補に手動承認の来歴を発行しない', async () => {
+    const trip = await seedTrip()
+    maps.computeRoute.mockResolvedValue(route(500))
+    const response = await generateRevision(
+      owner.request('POST', {
+        trip,
+        context: { phase: 'planning' },
+        targetStopId: trip.stops[1].id,
+        reason: '別の施設へ変更',
+      }),
+    )
+    expect(response.status).toBe(422)
+    const result = ReviseTripResponseSchema.parse(await response.json())
+    expect(result).toMatchObject({ status: 'no_candidates' })
+    expect(result).not.toHaveProperty('manualGrants')
+    expect(await readTrip()).toEqual(trip)
+  })
+
+  it.each([
+    { change: { isFixed: true }, status: 409, code: 'revision_mismatch' },
+    { change: { plannedStartTime: '10:30' }, status: 422, code: 'revision_not_applicable' },
+  ])('保存済みの固定・時刻制約を適用時にも検査する ($code)', async ({ change, status, code }) => {
+    const trip = await seedTrip({
+      ...tripInput,
+      stops: tripInput.stops.with(1, { ...tripInput.stops[1], ...change }),
+    })
+    const before = trip.stops[1]
+    const request = {
+      trip,
+      targetStopId: before.id,
+      reason: '代替候補を確認',
+      context: { phase: 'planning' } as const,
+    }
+    const revision = {
+      ...sampleRevision,
+      tripId: trip.id,
+      targetStopId: before.id,
+      reason: request.reason,
+      context: request.context,
+      constraintCheck: { status: 'unknown' as const, explanation: '営業時間が未確認' },
+      diff: { before, after: { ...before, ...candidateB } },
+    }
+    // 通常の生成が拒否する入力に対し、適用側の独立した防御を直接確かめる。
+    const result = issueManualRevisionGrants(
+      owner,
+      request,
+      { status: 'proposed', revisions: [revision] },
+      0,
+    )
+    if (result.status !== 'proposed') throw new Error('Expected proposal')
+    const grant = result.manualGrants?.[revision.id]
+    if (!grant) throw new Error('Expected test grant')
+    await expectCode(
+      await applyManualRevision(
+        owner.request('POST', {
+          expectedVersion: trip.version,
+          token: grant.token,
+          confirmation,
+          confirm: true,
+        }),
+        {
+          params: Promise.resolve({
+            tripId: trip.id,
+            revisionId: await manualOperationId(grant, confirmation),
+          }),
+        },
+      ),
+      status,
+      code,
+    )
+    expect(await readTrip()).toEqual(trip)
+  })
+
+  it('同じ版と404の間に前回要求が処理中でも、取消の確定後は遅延適用を拒否する', async () => {
+    const { trip, body, manualContext } = await manualFixture()
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const apply = FirestoreTripStore.prototype.applyManualRevision
+    vi.spyOn(FirestoreTripStore.prototype, 'applyManualRevision').mockImplementationOnce(
+      async function (this: FirestoreTripStore, ...args: Parameters<typeof apply>) {
+        entered.resolve()
+        await release.promise
+        return apply.apply(this, args)
+      },
+    )
+    const delayed = applyManualRevision(owner.request('POST', body), manualContext)
+    try {
+      await entered.promise
+      expect((await readTrip()).version).toBe(trip.version)
+      expect((await getRevision(owner.request(), manualContext)).status).toBe(404)
+      const rejected = await recoverManualRevision(
+        other.request('PATCH', { expectedVersion: trip.version }),
+        manualContext,
+      )
+      await expectCode(rejected, 404, 'not_found')
+      const response = await recoverManualRevision(
+        owner.request('PATCH', { expectedVersion: trip.version }),
+        manualContext,
+      )
+      expect(response.status).toBe(200)
+      expect(ManualRecoveryResponseSchema.parse(await response.json())).toMatchObject({
+        status: 'not_applied',
+        trip,
+      })
+    } finally {
+      release.resolve()
+    }
+    await expectCode(await delayed, 422, 'revision_provenance_invalid')
+    expect(await readTrip()).toEqual(trip)
+    expect((await getRevision(owner.request(), manualContext)).status).toBe(404)
+
+    const fresh = await generate(trip, { phase: 'planning' })
+    const grant = fresh.proposal.manualGrants?.[fresh.revision.id]
+    if (!grant) throw new Error('Expected new grant')
+    const response = await applyManualRevision(
+      owner.request('POST', { ...body, token: grant.token }),
+      {
+        params: Promise.resolve({
+          tripId: trip.id,
+          revisionId: await manualOperationId(grant, confirmation),
+        }),
+      },
+    )
+    expect(response.status).toBe(200)
+  })
+
+  it('確定結果が不明でも、保存済みの本人確認記録を取得して結果を確定できる', async () => {
+    const { body, manualContext, id } = await manualFixture()
+    const write = db().runTransaction.bind(db())
+    vi.spyOn(db(), 'runTransaction').mockImplementationOnce(async (...args) => {
+      await write(...args)
+      throw new Error('commit acknowledgement lost')
+    })
+    const response = await applyManualRevision(owner.request('POST', body), manualContext)
+    await expectCode(response, 503, 'write_result_unknown')
+    expect((await readTrip()).stops[1].manualRevisionId).toBe(id)
+    expect((await getRevision(owner.request(), manualContext)).status).toBe(200)
+    const recovery = await recoverManualRevision(
+      owner.request('PATCH', { expectedVersion: body.expectedVersion }),
+      manualContext,
+    )
+    expect(ManualRecoveryResponseSchema.parse(await recovery.json())).toMatchObject({
+      status: 'already_applied',
+      trip: { version: body.expectedVersion + 1 },
+      revision: { id, confirmation },
+    })
+  })
+})
 
 describe('Revision適用 API＋Firestore Emulator', () => {
   it('連続した営業時間を生成・適用時に再照合する', async () => {

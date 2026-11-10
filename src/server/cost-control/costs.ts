@@ -41,6 +41,8 @@ export const COSTS = {
   // （初回2、再読取10、結果照会2。書込はTrip・候補の各1の5倍）。docs/API_ABUSE_PROTECTION.md 参照。
   // 有料と保存を同時に取るため、どちらの枠も消費する。
   applyRevision: { reads: 14, writes: 10, places: 4, routes: 4 },
+  manualApplyRevision: transaction(3 + REVISION_LIMIT, 3),
+  resolveManualRevision: transaction(2, 1),
   listLearnings: { reads: LEARNING_LIMIT + 1 },
   getLearning: { reads: 1 },
   approveLearning: transaction(3 + LEARNING_LIMIT, 2),

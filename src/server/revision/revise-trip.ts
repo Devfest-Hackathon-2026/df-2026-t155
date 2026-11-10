@@ -273,6 +273,7 @@ async function evaluateCandidate(
   const { maps, modes, checkedAt } = deps
   const { target, previous, next, originalPlaceId, previousPlaceId, nextPlaceId } = surroundings
   const candidate: Stop = { ...target, name: candidateName, placeId: null, evidence: [] }
+  delete candidate.manualRevisionId
 
   const { lookup } = await lookupPlace(maps, trip, candidate, { includeOpeningHours: true })
   if (lookup.kind === 'failed') return { kind: 'maps_failed' }
@@ -336,6 +337,21 @@ async function evaluateCandidate(
   const priorConflicts =
     deps.priorCandidateEvidence?.filter((item) => isRevisionEvidenceConflict(item, 'candidate')) ??
     []
+  const adjacentConflict = surroundings.adjacentPlaceMismatch
+    ? evidence(
+        candidate,
+        'adjacent-place',
+        {
+          subject: 'other',
+          claim: '前後の予定の施設が保存済みの施設と一致している',
+          applicability: '変更対象の前後の予定',
+          source: identity.source,
+          status: 'conflicting',
+          explanation: '前後の予定の施設検索で、保存済みの施設と異なる施設が見つかりました。',
+        },
+        checkedAt,
+      )
+    : null
   const after = {
     ...candidate,
     placeId: place.placeId,
@@ -344,6 +360,7 @@ async function evaluateCandidate(
       hours,
       ...(travelBefore ? [travelBefore] : []),
       ...(travelAfter ? [travelAfter] : []),
+      ...(adjacentConflict ? [adjacentConflict] : []),
       ...priorConflicts,
     ],
   }
@@ -355,7 +372,8 @@ async function evaluateCandidate(
   }
   const hasEvidenceConflict =
     target.evidence.some((item) => isRevisionEvidenceConflict(item, 'original')) ||
-    priorConflicts.length > 0
+    priorConflicts.length > 0 ||
+    adjacentConflict !== null
   if (hasEvidenceConflict) {
     uncertainties.push('承認に関係する根拠の矛盾が解消できていません。')
   }

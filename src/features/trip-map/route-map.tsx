@@ -94,6 +94,9 @@ function Evidence({ stop }: { stop: Stop }) {
   const google = worst?.source.kind === 'places' || worst?.source.kind === 'routes'
   return (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      {stop.manualRevisionId && (
+        <span className="text-xs font-bold text-gt-ink">本人の確認で採用</span>
+      )}
       {worst ? (
         google ? (
           <span className="inline-flex flex-wrap items-center gap-1 rounded border border-[#5E5E5E] bg-white p-1">
@@ -211,7 +214,7 @@ function StopCard({
   const evidenceLabel = worst
     ? `${evidenceSubjectLabels[worst.subject]}：${evidenceStatusLabels[worst.status]}`
     : '未照合'
-  const label = `${stop.plannedStartTime}から${stop.durationMinutes}分 ${stop.name}${stop.isFixed ? '（固定予定）' : ''}、${evidenceLabel}。${stopDetailsLabel}`
+  const label = `${stop.plannedStartTime}から${stop.durationMinutes}分 ${stop.name}${stop.isFixed ? '（固定予定）' : ''}、${stop.manualRevisionId ? '本人の確認で採用、' : ''}${evidenceLabel}。${stopDetailsLabel}`
   const selectedRing = selected ? 'outline outline-[3px] outline-offset-2 outline-gt-muted' : ''
   const Card = onSelect ? 'button' : 'div'
   const buttonProps = onSelect

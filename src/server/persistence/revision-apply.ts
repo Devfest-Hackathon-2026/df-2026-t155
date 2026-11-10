@@ -16,7 +16,7 @@ import {
   type PendingRevision,
 } from './contracts'
 import { diagnosePersistenceFailure } from './diagnostics'
-import { fromTripDocument, readRevisionDocument, toStopDto } from './dto'
+import { fromTripDocument, isManualRevisionDocument, readRevisionDocument, toStopDto } from './dto'
 import { parseInput, parseStored, PersistenceError } from './errors'
 import { requireLearningTripReader } from './learning-trip-rollout'
 import { found, readOwned, recordKey } from './paths'
@@ -45,7 +45,10 @@ function readTarget(
 ) {
   const trip = found(readOwned(actor, tripSnapshot, fromTripDocument))
   const record = found(
-    readOwned(actor, revisionSnapshot, (data, key) => readRevisionDocument(data, trip.id, key)),
+    readOwned(actor, revisionSnapshot, (data, key) => {
+      if (isManualRevisionDocument(data)) throw new PersistenceError('revision_not_applicable')
+      return readRevisionDocument(data, trip.id, key)
+    }),
   )
   if (
     record.revision.context.phase === 'on_site' &&
@@ -167,6 +170,7 @@ export async function applyStoredRevision(
         placeId: verified.placeId,
         evidence: [],
       }
+      delete after.manualRevisionId
       const approval = { status: 'approved' as const, decidedAt: new Date().toISOString() }
       const trip = parseStored(TripSchema, {
         ...current.trip,

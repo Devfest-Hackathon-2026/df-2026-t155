@@ -5,6 +5,7 @@ import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'reac
 import { revisionTargetRestriction, type Trip } from '@/domain'
 import { OnSiteReplanningFlow } from '@/features/onsite-flow/onsite-replanning-flow'
 import {
+  scopedManualApply,
   scopedOnSiteApply,
   scopedRecovery,
   scopedReportControl,
@@ -15,6 +16,7 @@ import { RevisionRouteView } from '@/features/revision-review/revision-route-vie
 import { readUnresolvedApply } from '@/features/revision-review/unresolved-apply'
 import {
   requestRevisions,
+  type ApplyOutcome,
   type ApplyRevision,
   type GenerateRevisions,
 } from '@/features/revision-review/api-client'
@@ -149,6 +151,7 @@ export function TripJourney({
       scope
         ? {
             apply: scopedOnSiteApply(scope),
+            applyManual: scopedManualApply(scope),
             reportControl: scopedReportControl(scope),
             ...scopedRecovery(scope),
           }
@@ -158,37 +161,44 @@ export function TripJourney({
   // 旅行前と旅行中の比較画面を保持していても、同じ旅程の適用要求は一つずつ扱う。
   const applying = useRef(false)
   const [applyInFlight, setApplyInFlight] = useState(false)
-  const apply = useMemo<ApplyRevision | undefined>(() => {
-    const run = applyRevision ?? persistence?.apply
-    if (!run || !scope) return undefined
-    return async (decision, signal) => {
-      if (applying.current) {
-        return {
-          status: 'failed',
-          message: '別の変更の適用を確認中です。確認後に操作してください。',
+  const { apply, applyManual } = useMemo(() => {
+    const protect = <Decision, Receipt>(
+      run?: (decision: Decision, signal?: AbortSignal) => Promise<ApplyOutcome<Receipt>>,
+    ) => {
+      if (!run || !scope) return undefined
+      return async (decision: Decision, signal?: AbortSignal): Promise<ApplyOutcome<Receipt>> => {
+        if (applying.current) {
+          return {
+            status: 'failed',
+            message: '別の変更の適用を確認中です。確認後に操作してください。',
+          }
+        }
+        let operation: ReturnType<typeof beginSessionScopeOperation>
+        try {
+          signal?.throwIfAborted()
+          operation = beginSessionScopeOperation(scope, signal)
+        } catch {
+          return { status: 'failed', message: '認証を確認できないため、適用を開始しませんでした。' }
+        }
+        applying.current = true
+        setApplyInFlight(true)
+        try {
+          const result = await run(decision, operation.signal)
+          operation.assertCurrent('unknown')
+          operation.signal.throwIfAborted()
+          return result
+        } finally {
+          operation.dispose()
+          applying.current = false
+          setApplyInFlight(false)
         }
       }
-      let operation: ReturnType<typeof beginSessionScopeOperation>
-      try {
-        signal?.throwIfAborted()
-        operation = beginSessionScopeOperation(scope, signal)
-      } catch {
-        return { status: 'failed', message: '認証を確認できないため、適用を開始しませんでした。' }
-      }
-      applying.current = true
-      setApplyInFlight(true)
-      try {
-        const result = await run(decision, operation.signal)
-        operation.assertCurrent('unknown')
-        operation.signal.throwIfAborted()
-        return result
-      } finally {
-        operation.dispose()
-        applying.current = false
-        setApplyInFlight(false)
-      }
     }
-  }, [applyRevision, persistence?.apply, scope])
+    return {
+      apply: protect(applyRevision ?? persistence?.apply),
+      applyManual: protect(applyRevision ? undefined : persistence?.applyManual),
+    }
+  }, [applyRevision, persistence, scope])
   const reflectionOpen = screen === 'reflection' || screen === 'check-saved'
   const [reflectionView, setReflectionView] = useState<'reflection' | 'check-saved' | null>(null)
   if (visible && reflectionOpen && reflectionView !== screen) {
@@ -341,10 +351,12 @@ export function TripJourney({
           ownerUid={scope?.uid}
           generate={isSavedCurrent ? revisions : undefined}
           apply={isSavedCurrent ? apply : undefined}
+          applyManual={isSavedCurrent ? applyManual : undefined}
           applyInFlight={applyInFlight}
           lockManagedByApply={!applyRevision}
           loadLatestTrip={persistence?.loadLatestTrip}
           loadAppliedRevision={persistence?.loadAppliedRevision}
+          recoverManualApply={persistence?.recoverManualApply}
           adoptTripChange={adoptRouteChange ?? adoptTripChange}
           onRevisionApplied={setSavedTrip}
           revisionUnavailableReason={
@@ -464,6 +476,7 @@ export function TripJourney({
           generate={isSavedCurrent ? revisions : undefined}
           generationUnavailableReason="保存済みの現在の旅程を確認してから再計画を始めてください。"
           apply={isSavedCurrent ? apply : undefined}
+          applyManual={isSavedCurrent ? applyManual : undefined}
           applyInFlight={applyInFlight}
           ownerUid={scope?.uid}
           reportControl={persistence?.reportControl}
@@ -472,6 +485,7 @@ export function TripJourney({
           lockManagedByApply={!applyRevision}
           loadLatestTrip={persistence?.loadLatestTrip}
           loadAppliedRevision={persistence?.loadAppliedRevision}
+          recoverManualApply={persistence?.recoverManualApply}
           onTripChange={(next) => {
             setSavedTrip(next)
             adoptTripChange(next)

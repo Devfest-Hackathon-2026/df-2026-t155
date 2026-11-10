@@ -1,7 +1,13 @@
 import { z } from 'zod'
 
 import { TripSchema, type Trip } from '@/domain'
+import {
+  ManualApplyBodySchema,
+  ManualRevisionGrantSchema,
+  type ManualApplyBody,
+} from '@/domain/manual-revision'
 import { SavedRevisionSchema } from '@/server/persistence/contracts'
+import { sameStop } from './api-client'
 
 // 未確認の適用を本人UID・Trip ID別に端末へ保存する。通信前に記録できないなら適用を始めない。
 // in-memory Mapではブラウザのフルリロードでロックが失われるため、永続記録を正本にする。
@@ -18,6 +24,49 @@ export type UnresolvedApplyState =
 
 export function unresolvedApplyStorageKey(ownerUid: string, tripId: string): string {
   return STORAGE_PREFIX + encodeURIComponent(ownerUid) + ':' + encodeURIComponent(tripId)
+}
+
+const ManualReplaySchema = z.strictObject({
+  id: ManualRevisionGrantSchema.shape.id,
+  body: ManualApplyBodySchema,
+})
+
+function manualReplayKey(ownerUid: string, tripId: string) {
+  return unresolvedApplyStorageKey(ownerUid, tripId) + ':manual-replay'
+}
+
+export function isManualApply(pending: UnresolvedApply) {
+  return ManualRevisionGrantSchema.shape.id.safeParse(pending.revisionId).success
+}
+
+// 再読み込み後も、同じタブでは承認時の本文をそのまま再送する。
+export function rememberManualApply(
+  ownerUid: string,
+  tripId: string,
+  id: string,
+  body: ManualApplyBody,
+) {
+  const value = JSON.stringify(ManualReplaySchema.parse({ id, body }))
+  const key = manualReplayKey(ownerUid, tripId)
+  window.sessionStorage.setItem(key, value)
+  if (window.sessionStorage.getItem(key) !== value) throw new Error('manual request not stored')
+}
+
+export function readManualReplay(ownerUid: string, tripId: string, pending: UnresolvedApply) {
+  try {
+    const raw = window.sessionStorage.getItem(manualReplayKey(ownerUid, tripId))
+    if (!raw) return
+    const entry = ManualReplaySchema.safeParse(JSON.parse(raw))
+    if (
+      entry.success &&
+      entry.data.id === pending.revisionId &&
+      entry.data.body.expectedVersion === pending.baseVersion
+    ) {
+      return entry.data.body
+    }
+  } catch {
+    // 本文を復元できないときは照会と取り消しを使える。
+  }
 }
 
 // storageイベントは書き込んだタブに届かないため、同じ画面内の旅行前・旅行中にも変更を通知する。
@@ -99,12 +148,28 @@ export function clearApplyUnresolved(ownerUid: string, tripId: string, revisionI
   if (readUnresolvedApply(ownerUid, tripId).status !== 'clear') {
     throw new Error('未確認状態の解除を確認できませんでした。')
   }
+  if (isManualApply(current.value)) {
+    try {
+      window.sessionStorage.removeItem(manualReplayKey(ownerUid, tripId))
+    } catch {
+      // 再送には現在の永続ロックも必要。解除後の本文は送信できない。
+    }
+  }
   window.dispatchEvent(
     new CustomEvent(LOCK_CHANGED, { detail: unresolvedApplyStorageKey(ownerUid, tripId) }),
   )
 }
 
 export type LatestTripVerdict = { kind: 'applied'; trip: Trip } | { kind: 'unverified' }
+
+export type ManualRecoveryAction = 'retry' | 'cancel'
+export type RecoveryVerdict = LatestTripVerdict | { kind: 'not_applied'; trip: Trip }
+export type RecoverManualApply = (
+  tripId: string,
+  pending: UnresolvedApply,
+  action: ManualRecoveryAction,
+  signal: AbortSignal,
+) => Promise<RecoveryVerdict>
 
 // 同じ版のGETは遅延コミットを否定せず、版増加も別の更新かもしれない。
 // 対象Revisionの承認記録と版が揃った場合だけ、適用済みと確認する。
@@ -127,5 +192,9 @@ export function judgeLatestTrip(
     revision.data.approval.status !== 'approved'
   )
     return { kind: 'unverified' }
+  if ('method' in revision.data && trip.data.version === baseVersion + 1) {
+    const stop = trip.data.stops.find(({ id }) => id === revision.data.targetStopId)
+    if (!stop || !sameStop(stop, revision.data.diff.after)) return { kind: 'unverified' }
+  }
   return { kind: 'applied', trip: trip.data }
 }

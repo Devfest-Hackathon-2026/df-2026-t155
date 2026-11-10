@@ -1,18 +1,26 @@
 // @vitest-environment jsdom
+import { webcrypto } from 'node:crypto'
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { manualOperationId } from '@/domain/manual-revision'
 import { sampleRevision } from '@/domain/samples'
 import { sampleRouteMeta as meta, sampleRouteTrip as trip } from '@/features/trip-map/sample'
 
 import {
   requestRevisions,
+  type ApplyManualRevision,
   type ApplyRevision,
   type GenerateRevisions,
   type RevisionProposal,
 } from './api-client'
+import {
+  markApplyUnresolved,
+  readUnresolvedApply,
+  type RecoverManualApply,
+} from './unresolved-apply'
 import {
   RevisionRouteView,
   type LoadAppliedRevision,
@@ -119,6 +127,67 @@ const approvalDisabled = () => approve().getAttribute('aria-disabled') === 'true
 const tableInConfirmation = () => within(screen.getByRole('table', { hidden: true }))
 
 describe('部分修正の候補比較', () => {
+  it('未確認のGemini候補は本人の確認記録をプレビューし、明示承認して路線図へ反映する', async () => {
+    vi.stubGlobal('crypto', webcrypto)
+    const user = userEvent.setup()
+    const grant = { id: 'manual-candidate-b', token: `m2.e30.${'A'.repeat(43)}` }
+    const generate = vi.fn<GenerateRevisions>().mockResolvedValue({
+      ...proposal,
+      manualGrants: { [second.id]: grant },
+    })
+    const apply = vi.fn<ApplyRevision>()
+    const confirmation = {
+      source: 'https://example.com/hours',
+      checked: '訪問日の営業時間',
+      remaining: '臨時休業',
+    }
+    const operationId = await manualOperationId(grant, confirmation)
+    const changed = {
+      ...trip,
+      version: trip.version + 1,
+      stops: trip.stops.with(1, { ...second.diff.after, manualRevisionId: operationId }),
+    }
+    const applyManual = vi
+      .fn<ApplyManualRevision>()
+      .mockResolvedValue({ status: 'applied', trip: changed })
+    render(
+      <RevisionRouteTest
+        trip={trip}
+        meta={meta}
+        generate={generate}
+        apply={apply}
+        applyManual={applyManual}
+      />,
+    )
+    await open(user)
+    await request(user)
+    expect(screen.queryByRole('button', { name: '自分で確認する' })).toBeNull()
+    await user.click(screen.getByRole('button', { name: /候補 B .*本人確認が可能/ }))
+    await user.click(screen.getByRole('button', { name: '自分で確認する' }))
+    expect(screen.getByText('システムの判定：未確認')).toBeTruthy()
+    await user.type(screen.getByLabelText(/確認した情報源/), 'https://example.com/hours')
+    await user.type(screen.getByLabelText('自分で確認した内容'), '訪問日の営業時間')
+    await user.type(screen.getByLabelText('確認できなかった事項（任意）'), '臨時休業')
+    await user.click(screen.getByRole('button', { name: '本人の確認記録を確認する' }))
+    expect(await screen.findByText('https://example.com/hours')).toBeTruthy()
+    expect(screen.getByText('臨時休業')).toBeTruthy()
+    expect(applyManual).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: '本人の判断で承認して適用' }))
+    expect(applyManual).toHaveBeenCalledWith(
+      {
+        trip,
+        revision: second,
+        grant,
+        operationId,
+        confirmation,
+      },
+      expect.any(AbortSignal),
+    )
+    expect(apply).not.toHaveBeenCalled()
+    expect(route().getByText('本人の確認で採用')).toBeTruthy()
+    expect(route().getByText(second.diff.after.name)).toBeTruthy()
+  })
+
   it('チケットの比較ボタンから開き、食事の希望を既存の修正理由として送る', async () => {
     const user = userEvent.setup()
     const generate = vi
@@ -1094,6 +1163,49 @@ describe('本人承認とサーバー適用', () => {
     expect(screen.queryByText('詳細な比較・根拠を見る')).toBeNull()
     expect(generate).toHaveBeenCalledTimes(1)
     expect(apply).toHaveBeenCalledTimes(1)
+  })
+
+  it('手動適用では同じ版と404や復旧の通信断で解禁せず、サーバーが未適用を確定した場合だけ解禁する', async () => {
+    const user = userEvent.setup()
+    const id = 'manual-candidate-b'
+    markApplyUnresolved('test-owner', trip.id, trip.version, id)
+    const loadLatestTrip = vi.fn<LoadLatestTrip>().mockResolvedValue(trip)
+    const loadAppliedRevision = vi.fn<LoadAppliedRevision>().mockRejectedValue(new Error('404'))
+    const recoverManualApply = vi
+      .fn<RecoverManualApply>()
+      .mockRejectedValueOnce(new Error('connection lost'))
+      .mockResolvedValueOnce({ kind: 'not_applied', trip })
+    const generate = vi.fn<GenerateRevisions>()
+    render(
+      <RevisionRouteTest
+        trip={trip}
+        generate={generate}
+        loadLatestTrip={loadLatestTrip}
+        loadAppliedRevision={loadAppliedRevision}
+        recoverManualApply={recoverManualApply}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: '最新の旅程を取得して確認する' }))
+    expect(loadAppliedRevision).toHaveBeenCalledWith(trip.id, id, expect.any(AbortSignal))
+    expect(readUnresolvedApply('test-owner', trip.id).status).toBe('pending')
+
+    const cancel = screen.getByRole('button', { name: '適用を確認し、未確定なら取り消す' })
+    await user.click(cancel)
+    await waitFor(() => expect(cancel.hasAttribute('disabled')).toBe(false))
+    expect(readUnresolvedApply('test-owner', trip.id).status).toBe('pending')
+    await user.click(cancel)
+    expect(recoverManualApply).toHaveBeenLastCalledWith(
+      trip.id,
+      { baseVersion: trip.version, revisionId: id },
+      'cancel',
+      expect.any(AbortSignal),
+    )
+    expect(
+      await screen.findByText('変更は適用されていません。最新の旅程から再操作できます。'),
+    ).toBeTruthy()
+    expect(readUnresolvedApply('test-owner', trip.id).status).toBe('clear')
+    await open(user)
   })
 
   describe('結果不明の適用の解禁', () => {

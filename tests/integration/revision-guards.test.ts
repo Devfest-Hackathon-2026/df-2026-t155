@@ -2,6 +2,7 @@ import { deleteApp, initializeApp } from 'firebase/app'
 import { connectAuthEmulator, getAuth, signInAnonymously } from 'firebase/auth'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { POST as applyManualRevision } from '@/app/api/trips/[tripId]/revisions/[revisionId]/manual-apply/route'
 import { POST as applyRevision } from '@/app/api/trips/[tripId]/revisions/[revisionId]/apply/route'
 import {
   GET as getReport,
@@ -10,14 +11,19 @@ import {
 import { POST as saveRevision } from '@/app/api/trips/[tripId]/revisions/route'
 import { POST as createTrip } from '@/app/api/trips/route'
 import { POST as generateRevision } from '@/app/api/trips/revise/route'
-import type { Trip } from '@/domain'
+import { ReviseTripResponseSchema, type Trip } from '@/domain'
+import { manualOperationId } from '@/domain/manual-revision'
 import { sampleRevision, sampleTrip } from '@/domain/samples'
 import { getAdminFirestore } from '@/lib/firebase/admin'
 import { COSTS } from '@/server/cost-control/costs'
 import { DEFAULT_LIMITS, type Policy } from '@/server/cost-control/policy'
 import { CONTROL_DOCUMENT, createControlDocument, reserveCost } from '@/server/cost-control/store'
 import type { MapsClient, OpeningHours, PlaceSearchResult, RouteResult } from '@/server/maps'
-import { PendingRevisionSchema, TripResponseSchema } from '@/server/persistence/contracts'
+import {
+  ManualApplyResponseSchema,
+  PendingRevisionSchema,
+  TripResponseSchema,
+} from '@/server/persistence/contracts'
 import * as provenance from '@/server/persistence/revision-provenance'
 import { FirestoreTripStore } from '@/server/persistence/trips'
 
@@ -463,6 +469,50 @@ describe('POST /api/trips/revise（保存有効）の共通保護', () => {
     expect((await pending).status).toBe(503)
     expect(generateJson).not.toHaveBeenCalled()
     expect((await tripRef().get()).get('revisionReports')).toEqual([])
+  })
+})
+
+describe('POST .../revisions/{manualId}/manual-apply の共通保護', () => {
+  it('App Checkが必要で、本人の適用は保存枠だけを使って確定する', async () => {
+    await seed()
+    const trip = await seedTrip()
+    searchPlaces.mockImplementation(async (options) =>
+      options.includeOpeningHours
+        ? {
+            status: 'found',
+            candidates: [{ ...candidateB, address, openingHours: { status: 'unavailable' } }],
+          }
+        : normalSearch(options),
+    )
+    const generated = ReviseTripResponseSchema.parse(await (await revise(owner, trip)).json())
+    if (generated.status !== 'proposed') throw new Error('Expected proposal')
+    const grant = generated.manualGrants?.[generated.revisions[0].id]
+    if (!grant) throw new Error('Expected manual grant')
+
+    const body = {
+      expectedVersion: trip.version,
+      token: grant.token,
+      confirmation: { source: '公式サイト', checked: '当日の営業時間' },
+      confirm: true,
+    }
+    const id = await manualOperationId(grant, body.confirmation)
+    const manualContext = { params: Promise.resolve({ tripId: trip.id, revisionId: id }) }
+    generateJson.mockClear()
+    searchPlaces.mockClear()
+    computeRoute.mockClear()
+    vi.mocked(reserveCost).mockClear()
+    await expectCode(
+      await applyManualRevision(owner.request('POST', body, { appCheck: false }), manualContext),
+      403,
+      'app_check_invalid',
+    )
+    expect(reserveCost).not.toHaveBeenCalled()
+
+    const response = await applyManualRevision(owner.request('POST', body), manualContext)
+    expect(response.status).toBe(200)
+    expect(ManualApplyResponseSchema.parse(await response.json()).status).toBe('applied')
+    expect(reserveCost).toHaveBeenCalledExactlyOnceWith(owner.uid, COSTS.manualApplyRevision)
+    expectNoPaidCalls()
   })
 })
 

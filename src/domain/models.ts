@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { ManualRevisionGrantSchema } from './manual-revision'
+
 import {
   ApprovalSchema,
   DateSchema,
@@ -56,6 +58,7 @@ export const StopSchema = z
     durationMinutes: z.int().positive().max(1440),
     isFixed: z.boolean(),
     evidence: z.array(EvidenceSchema),
+    manualRevisionId: ManualRevisionGrantSchema.shape.id.optional(),
   })
   .refine(
     (stop) => {

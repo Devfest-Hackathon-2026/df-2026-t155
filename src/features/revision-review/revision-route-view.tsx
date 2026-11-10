@@ -6,16 +6,25 @@ import { revisionTargetRestriction, type Revision, type Trip } from '@/domain'
 import type { RouteMeta } from '@/features/trip-map/model'
 import { reviseButtonId, ROUTE_LIST_ID, stopButtonId } from '@/features/trip-map/route-map'
 import { TripRouteView } from '@/features/trip-map/trip-route-view'
-import type { ApplyRevisionResult } from '@/server/persistence/contracts'
 
-import type { ApplyRevision, GenerateRevisions } from './api-client'
+import type {
+  ApplyManualRevision,
+  ApplyRevision,
+  RevisionApplyReceipt,
+  GenerateRevisions,
+} from './api-client'
+import { ManualApplyRecoveryActions } from './manual-apply-recovery-actions'
 import { RevisionReview } from './revision-review'
 import {
   clearApplyUnresolved,
+  isManualApply,
   judgeLatestTrip,
   markApplyUnresolved,
   readUnresolvedApply,
   subscribeApplyLock,
+  type ManualRecoveryAction,
+  type RecoverManualApply,
+  type RecoveryVerdict,
   type UnresolvedApplyState,
 } from './unresolved-apply'
 
@@ -40,12 +49,14 @@ interface RevisionRouteViewProps {
   mock?: boolean
   generate?: GenerateRevisions
   apply?: ApplyRevision
+  applyManual?: ApplyManualRevision
   simulateApproval?: (trip: Trip, revision: Revision) => Trip | null
   applyInFlight?: boolean
   lockManagedByApply?: boolean
   // 適用結果不明からの復旧には、最新の旅程と対象Revisionの承認記録の両方が必要。
   loadLatestTrip?: LoadLatestTrip
   loadAppliedRevision?: LoadAppliedRevision
+  recoverManualApply?: RecoverManualApply
   // 固定の切り替え・候補の適用で旅程が変わったとき、画面に採用する旅程を決める（変えなければ受け取った旅程を返す）。
   // 照合結果の取り下げなど、旅程の変更に連動して根拠を戻す用途。予定の名称・時刻・固定は変えないこと。
   adoptTripChange?: (changed: Trip) => Trip
@@ -62,18 +73,20 @@ export function RevisionRouteView({
   mock,
   generate,
   apply,
+  applyManual,
   simulateApproval,
   applyInFlight = false,
   lockManagedByApply,
   loadLatestTrip,
   loadAppliedRevision,
+  recoverManualApply,
   adoptTripChange,
   onRevisionApplied,
   revisionUnavailableReason,
   routeActions,
   active = true,
 }: RevisionRouteViewProps) {
-  const demoApproval = mock && !apply ? simulateApproval : undefined
+  const demoApproval = mock && !apply && !applyManual ? simulateApproval : undefined
   const [local, setLocal] = useState<{
     source: Trip
     trip: Trip
@@ -110,7 +123,7 @@ export function RevisionRouteView({
   const operationBlocked =
     applyInFlight ||
     lockState.status === 'pending' ||
-    (Boolean(apply) && lockState.status !== 'clear')
+    (Boolean(apply || applyManual) && lockState.status !== 'clear')
 
   const updateStoredLock = useCallback(
     () => setRestored({ key: lockKey, state: readUnresolvedApply(ownerUid, sourceTrip.id) }),
@@ -184,7 +197,7 @@ export function RevisionRouteView({
     setSession(null)
   }
 
-  const onApplied = (changed: Trip, receipt?: ApplyRevisionResult, revisionId?: string) => {
+  const onApplied = (changed: Trip, receipt?: RevisionApplyReceipt, revisionId?: string) => {
     // 成功した対象Revisionだけ解除する。永続ストレージが失敗したら閉じたままにする。
     let cleared = false
     try {
@@ -207,7 +220,12 @@ export function RevisionRouteView({
       leave('候補の適用を確認し、その後に更新された最新の旅程を表示しています。', 'success')
       return
     }
-    showChangedTrip(trip, '承認した候補が旅程に反映されました。')
+    showChangedTrip(
+      trip,
+      receipt && 'method' in receipt.revision
+        ? '本人の確認を記録し、候補を旅程に反映しました。'
+        : '承認した候補が旅程に反映されました。',
+    )
   }
 
   const showChangedTrip = (trip: Trip, message: string) => {
@@ -230,12 +248,11 @@ export function RevisionRouteView({
   }
 
   // 結果不明のとき、サーバーの最新の旅程と照合して解禁するか判断する。取得に失敗しても解禁しない。
-  const checkLatestTrip = async () => {
+  const checkLatestTrip = async (action?: ManualRecoveryAction) => {
     const read = readUnresolvedApply(ownerUid, sourceTrip.id)
     if (
       waitingForApply ||
-      !loadLatestTrip ||
-      !loadAppliedRevision ||
+      (action ? !recoverManualApply : !loadLatestTrip || !loadAppliedRevision) ||
       read.status !== 'pending' ||
       reconciling.current
     ) {
@@ -247,13 +264,23 @@ export function RevisionRouteView({
     const abort = new AbortController()
     reconcileAbort.current = abort
     setReconcile({ status: 'checking' })
-    let latest: Trip | null = null
-    let revision: unknown = null
+    let verdict: RecoveryVerdict = { kind: 'unverified' }
     try {
-      latest = await loadLatestTrip(sourceTrip.id, abort.signal)
-      revision = await loadAppliedRevision(sourceTrip.id, pending.revisionId, abort.signal)
+      if (action && recoverManualApply && isManualApply(pending)) {
+        verdict = await recoverManualApply(sourceTrip.id, pending, action, abort.signal)
+      } else if (!action && loadLatestTrip && loadAppliedRevision) {
+        const latest = await loadLatestTrip(sourceTrip.id, abort.signal)
+        const revision = await loadAppliedRevision(sourceTrip.id, pending.revisionId, abort.signal)
+        verdict = judgeLatestTrip(
+          sourceTrip.id,
+          pending.baseVersion,
+          pending.revisionId,
+          latest,
+          revision,
+        )
+      }
     } catch {
-      latest = null
+      // 通信や取得に失敗した場合はロックを維持する。
     }
     reconciling.current = false
     if (abort.signal.aborted) return
@@ -266,13 +293,6 @@ export function RevisionRouteView({
       updateStoredLock()
       return
     }
-    const verdict = judgeLatestTrip(
-      sourceTrip.id,
-      pending.baseVersion,
-      pending.revisionId,
-      latest,
-      revision,
-    )
     if (verdict.kind === 'unverified') {
       setReconcile({ status: 'failed' })
       return
@@ -287,10 +307,14 @@ export function RevisionRouteView({
     }
     updateStoredLock()
     setReconcile(null)
-    // 対象Revisionの承認が確定した場合だけ、取得した旅程を採用する。
+    // サーバーで適用済みか未適用を確定できた場合だけ、取得した旅程を採用する。
     setLocal({ source: sourceTrip, trip: adoptTripChange?.(verdict.trip) ?? verdict.trip })
     onRevisionApplied?.(verdict.trip)
-    leave('サーバーで適用を確認し、最新の旅程を表示しています。', 'success')
+    if (verdict.kind === 'not_applied') {
+      leave('変更は適用されていません。最新の旅程から再操作できます。')
+    } else {
+      leave('サーバーで適用を確認し、最新の旅程を表示しています。', 'success')
+    }
   }
 
   const unresolvedGuide = (
@@ -317,6 +341,18 @@ export function RevisionRouteView({
       ) : lockState.status === 'pending' ? (
         <p>最新の旅程と対象Revisionの承認記録をサーバーから取得し直してください。</p>
       ) : null}
+      {ownerUid &&
+        recoverManualApply &&
+        lockState.status === 'pending' &&
+        isManualApply(lockState.value) && (
+          <ManualApplyRecoveryActions
+            ownerUid={ownerUid}
+            tripId={sourceTrip.id}
+            pending={lockState.value}
+            busy={reconcile?.status === 'checking'}
+            onRecover={(action) => void checkLatestTrip(action)}
+          />
+        )}
     </>
   )
 
@@ -343,6 +379,7 @@ export function RevisionRouteView({
             meta={current.meta}
             generate={generate}
             apply={operationBlocked && !session.applyUnresolved ? undefined : apply}
+            applyManual={operationBlocked && !session.applyUnresolved ? undefined : applyManual}
             onDemoApprove={
               demoApproval
                 ? (revision) => {

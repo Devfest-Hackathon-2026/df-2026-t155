@@ -16,6 +16,7 @@ import {
   type TravelSegmentSlot,
   type Trip,
 } from '@/domain'
+import { type ManualApplyBody, type ManualRevisionGrant } from '@/domain/manual-revision'
 import { TextSchema } from '@/domain/primitives'
 import { getProtectedApiHeaders } from '@/lib/auth/protected-api'
 import {
@@ -26,6 +27,7 @@ import {
 import {
   ApplyRevisionResponseSchema,
   type ApplyRevisionResult,
+  type ManualApplyResult,
 } from '@/server/persistence/contracts'
 
 import { checkCandidate, retainsApprovedEvidence } from './proposal-checks'
@@ -59,6 +61,23 @@ export type GenerateRevisions = (
   signal: AbortSignal,
 ) => Promise<RevisionResult>
 
+export type RevisionApplyReceipt = ApplyRevisionResult | ManualApplyResult
+
+export type ApplyOutcome<Receipt = RevisionApplyReceipt> =
+  | { status: 'applied'; trip: Trip; receipt?: Receipt }
+  | { status: 'conflict' | 'unavailable' | 'failed' | 'uncertain'; message?: string }
+
+export type ApplyManualRevision = (
+  decision: {
+    trip: Trip
+    revision: Revision
+    grant: ManualRevisionGrant
+    operationId: string
+    confirmation: ManualApplyBody['confirmation']
+  },
+  signal?: AbortSignal,
+) => Promise<ApplyOutcome<ManualApplyResult>>
+
 // 本人の承認操作を受け取る。applied と失敗はサーバーで結果が確定した場合にだけ返す。
 export type ApplyRevision = (
   decision: {
@@ -67,10 +86,7 @@ export type ApplyRevision = (
     proposalToken: string
   },
   signal?: AbortSignal,
-) => Promise<
-  | { status: 'applied'; trip: Trip; receipt?: ApplyRevisionResult }
-  | { status: 'conflict' | 'unavailable' | 'failed' | 'uncertain'; message?: string }
->
+) => Promise<ApplyOutcome<ApplyRevisionResult>>
 
 // 既定は本人のBearer＋App Check。テストでは通信とヘッダー取得のみ差し替える。
 export interface RevisionRequestDeps {
@@ -140,7 +156,7 @@ export const requestRevisions = async (
   return { status: 'unexpected' }
 }
 
-function sameStop(left: Stop, right: Stop) {
+export function sameStop(left: Stop, right: Stop) {
   // 共通スキーマでキー順を揃え、根拠を含む変更前のStopを比較する。
   return JSON.stringify(StopSchema.parse(left)) === JSON.stringify(StopSchema.parse(right))
 }
@@ -230,7 +246,8 @@ function parseRevisionProposal(value: unknown, request: RevisionRequest) {
 // デモの固定データは架空の制約結果を表示する。署名付きの提案は扱わない。
 export function readDemoRevisionProposal(value: unknown, request: RevisionRequest) {
   const parsed = parseRevisionProposal(value, request)
-  return parsed && !parsed.proposal.proposalTokens ? parsed.proposal : null
+  if (!parsed || parsed.proposal.proposalTokens || parsed.proposal.manualGrants) return null
+  return parsed.proposal
 }
 
 export function readRevisionProposal(

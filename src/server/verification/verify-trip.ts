@@ -211,6 +211,10 @@ export function hoursEvidence(
       checkedAt,
     )
   }
+  const statusProblem = businessStatusProblem(place.businessStatus)
+  if (statusProblem?.status === 'conflicting') {
+    return evidence(stop, 'hours', { ...base, ...statusProblem }, checkedAt)
+  }
   // 営業時間は、施設の現地時刻で表される。旅程のタイムゾーンと同じと確かめられるときだけ、照合する。
   // 日本でない旅程では営業時間を要求しないため、データの有無より先に判定する。
   const zoneProblem = timeZoneProblem(trip)
@@ -223,7 +227,6 @@ export function hoursEvidence(
     )
   }
   // 営業状態が通常でない施設は、通常営業時間のデータが残っていても、営業中と判定しない。
-  const statusProblem = businessStatusProblem(place.businessStatus)
   if (statusProblem) {
     return evidence(stop, 'hours', { ...base, ...statusProblem }, checkedAt)
   }

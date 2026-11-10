@@ -5,6 +5,7 @@ import { startTransition, useLayoutEffect, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ApprovedLearning, Learning, Revision, Trip } from '@/domain'
+import { MANUAL_UNVERIFIED } from '@/domain/manual-revision'
 import { sampleLearning, sampleRevision, sampleTrip } from '@/domain/samples'
 
 import type { CandidatesResult } from './api-client'
@@ -62,6 +63,36 @@ const setup = (result: CandidatesResult = proposed(sampleLearning), props: Props
     )
   return { request, onApprovedChange, user, rerender }
 }
+
+it('本人確認の採用履歴を未確認として表示し、自動承認の履歴と区別する', () => {
+  const id = 'manual-revision-test'
+  const manual = {
+    ...approvedActual,
+    id,
+    method: 'manual',
+    diff: {
+      ...approvedActual.diff,
+      after: { ...approvedActual.diff.after, evidence: [], manualRevisionId: id },
+    },
+    constraintCheck: { status: 'unknown' as const, explanation: MANUAL_UNVERIFIED },
+    confirmation: {
+      source: 'https://example.com/hours',
+      checked: '訪問日の営業時間を確認',
+      remaining: '臨時休業の有無',
+    },
+  }
+  setup(undefined, { revisions: [approvedActual, manual] })
+  const history = within(screen.getByRole('region', { name: '変更の履歴' }))
+  const [automatic, manualRow] = history.getAllByRole('listitem')
+  expect(within(automatic).getByText('承認済み（学びの材料にします）')).toBeTruthy()
+  expect(within(automatic).queryByText('本人確認による採用')).toBeNull()
+  const record = within(manualRow)
+  expect(record.getByText('本人確認による採用')).toBeTruthy()
+  expect(record.getByText(/外部照合の判定：未確認/)).toBeTruthy()
+  expect(record.getByText(manual.confirmation.source)).toBeTruthy()
+  expect(record.getByText(manual.confirmation.checked)).toBeTruthy()
+  expect(record.getByText(manual.confirmation.remaining)).toBeTruthy()
+})
 
 const feedback = () => screen.getByLabelText(/感想・変更した理由/)
 const makeButton = () => screen.getByRole('button', { name: /学びの候補を作/ })

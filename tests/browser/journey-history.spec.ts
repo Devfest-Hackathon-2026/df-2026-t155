@@ -1,5 +1,6 @@
 import { expect, test, type BrowserContext } from '@playwright/test'
 
+import { manualOperationId } from '../../src/domain/manual-revision'
 import { sampleRevision, sampleTrip } from '../../src/domain/samples'
 import { unresolvedApplyStorageKey } from '../../src/features/revision-review/unresolved-apply'
 
@@ -679,3 +680,130 @@ test('WebKitでNext.jsが同じURLの履歴を更新しても、Back／Forward�
     })
   }
 })
+
+for (const lostResponse of [false, true]) {
+  test(
+    lostResponse
+      ? '通信断で再読み込みした後も同じ手動承認を再送して復旧できる'
+      : 'モバイル幅で未確認候補を自分で確認し、本人の判断で適用できる',
+    async ({ context, page }) => {
+      await mockJourney(context, [trip])
+      const target = trip.stops[1]
+      const grantId = `manual-${sampleRevision.id}`
+      const token = `m2.e30.${'A'.repeat(43)}`
+      const candidate = {
+        ...sampleRevision,
+        reason: '訪問先を見直す',
+        context: { phase: 'planning' },
+        diff: {
+          before: target,
+          after: {
+            ...target,
+            name: '本人が確認した候補',
+            placeId: 'fixture-candidate',
+            evidence: [],
+          },
+        },
+        constraintCheck: {
+          status: 'unknown',
+          explanation: '訪問日の営業時間を確認できませんでした。',
+        },
+      }
+      const confirmation = {
+        source: 'https://example.com/hours',
+        checked: '訪問日の営業時間',
+        remaining: '臨時休業',
+      }
+      const id = await manualOperationId({ id: grantId, token }, confirmation)
+      const changedStop = { ...candidate.diff.after, manualRevisionId: id }
+      const updated = {
+        ...trip,
+        version: trip.version + 1,
+        stops: trip.stops.map((stop, index) => (index === 1 ? changedStop : stop)),
+      }
+      await context.route('**/api/trips/revise', (route) =>
+        route.fulfill({
+          json: {
+            status: 'proposed',
+            revisions: [candidate],
+            manualGrants: { [candidate.id]: { id: grantId, token } },
+          },
+        }),
+      )
+      let approvals = 0
+      await context.route(`**/api/trips/${trip.id}/revisions/${id}/manual-apply`, (route) => {
+        approvals += 1
+        expect(route.request().postDataJSON()).toEqual({
+          expectedVersion: trip.version,
+          token,
+          confirmation,
+          confirm: true,
+        })
+        if (lostResponse && approvals === 1) return route.abort()
+        return route.fulfill({
+          json: {
+            status: lostResponse ? 'already_applied' : 'applied',
+            appliedTripVersion: updated.version,
+            trip: updated,
+            revision: {
+              ...candidate,
+              id,
+              method: 'manual',
+              confirmation,
+              approval: { status: 'approved', decidedAt: new Date().toISOString() },
+              diff: { before: target, after: changedStop },
+            },
+          },
+        })
+      })
+
+      await page.setViewportSize({ width: 320, height: 740 })
+      await page.addInitScript(() =>
+        localStorage.setItem('groundtrip:welcome-completed:v1', 'true'),
+      )
+      await page.goto('/access#ticket=' + 'a'.repeat(43))
+      await page.waitForURL('/')
+      const openSavedTrip = async () => {
+        await page.getByRole('button', { name: 'しおり' }).click()
+        await page.getByRole('button', { name: '保存した旅程で旅行を続ける' }).click()
+        await page.getByRole('button').filter({ hasText: trip.region }).click()
+      }
+      await openSavedTrip()
+      await page
+        .getByRole('button', {
+          name: new RegExp(`${target.plannedStartTime}から${target.durationMinutes}分`),
+        })
+        .click()
+      await page.getByRole('dialog').getByRole('button', { name: 'この予定だけ変更' }).click()
+      await page.getByLabel('修正理由（必須）').fill(candidate.reason)
+      await page.getByRole('button', { name: '変更候補を探す' }).click()
+      await page.getByRole('button', { name: '自分で確認する' }).click()
+      await expect(page.getByText('システムの判定：未確認')).toBeVisible()
+      await page.getByLabel(/確認した情報源/).fill(confirmation.source)
+      await page.getByLabel('自分で確認した内容').fill(confirmation.checked)
+      await page.getByLabel('確認できなかった事項（任意）').fill(confirmation.remaining)
+      await page.getByRole('button', { name: '本人の確認記録を確認する' }).click()
+      await expect(page.getByText(confirmation.source)).toBeVisible()
+      await expect(page.getByText(confirmation.remaining)).toBeVisible()
+      expect(approvals).toBe(0)
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(320)
+      await page.getByRole('button', { name: '本人の判断で承認して適用' }).click()
+      if (lostResponse) {
+        await expect(
+          page.getByRole('alert').filter({ hasText: '適用結果を確認できませんでした' }),
+        ).toBeVisible()
+        await page.reload()
+        await openSavedTrip()
+        await page.getByRole('button', { name: '同じ承認内容で再送する' }).click()
+      }
+
+      const route = page.locator('ol[aria-label="旅程の路線図"]:visible')
+      await expect(route).toContainText('本人の確認で採用')
+      await expect(route).toContainText(changedStop.name)
+      await expect(route).toContainText(trip.stops[0].name)
+      await expect(route).toContainText(trip.stops[2].name)
+      await expect(route).not.toContainText(target.name)
+      expect(approvals).toBe(lostResponse ? 2 : 1)
+    },
+  )
+}

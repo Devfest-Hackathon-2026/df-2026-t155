@@ -4,6 +4,8 @@ import {
   ApprovedLearningSchema,
   ConstraintCheckSchema,
   LearningSchema,
+  matchesRevisionReportTarget,
+  revisionTargetRestriction,
   ReviseTripRequestSchema,
   RevisionProposalTokenSchema,
   RevisionReasonSchema,
@@ -24,6 +26,7 @@ import {
   TripRegionSchema,
   TripStopNameSchema,
 } from '@/domain/trip-write-limits'
+import { ManualConfirmationSchema } from '@/domain/manual-revision'
 import { IdSchema, TextSchema, TimestampSchema } from '@/domain/primitives'
 import { MAX_LEARNING_CONTENT_LENGTH } from '@/lib/learnings/lifecycle'
 import { LEARNING_LIMIT } from './learning-limit'
@@ -49,13 +52,20 @@ const WriteStopSchema = StopSchema.safeExtend({
   evidence: StopSchema.shape.evidence.max(16),
 })
 
+const UnappliedStopSchema = WriteStopSchema.refine(
+  ({ manualRevisionId }) => manualRevisionId === undefined,
+)
+
 // 書き込みの上限は既存文書の読み取りには適用しない。
 export const CreateTripBodySchema = TripSchema.safeExtend({
   id: TripIdSchema,
   version: z.literal(0),
   region: TripRegionSchema,
   preferences: TripPreferencesSchema,
-  stops: z.array(WriteStopSchema).min(3).max(4),
+  stops: z
+    .array(WriteStopSchema.refine(({ manualRevisionId }) => manualRevisionId === undefined))
+    .min(3)
+    .max(4),
   learningApplications: z
     .array(
       TripSchema.shape.learningApplications.element.safeExtend({
@@ -88,7 +98,7 @@ export const SaveRevisionBodySchema = PendingRevisionSchema.safeExtend({
   context: PendingRevisionSchema.shape.context.refine(
     (context) => context.phase === 'planning' || context.report.description.length <= 1000,
   ),
-  diff: z.strictObject({ before: WriteStopSchema, after: WriteStopSchema }),
+  diff: z.strictObject({ before: WriteStopSchema, after: UnappliedStopSchema }),
   travelModes: RevisionTravelModesSchema.optional(),
   proposalToken: RevisionProposalTokenSchema.optional(),
 })
@@ -123,13 +133,70 @@ const UncheckedRevisionRecordSchema = z.strictObject({
 const hasValidRevisionDiff = (revision: z.infer<typeof UncheckedRevisionRecordSchema>) =>
   PendingRevisionSchema.safeParse({ ...revision, approval: { status: 'pending' } }).success
 
-export const SavedRevisionSchema = UncheckedRevisionRecordSchema.refine(hasValidRevisionDiff)
+export const SavedAutomaticRevisionSchema =
+  UncheckedRevisionRecordSchema.refine(hasValidRevisionDiff)
+
+export const ManualRevisionSchema = z
+  .strictObject({
+    ...RevisionSchema.shape,
+    method: z.literal('manual'),
+    confirmation: ManualConfirmationSchema,
+    constraintCheck: ConstraintCheckSchema.extend({ status: z.literal('unknown') }),
+    approval: z.strictObject({ status: z.literal('approved'), decidedAt: TimestampSchema }),
+  })
+  .refine(
+    ({ id, targetStopId, context, diff: { before, after } }) =>
+      matchesRevisionReportTarget(context, targetStopId) &&
+      (context.phase !== 'on_site' || context.report.kind === 'actual') &&
+      before.id === targetStopId &&
+      after.id === targetStopId &&
+      revisionTargetRestriction(before) === null &&
+      revisionTargetRestriction(after) === null &&
+      before.name !== after.name &&
+      before.kind === after.kind &&
+      before.plannedStartTime === after.plannedStartTime &&
+      before.durationMinutes === after.durationMinutes &&
+      after.evidence.length === 0 &&
+      after.manualRevisionId === id,
+  )
+
+export const SavedRevisionSchema = z.union([SavedAutomaticRevisionSchema, ManualRevisionSchema])
 
 // 振り返りは照合を含む候補と、承認履歴を保持した再照合前の保存済み記録を扱う。
 export const ReflectionRevisionSchema = z.union([RevisionSchema, SavedRevisionSchema])
 const AppliedRevisionSchema = UncheckedRevisionRecordSchema.extend({
   approval: z.strictObject({ status: z.literal('approved'), decidedAt: TimestampSchema }),
 }).refine(hasValidRevisionDiff)
+
+export const ManualApplyResponseSchema = z
+  .strictObject({
+    status: z.enum(['applied', 'already_applied']),
+    appliedTripVersion: VersionSchema.positive(),
+    trip: TripSchema,
+    revision: ManualRevisionSchema,
+  })
+  .refine(
+    ({ status, appliedTripVersion, trip, revision }) =>
+      trip.id === revision.tripId &&
+      appliedTripVersion === revision.baseTripVersion + 1 &&
+      (status === 'applied'
+        ? trip.version === appliedTripVersion
+        : trip.version >= appliedTripVersion) &&
+      (trip.version > appliedTripVersion ||
+        trip.stops.some(
+          (stop) => stop.id === revision.targetStopId && stop.manualRevisionId === revision.id,
+        )),
+  )
+
+export const ManualRecoveryResponseSchema = z.union([
+  ManualApplyResponseSchema,
+  z.strictObject({
+    status: z.literal('not_applied'),
+    trip: TripSchema,
+    revisionId: PathIdSchema,
+    baseTripVersion: VersionSchema,
+  }),
+])
 
 export const ApplyRevisionBodySchema = z.strictObject({
   expectedVersion: VersionSchema,
@@ -210,6 +277,7 @@ export type CreateTripBody = z.infer<typeof CreateTripBodySchema>
 export type PendingRevision = z.infer<typeof PendingRevisionSchema>
 export type SaveRevisionBody = z.infer<typeof SaveRevisionBodySchema>
 export type SavedRevision = z.infer<typeof SavedRevisionSchema>
+export type ManualApplyResult = z.infer<typeof ManualApplyResponseSchema>
 export type ApplyRevisionResult = z.infer<typeof ApplyRevisionResponseSchema>
 export type VersionedLearning = z.infer<typeof VersionedLearningSchema>
 export type LearningSelection = z.infer<typeof LearningSelectionSchema>

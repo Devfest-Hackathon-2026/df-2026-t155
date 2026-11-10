@@ -382,6 +382,9 @@ function Route({ stops, currentIndex }: { stops: readonly Stop[]; currentIndex: 
               <p className="mt-1 flex flex-wrap items-center gap-1.5">
                 {stop.isFixed && <FixedChip />}
                 <ProgressChip progress={progress} />
+                {stop.manualRevisionId && (
+                  <span className="text-xs font-bold">本人の確認で採用</span>
+                )}
               </p>
             </div>
           </li>

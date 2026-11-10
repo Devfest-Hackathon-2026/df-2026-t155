@@ -1,5 +1,6 @@
 import 'server-only'
 
+import type { DocumentSnapshot } from 'firebase-admin/firestore'
 import { z } from 'zod'
 
 import {
@@ -12,16 +13,18 @@ import {
   type Stop,
   type Trip,
 } from '@/domain'
+import { MANUAL_UNVERIFIED } from '@/domain/manual-revision'
 import type { Actor } from '@/lib/auth/server'
 
 import {
   ApproveLearningBodySchema,
   PendingRevisionSchema,
+  ManualRevisionSchema,
   RecordIdSchema,
   RevisionTravelModesSchema,
   RevisionProofContextSchema,
   RevisionReportStatesSchema,
-  SavedRevisionSchema,
+  SavedAutomaticRevisionSchema,
   VersionedLearningSchema,
   type PendingRevision,
   type VersionedLearning,
@@ -38,6 +41,7 @@ const StopFieldsDtoSchema = z.strictObject(StopSchema.shape).pick({
   plannedStartTime: true,
   durationMinutes: true,
   isFixed: true,
+  manualRevisionId: true,
 })
 const PlanStopDtoSchema = StopFieldsDtoSchema.extend({ planName: StopSchema.shape.name })
 const StopDtoSchema = z.union([
@@ -93,11 +97,34 @@ const OwnedFieldsSchema = z.strictObject({
   ownerUid: z.string().min(1).max(128),
 })
 
+const ManualApplyEpochSchema = z.int().nonnegative()
+
+export function manualApplyEpoch(snapshot: DocumentSnapshot) {
+  return parseStored(ManualApplyEpochSchema, snapshot.get('manualApplyEpoch') ?? 0)
+}
+
 const TripDocumentSchema = OwnedFieldsSchema.extend({
   trip: TripDtoSchema,
   revisionReports: RevisionReportStatesSchema.optional(),
+  manualApplyEpoch: ManualApplyEpochSchema.optional(),
 })
 const RevisionDocumentSchema = OwnedFieldsSchema.extend({ revision: RevisionDtoSchema })
+const ManualRevisionDocumentSchema = OwnedFieldsSchema.extend({
+  revision: RevisionDtoSchema.pick({
+    id: true,
+    tripId: true,
+    baseTripVersion: true,
+    targetStopId: true,
+    reason: true,
+    context: true,
+    diff: true,
+  }).extend({
+    method: ManualRevisionSchema.shape.method,
+    confirmation: ManualRevisionSchema.shape.confirmation,
+    approval: ManualRevisionSchema.shape.approval,
+    requestHash: z.string().regex(/^[0-9a-f]{64}$/),
+  }),
+})
 const LearningDocumentSchema = z.discriminatedUnion('state', [
   OwnedFieldsSchema.extend({
     state: z.literal('approved'),
@@ -133,6 +160,7 @@ export function toStopDto(stop: Stop): z.infer<typeof PlanStopDtoSchema> {
     plannedStartTime: stop.plannedStartTime,
     durationMinutes: stop.durationMinutes,
     isFixed: stop.isFixed,
+    ...(stop.manualRevisionId === undefined ? {} : { manualRevisionId: stop.manualRevisionId }),
   })
 }
 
@@ -215,7 +243,7 @@ export function readRevisionDocument(data: unknown, tripId: string, id: string) 
     travelModes,
     proposalExpiresAt,
     proposalContext,
-    revision: parseStored(SavedRevisionSchema, {
+    revision: parseStored(SavedAutomaticRevisionSchema, {
       ...revision,
       ...UNCHECKED_REVISION,
       ...(revision.approval.status === 'approved'
@@ -229,8 +257,64 @@ export function readRevisionDocument(data: unknown, tripId: string, id: string) 
   }
 }
 
+export function toManualRevisionDocument(
+  actor: Actor,
+  input: z.infer<typeof ManualRevisionSchema>,
+  requestHash: string,
+) {
+  const revision = parseStored(ManualRevisionSchema, input)
+  return parseStored(ManualRevisionDocumentSchema, {
+    ownerUid: actor.uid,
+    revision: {
+      id: revision.id,
+      tripId: revision.tripId,
+      baseTripVersion: revision.baseTripVersion,
+      targetStopId: revision.targetStopId,
+      reason: revision.reason,
+      context: revision.context,
+      diff: { before: toStopDto(revision.diff.before), after: toStopDto(revision.diff.after) },
+      approval: revision.approval,
+      method: revision.method,
+      confirmation: revision.confirmation,
+      requestHash,
+    },
+  })
+}
+
+export function isManualRevisionDocument(data: unknown): boolean {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'revision' in data &&
+    typeof data.revision === 'object' &&
+    data.revision !== null &&
+    'method' in data.revision &&
+    data.revision.method === 'manual'
+  )
+}
+
+export function readManualRevisionDocument(data: unknown, tripId: string, id: string) {
+  const {
+    revision: { requestHash, diff, ...revision },
+  } = parseStored(ManualRevisionDocumentSchema, data)
+  if (documentKey(revision.id) !== id || revision.tripId !== tripId) {
+    throw new PersistenceError('invalid_stored_data')
+  }
+  return {
+    requestHash,
+    revision: parseStored(ManualRevisionSchema, {
+      ...revision,
+      diff: { before: restoreStop(diff.before), after: restoreStop(diff.after) },
+      impactSummary: '本人の確認を記録して、1地点を差し替えました。',
+      constraintCheck: { status: 'unknown', explanation: MANUAL_UNVERIFIED },
+    }),
+  }
+}
+
 export function fromRevisionDocument(data: unknown, tripId: string, id: string) {
-  return readRevisionDocument(data, tripId, id).revision
+  return isManualRevisionDocument(data)
+    ? readManualRevisionDocument(data, tripId, id).revision
+    : readRevisionDocument(data, tripId, id).revision
 }
 
 export function toLearningDocument(actor: Actor, record: VersionedLearning) {

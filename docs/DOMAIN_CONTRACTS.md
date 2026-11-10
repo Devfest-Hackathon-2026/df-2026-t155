@@ -50,6 +50,7 @@ Geminiの説明自体を検証済み根拠にしない。`user_report`も客観�
 `Revision.constraintCheck`は決定論的制約検証の結果であり、根拠の整合状態とは独立する。
 `not_checked`／`satisfied`／`violated`／`unknown`を区別する。
 未検証を既定の成立扱いにせず、`satisfied`以外の承認済みRevisionは拒否する。
+本人確認による適用は [手動適用専用の保存契約](FIRESTORE_PERSISTENCE.md#未確認候補を本人の判断で適用) で扱う。
 この初期実装は判定エンジンを実装せず、宣言された状態と形の矛盾だけを検証する。
 
 承認は`pending`／`approved`／`rejected`。承認・却下にはタイムゾーン付きの決定日時が必要。

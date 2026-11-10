@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { ManualRevisionGrantSchema } from './manual-revision'
 import { ApprovedLearningSchema, StopSchema, TripSchema } from './models'
 import { LearningSaveProofSchema } from './learning-trip-protocol'
 import {
@@ -152,11 +153,24 @@ export const ReviseTripResponseSchema = z.union([
       // 任意。移動区間の比較は、Revisionごとに高々1件。
       comparisons: z.array(TravelComparisonSchema).optional(),
       proposalTokens: z.record(IdSchema, RevisionProposalTokenSchema).optional(),
+      manualGrants: z.record(IdSchema, ManualRevisionGrantSchema).optional(),
     })
     .superRefine((response, ctx) => {
       const byRevision = new Map(response.revisions.map((revision) => [revision.id, revision]))
       if (Object.keys(response.proposalTokens ?? {}).some((id) => !byRevision.has(id))) {
         ctx.addIssue({ code: 'custom', path: ['proposalTokens'], message: '候補IDが一致しません' })
+      }
+      if (
+        Object.entries(response.manualGrants ?? {}).some(
+          ([id, grant]) =>
+            grant.id !== `manual-${id}` || byRevision.get(id)?.constraintCheck.status !== 'unknown',
+        )
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['manualGrants'],
+          message: '未確認の候補を指定してください',
+        })
       }
       const seen = new Set<string>()
       response.comparisons?.forEach((comparison, index) => {

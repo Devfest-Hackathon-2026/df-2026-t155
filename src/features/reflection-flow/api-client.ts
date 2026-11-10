@@ -317,7 +317,7 @@ export function isCompleteList(listInfo: ListInfo, count: number): boolean {
 }
 
 type RequestOptions = {
-  method?: 'GET' | 'POST'
+  method?: 'GET' | 'POST' | 'PATCH'
   body?: unknown
   signal?: AbortSignal
   fetchFn?: typeof fetch
@@ -381,12 +381,12 @@ export async function authorizedJson<T>(
       text = await response.text()
     } catch {
       // fetchを開始した後の通信断は、サーバーが処理を終えた可能性がある。
-      operation.assertCurrent(method === 'POST' ? 'unknown' : 'not_sent')
+      operation.assertCurrent(method === 'GET' ? 'not_sent' : 'unknown')
       throw new ReflectionApiError(INTERRUPTED_MESSAGE, undefined, undefined, 'unknown')
     }
     // 応答を採用する直前にも、要求を開始したUser世代が続いているか確認する。
     // POST後に世代が変わっていた場合、サーバー側で保存済みの可能性があるため結果不明。
-    const outcome = method === 'POST' ? 'unknown' : 'not_sent'
+    const outcome = method === 'GET' ? 'not_sent' : 'unknown'
     await assertCurrentSessionScope(scope, outcome)
     operation.assertCurrent(outcome)
     if (signal?.aborted)

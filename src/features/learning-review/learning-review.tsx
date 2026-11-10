@@ -12,6 +12,7 @@ import {
 } from 'react'
 
 import type { ApprovedLearning, Learning, Revision, Trip } from '@/domain'
+import { ManualRevisionSchema } from '@/server/persistence/contracts'
 import { observeAuthState } from '@/lib/auth/client'
 import {
   classifyProtectedHeaderError,
@@ -96,6 +97,26 @@ function revisionKindLabel(revision: Revision): string {
   return isSimulated(revision)
     ? '模擬報告（デモ用の想定。実際の出来事ではありません）'
     : '現地の実際の報告'
+}
+
+function ManualRevisionHistory({ revision }: { revision: Revision }) {
+  const result = ManualRevisionSchema.safeParse(revision)
+  if (!result.success) return null
+  const { confirmation, constraintCheck } = result.data
+  return (
+    <div className="space-y-1">
+      <p className="font-semibold">本人確認による採用</p>
+      <p>外部照合の判定：未確認。{constraintCheck.explanation}</p>
+      <dl className="whitespace-pre-wrap">
+        <dt className="font-semibold">情報源（本人申告）</dt>
+        <dd>{confirmation.source}</dd>
+        <dt className="font-semibold">確認内容（本人申告）</dt>
+        <dd>{confirmation.checked}</dd>
+        <dt className="font-semibold">残る未確認事項（本人申告）</dt>
+        <dd>{confirmation.remaining ?? '記録なし'}</dd>
+      </dl>
+    </div>
+  )
 }
 
 const REVISION_MATERIAL_LABEL = {
@@ -437,6 +458,7 @@ export function LearningReview({
                 <p>理由：{revision.reason}</p>
                 <p>報告の種類：{revisionKindLabel(revision)}</p>
                 <p>承認の状態：{APPROVAL_LABEL[revision.approval.status]}</p>
+                {'method' in revision && <ManualRevisionHistory revision={revision} />}
                 <p>{REVISION_MATERIAL_LABEL[revisionMaterialStatus(revision)]}</p>
               </li>
             ))}

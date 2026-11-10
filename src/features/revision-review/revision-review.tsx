@@ -8,14 +8,17 @@ import { LockIcon } from '@/features/trip-map/icons'
 import { StatusBadge } from '@/features/trip-map/evidence-badge'
 import { routeStopKind, type RouteMeta } from '@/features/trip-map/model'
 import { RouteMap } from '@/features/trip-map/route-map'
-import type { ApplyRevisionResult } from '@/server/persistence/contracts'
+import type { ManualApplyBody } from '@/domain/manual-revision'
 
 import {
   confirmedTrip,
   readDemoRevisionProposal,
   readRevisionProposal,
   sameTrip,
+  type ApplyManualRevision,
+  type ApplyOutcome,
   type ApplyRevision,
+  type RevisionApplyReceipt,
   type GenerateRevisions,
   type RevisionProposal,
   type RevisionRequest,
@@ -27,6 +30,7 @@ import {
   ConstraintBadge,
   sharedRevisionBlockers,
 } from './candidate-comparison'
+import { ManualConfirmationForm } from './manual-confirmation-form'
 import { checkStopEvidence } from './proposal-checks'
 
 const generationMessages = {
@@ -94,6 +98,7 @@ interface RevisionReviewProps {
   generate: GenerateRevisions
   generationAvailable?: boolean
   apply?: ApplyRevision
+  applyManual?: ApplyManualRevision
   onDemoApprove?: (revision: Revision) => void
   applyUnresolved?: boolean
   // 適用できない理由。applyが無いときの承認ボタンの説明に使う（省略時は「未接続」）。
@@ -101,7 +106,7 @@ interface RevisionReviewProps {
   onCancel: () => void
   onLeaveWhileApplying: () => void
   onApplyFailureAfterLeave: (message?: string) => void
-  onApplied: (trip: Trip, receipt?: ApplyRevisionResult, revisionId?: string) => void
+  onApplied: (trip: Trip, receipt?: RevisionApplyReceipt, revisionId?: string) => void
   onApplyUnresolvedChange: (unresolved: boolean, revisionId?: string) => void
   // 現地報告は修正理由と文脈をまとめて受け取り、旅行前と同じ修正エンジンで扱う。
   onSiteReport?: {
@@ -123,6 +128,7 @@ export function RevisionReview({
   generate,
   generationAvailable = true,
   apply,
+  applyManual,
   onDemoApprove,
   applyUnresolved = false,
   applyUnavailableReason,
@@ -148,6 +154,7 @@ export function RevisionReview({
   > | null>(null)
   const [review, setReview] = useState<Review | null>(null)
   const [confirming, setConfirming] = useState(false)
+  const [manual, setManual] = useState(false)
   const [detailed, setDetailed] = useState(false)
   const id = useId()
   const [isGenerating, setIsGenerating] = useState(false)
@@ -161,11 +168,22 @@ export function RevisionReview({
   const preferencesField = useRef<HTMLTextAreaElement>(null)
   const submitButton = useRef<HTMLButtonElement>(null)
   const cancelButton = useRef<HTMLButtonElement>(null)
-  const stage = !review ? 'reason' : detailed ? 'detail' : confirming ? 'confirm' : 'preview'
+  const stage = !review
+    ? 'reason'
+    : manual
+      ? 'manual'
+      : detailed
+        ? 'detail'
+        : confirming
+          ? 'confirm'
+          : 'preview'
 
-  const previewReturn = useRef<{ control: 'detail' | 'confirm'; top: number } | null>(null)
+  const previewReturn = useRef<{ control: 'detail' | 'confirm' | 'manual'; top: number } | null>(
+    null,
+  )
   const previewDetail = useRef<HTMLButtonElement>(null)
   const previewConfirm = useRef<HTMLButtonElement>(null)
+  const previewManual = useRef<HTMLButtonElement>(null)
   const shownStage = useRef<typeof stage | null>(null)
 
   useLayoutEffect(() => {
@@ -187,7 +205,12 @@ export function RevisionReview({
     if (stage === 'preview' && previewReturn.current) {
       const { control, top } = previewReturn.current
       previewReturn.current = null
-      const trigger = control === 'detail' ? previewDetail.current : previewConfirm.current
+      const trigger =
+        control === 'detail'
+          ? previewDetail.current
+          : control === 'manual'
+            ? previewManual.current
+            : previewConfirm.current
       trigger?.focus({ preventScroll: true })
       if (window.scrollY !== top) window.scrollTo({ top, behavior: 'instant' })
       return
@@ -195,9 +218,10 @@ export function RevisionReview({
     heading.current?.focus()
   }, [active, stage])
 
-  const openPreviewStep = (control: 'detail' | 'confirm') => {
+  const openPreviewStep = (control: 'detail' | 'confirm' | 'manual') => {
     previewReturn.current = { control, top: window.scrollY }
     if (control === 'detail') setDetailed(true)
+    else if (control === 'manual') setManual(true)
     else setConfirming(true)
   }
 
@@ -301,6 +325,7 @@ export function RevisionReview({
         : readRevisionProposal(result, request)
       if (proposal) {
         setConfirming(false)
+        setManual(false)
         setDetailed(false)
         previewReturn.current = null
         setReview({ request, proposal, selected: 0 })
@@ -323,6 +348,17 @@ export function RevisionReview({
   const simulated =
     candidate?.context.phase === 'on_site' && candidate.context.report.kind === 'simulated'
   const proposalToken = candidate && review?.proposal.proposalTokens?.[candidate.id]
+  const manualGrant = candidate && review?.proposal.manualGrants?.[candidate.id]
+  const isManuallyApprovable = (revision: Revision) =>
+    Boolean(
+      !onDemoApprove &&
+      applyManual &&
+      review?.proposal.manualGrants?.[revision.id] &&
+      revision.constraintCheck.status === 'unknown' &&
+      !(revision.context.phase === 'on_site' && revision.context.report.kind === 'simulated') &&
+      !requiresLatestTrip,
+    )
+  const canApproveManually = Boolean(candidate && isManuallyApprovable(candidate))
   const isApprovable = (revision: Revision) =>
     generationAvailable &&
     revision.constraintCheck.status === 'satisfied' &&
@@ -331,6 +367,13 @@ export function RevisionReview({
     (Boolean(onDemoApprove) || Boolean(apply && review?.proposal.proposalTokens?.[revision.id]))
   const canApprove = Boolean(candidate && isApprovable(candidate))
   const approvableCount = review?.proposal.revisions.filter(isApprovable).length ?? 0
+  const manualCount = review?.proposal.revisions.filter(isManuallyApprovable).length ?? 0
+  const candidateApprovalLabel = (revision: Revision) =>
+    isApprovable(revision)
+      ? '承認可能'
+      : isManuallyApprovable(revision)
+        ? '本人確認が可能'
+        : '承認不可'
   const blockers =
     candidate && !constraintSatisfied ? sharedRevisionBlockers(trip, candidate, comparison) : []
   const canReviewConditions = blockers.length === 0
@@ -414,6 +457,39 @@ export function RevisionReview({
       setApplyFailure({ status: 'conflict' })
       return
     }
+    await performApply(decision.revision.id, async (signal) => {
+      const result = await apply(structuredClone(decision), signal)
+      if (result.status !== 'applied') return result
+      const nextTrip = confirmedTrip(
+        decision.request.trip,
+        decision.revision,
+        result.trip,
+        result.receipt,
+      )
+      return nextTrip ? { ...result, trip: nextTrip } : { status: 'uncertain' }
+    })
+  }
+
+  const approveManually = async (
+    confirmation: ManualApplyBody['confirmation'],
+    operationId: string,
+  ) => {
+    if (!canApproveManually || !candidate || !manualGrant || !applyManual || activeApply.current)
+      return
+    const decision = structuredClone({
+      trip,
+      revision: candidate,
+      grant: manualGrant,
+      operationId,
+      confirmation,
+    })
+    await performApply(operationId, (signal) => applyManual(decision, signal))
+  }
+
+  const performApply = async (
+    revisionId: string,
+    execute: (signal: AbortSignal) => Promise<ApplyOutcome>,
+  ) => {
     const attempt = new AbortController()
     activeApply.current = attempt
     leftWhileApplying.current = false
@@ -421,7 +497,7 @@ export function RevisionReview({
     setIsApplying(true)
     try {
       // 永続ロックの記録に失敗したらHTTP送信を開始しない。
-      onApplyUnresolvedChange(true, decision.revision.id)
+      onApplyUnresolvedChange(true, revisionId)
     } catch (error) {
       activeApply.current = null
       setIsApplying(false)
@@ -433,22 +509,12 @@ export function RevisionReview({
     }
     let failure: ApplyFailure | undefined
     try {
-      const result = await apply(structuredClone(decision), attempt.signal)
+      const result = await execute(attempt.signal)
       if (activeApply.current !== attempt) return
       if (result.status === 'applied') {
-        const nextTrip = confirmedTrip(
-          decision.request.trip,
-          decision.revision,
-          result.trip,
-          result.receipt,
-        )
-        if (nextTrip) {
-          onApplied(nextTrip, result.receipt, decision.revision.id)
-        } else {
-          failure = { status: 'uncertain' }
-        }
+        onApplied(result.trip, result.receipt, revisionId)
       } else {
-        if (result.status !== 'uncertain') onApplyUnresolvedChange(false, decision.revision.id)
+        if (result.status !== 'uncertain') onApplyUnresolvedChange(false, revisionId)
         failure = result
       }
     } catch {
@@ -484,7 +550,9 @@ export function RevisionReview({
               ? '候補を選ぶ'
               : stage === 'detail'
                 ? '詳しく比較'
-                : '変更内容の確認'
+                : stage === 'manual'
+                  ? '自分で確認する'
+                  : '変更内容の確認'
         }
         subtitle={
           stage === 'reason'
@@ -494,20 +562,25 @@ export function RevisionReview({
               : review?.request.reason
         }
         backLabel={
-          stage === 'confirm'
+          stage === 'confirm' || stage === 'manual'
             ? '候補の選択へ戻る'
             : stage === 'detail'
               ? '比較から戻る'
               : '部分修正を閉じる'
         }
         onBack={
-          stage === 'confirm'
-            ? () => setConfirming(false)
-            : stage === 'detail'
-              ? () => setDetailed(false)
-              : onCancel
+          stage === 'manual'
+            ? () => setManual(false)
+            : stage === 'confirm'
+              ? () => setConfirming(false)
+              : stage === 'detail'
+                ? () => setDetailed(false)
+                : onCancel
         }
-        disabled={isApplying || ((stage === 'confirm' || stage === 'detail') && requiresLatestTrip)}
+        disabled={
+          isApplying ||
+          ((stage === 'confirm' || stage === 'detail' || stage === 'manual') && requiresLatestTrip)
+        }
       />
 
       {stage === 'reason' && (
@@ -747,7 +820,7 @@ export function RevisionReview({
                 type="button"
                 aria-pressed={review.selected === index}
                 disabled={isApplying}
-                aria-label={`${candidateLabel(index)} ${revision.diff.after.name} ${isApprovable(revision) ? '承認可能' : '承認不可'}`}
+                aria-label={`${candidateLabel(index)} ${revision.diff.after.name} ${candidateApprovalLabel(revision)}`}
                 className="gt-revision-ticket flex min-h-28 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl border border-gt-rule bg-gt-paper p-2 text-xs font-semibold aria-pressed:border-gt-preview aria-pressed:bg-gt-preview-bg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview"
                 onClick={() => {
                   setReview({ ...review, selected: index })
@@ -761,7 +834,7 @@ export function RevisionReview({
                   {revision.diff.after.name}
                 </span>
                 <span className={isApprovable(revision) ? 'text-gt-ok' : 'text-gt-muted'}>
-                  {isApprovable(revision) ? '承認可能' : '承認不可'}
+                  {candidateApprovalLabel(revision)}
                 </span>
                 <span className="min-h-4 text-gt-preview">
                   {review.selected === index ? '選択中' : ' '}
@@ -788,10 +861,13 @@ export function RevisionReview({
             <h3 className="text-lg font-bold">変える前に、根拠を比較</h3>
             <p className="text-sm font-semibold" role="status">
               {approvableCount === 0
-                ? '承認できる候補はありません'
+                ? manualCount > 0
+                  ? '自動照合で承認できる候補はありません'
+                  : '承認できる候補はありません'
                 : `承認可能 ${approvableCount}件`}
-              {review.proposal.revisions.length > approvableCount &&
-                ` ／ 承認不可 ${review.proposal.revisions.length - approvableCount}件`}
+              {manualCount > 0 && ` ／ 本人確認が可能 ${manualCount}件`}
+              {review.proposal.revisions.length > approvableCount + manualCount &&
+                ` ／ 承認不可 ${review.proposal.revisions.length - approvableCount - manualCount}件`}
             </p>
             <section className="space-y-3" aria-label="選択中の候補の概要">
               <div className="gt-revision-selected flex flex-wrap items-center gap-2 p-2.5">
@@ -815,7 +891,11 @@ export function RevisionReview({
                 </div>
               )}
               {!constraintSatisfied && (
-                <p className="text-sm">{candidate.constraintCheck.explanation}</p>
+                <p className="text-sm">
+                  {canApproveManually
+                    ? '自動照合では未確認の事項があります。本人が調べた情報を記録できます。'
+                    : candidate.constraintCheck.explanation}
+                </p>
               )}
               {constraintSatisfied && approvalNote && <p className="text-sm">{approvalNote}</p>}
               {(conditionsHint ||
@@ -838,6 +918,16 @@ export function RevisionReview({
                     {reviewConditionsLabel}
                   </button>
                 </div>
+              )}
+              {canApproveManually && (
+                <button
+                  type="button"
+                  ref={previewManual}
+                  className={secondaryClass}
+                  onClick={() => openPreviewStep('manual')}
+                >
+                  自分で確認する
+                </button>
               )}
               <button
                 type="button"
@@ -895,6 +985,26 @@ export function RevisionReview({
               変更内容を確認する
             </button>
           </div>
+        </>
+      )}
+
+      {stage === 'manual' && candidate && manualGrant && (
+        <>
+          <ManualConfirmationForm
+            revision={candidate}
+            busy={isApplying}
+            disabled={!canApproveManually}
+            grant={manualGrant}
+            onApprove={(value, operationId) => void approveManually(value, operationId)}
+          />
+          {applyFailure && (
+            <p role="alert" className="gt-notice" data-tone="error">
+              {applyMessages[applyFailure.status]} {applyFailure.message}
+            </p>
+          )}
+          <button type="button" className={secondaryClass} disabled={isApplying} onClick={onCancel}>
+            {requiresLatestTrip ? '旅程を確認' : cancelLabel}
+          </button>
         </>
       )}
 
