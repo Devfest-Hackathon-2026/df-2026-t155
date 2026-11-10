@@ -1,6 +1,8 @@
 'use client'
 
-import type { Revision } from '@/domain'
+import { useState } from 'react'
+
+import type { Revision, Trip } from '@/domain'
 import { sampleRevision } from '@/domain/samples'
 import type { GenerateRevisions, TravelSlot } from '@/features/revision-review/api-client'
 import { RevisionRouteView } from '@/features/revision-review/revision-route-view'
@@ -80,13 +82,50 @@ const demoCandidates: GenerateRevisions = async (request) => {
   }
 }
 
+function approveDemoCandidate(trip: Trip, revision: Revision): Trip | null {
+  const target = trip.stops.find(({ id }) => id === revision.targetStopId)
+  if (
+    trip.id !== sampleRouteTrip.id ||
+    trip.id !== revision.tripId ||
+    trip.version !== revision.baseTripVersion ||
+    !target ||
+    target.id !== sampleRevision.targetStopId ||
+    target.isFixed ||
+    revision.constraintCheck.status !== 'satisfied'
+  )
+    return null
+
+  return {
+    ...trip,
+    version: trip.version + 1,
+    stops: trip.stops.map((stop) => (stop.id === target.id ? revision.diff.after : stop)),
+  }
+}
+
 export function RevisionDemo() {
+  const [resetCount, setResetCount] = useState(0)
   return (
-    <RevisionRouteView
-      trip={sampleRouteTrip}
-      meta={sampleRouteMeta}
-      mock
-      generate={demoCandidates}
-    />
+    <>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4">
+        <p className="text-sm text-gt-muted">
+          このデモでは架空の旅程を操作できます。実際の保存やAPIでの適用は行いません。
+        </p>
+        <button
+          type="button"
+          className="min-h-11 text-sm font-semibold text-gt-line-strong underline underline-offset-4"
+          onClick={() => setResetCount((count) => count + 1)}
+        >
+          デモをリセット
+        </button>
+      </div>
+      <RevisionRouteView
+        key={resetCount}
+        trip={sampleRouteTrip}
+        meta={sampleRouteMeta}
+        mock
+        generate={demoCandidates}
+        simulateApproval={approveDemoCandidate}
+      />
+    </>
   )
 }

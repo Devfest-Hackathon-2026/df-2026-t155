@@ -166,11 +166,8 @@ function matchesRevisionTarget(revision: Revision, trip: Trip, target: Stop) {
   )
 }
 
-// HTTP応答と差し替えコールバックの両方で検証し、呼び出し元と参照を共有しないデータを返す。
-export function readRevisionProposal(
-  value: unknown,
-  request: RevisionRequest,
-): RevisionProposal | null {
+// 応答の構造と依頼との対応を検証し、呼び出し元と参照を共有しないデータを返す。
+function parseRevisionProposal(value: unknown, request: RevisionRequest) {
   const checked = ReviseTripResponseSchema.safeParse(value)
   if (!checked.success || checked.data.status !== 'proposed') return null
   const { revisions, comparisons } = checked.data
@@ -227,15 +224,31 @@ export function readRevisionProposal(
   )
   if (comparisonsMatch === false) return null
 
+  return { proposal: checked.data, target, previous, next, context: context.data }
+}
+
+// デモの固定データは架空の制約結果を表示する。署名付きの提案は扱わない。
+export function readDemoRevisionProposal(value: unknown, request: RevisionRequest) {
+  const parsed = parseRevisionProposal(value, request)
+  return parsed && !parsed.proposal.proposalTokens ? parsed.proposal : null
+}
+
+export function readRevisionProposal(
+  value: unknown,
+  request: RevisionRequest,
+): RevisionProposal | null {
+  const parsed = parseRevisionProposal(value, request)
+  if (!parsed) return null
+  const { proposal, target, previous, next, context } = parsed
   // 応答の申告を引き上げず、裏付けのない satisfied だけを承認不可にする。
   return {
-    ...checked.data,
-    revisions: revisions.map((revision) => {
+    ...proposal,
+    revisions: proposal.revisions.map((revision) => {
       if (revision.constraintCheck.status !== 'satisfied') return revision
-      const comparison = comparisons?.find(({ revisionId }) => revisionId === revision.id)
+      const comparison = proposal.comparisons?.find(({ revisionId }) => revisionId === revision.id)
       const check = checkCandidate(revision.diff.after, previous, next, comparison, {
         original: target,
-        context: context.data,
+        context,
       })
       return check.status === 'satisfied'
         ? revision

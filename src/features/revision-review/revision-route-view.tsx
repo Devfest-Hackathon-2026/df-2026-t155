@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
-import { revisionTargetRestriction, type Trip } from '@/domain'
+import { revisionTargetRestriction, type Revision, type Trip } from '@/domain'
 import type { RouteMeta } from '@/features/trip-map/model'
 import { reviseButtonId, ROUTE_LIST_ID, stopButtonId } from '@/features/trip-map/route-map'
 import { TripRouteView } from '@/features/trip-map/trip-route-view'
@@ -40,6 +40,7 @@ interface RevisionRouteViewProps {
   mock?: boolean
   generate?: GenerateRevisions
   apply?: ApplyRevision
+  simulateApproval?: (trip: Trip, revision: Revision) => Trip | null
   applyInFlight?: boolean
   lockManagedByApply?: boolean
   // 適用結果不明からの復旧には、最新の旅程と対象Revisionの承認記録の両方が必要。
@@ -61,6 +62,7 @@ export function RevisionRouteView({
   mock,
   generate,
   apply,
+  simulateApproval,
   applyInFlight = false,
   lockManagedByApply,
   loadLatestTrip,
@@ -71,6 +73,7 @@ export function RevisionRouteView({
   routeActions,
   active = true,
 }: RevisionRouteViewProps) {
+  const demoApproval = mock && !apply ? simulateApproval : undefined
   const [local, setLocal] = useState<{
     source: Trip
     trip: Trip
@@ -204,6 +207,10 @@ export function RevisionRouteView({
       leave('候補の適用を確認し、その後に更新された最新の旅程を表示しています。', 'success')
       return
     }
+    showChangedTrip(trip, '承認した候補が旅程に反映されました。')
+  }
+
+  const showChangedTrip = (trip: Trip, message: string) => {
     let nextMeta = current.meta
     if (nextMeta && target) {
       const nextStop = trip.stops[trip.stops.findIndex((stop) => stop.id === target.id) + 1]
@@ -219,7 +226,7 @@ export function RevisionRouteView({
       meta: nextMeta,
       applied: stop ? { stopId: stop.id, placeId: stop.placeId, version: trip.version } : undefined,
     })
-    leave('承認した候補が旅程に反映されました。', 'success')
+    leave(message, 'success')
   }
 
   // 結果不明のとき、サーバーの最新の旅程と照合して解禁するか判断する。取得に失敗しても解禁しない。
@@ -336,6 +343,21 @@ export function RevisionRouteView({
             meta={current.meta}
             generate={generate}
             apply={operationBlocked && !session.applyUnresolved ? undefined : apply}
+            onDemoApprove={
+              demoApproval
+                ? (revision) => {
+                    const trip = demoApproval(session.trip, revision)
+                    if (trip) {
+                      showChangedTrip(
+                        trip,
+                        'デモで承認した候補を、この画面の架空旅程に反映しました。',
+                      )
+                    } else {
+                      leave('デモの候補を反映できませんでした。元の旅程を表示しています。')
+                    }
+                  }
+                : undefined
+            }
             applyUnresolved={operationBlocked && !session.applyUnresolved}
             onApplyUnresolvedChange={(unresolved, revisionId) => {
               if (!ownerUid || !revisionId) throw new Error('認証状態を確認できません。')

@@ -12,6 +12,7 @@ import type { ApplyRevisionResult } from '@/server/persistence/contracts'
 
 import {
   confirmedTrip,
+  readDemoRevisionProposal,
   readRevisionProposal,
   sameTrip,
   type ApplyRevision,
@@ -93,6 +94,7 @@ interface RevisionReviewProps {
   generate: GenerateRevisions
   generationAvailable?: boolean
   apply?: ApplyRevision
+  onDemoApprove?: (revision: Revision) => void
   applyUnresolved?: boolean
   // 適用できない理由。applyが無いときの承認ボタンの説明に使う（省略時は「未接続」）。
   applyUnavailableReason?: string
@@ -121,6 +123,7 @@ export function RevisionReview({
   generate,
   generationAvailable = true,
   apply,
+  onDemoApprove,
   applyUnresolved = false,
   applyUnavailableReason,
   onCancel,
@@ -293,7 +296,9 @@ export function RevisionReview({
     activeGeneration.current = null
     setIsGenerating(false)
     if (result.status === 'proposed') {
-      const proposal = readRevisionProposal(result, request)
+      const proposal = onDemoApprove
+        ? readDemoRevisionProposal(result, request)
+        : readRevisionProposal(result, request)
       if (proposal) {
         setConfirming(false)
         setDetailed(false)
@@ -319,12 +324,11 @@ export function RevisionReview({
     candidate?.context.phase === 'on_site' && candidate.context.report.kind === 'simulated'
   const proposalToken = candidate && review?.proposal.proposalTokens?.[candidate.id]
   const isApprovable = (revision: Revision) =>
-    Boolean(apply) &&
     generationAvailable &&
     revision.constraintCheck.status === 'satisfied' &&
     !requiresLatestTrip &&
     !(revision.context.phase === 'on_site' && revision.context.report.kind === 'simulated') &&
-    Boolean(review?.proposal.proposalTokens?.[revision.id])
+    (Boolean(onDemoApprove) || Boolean(apply && review?.proposal.proposalTokens?.[revision.id]))
   const canApprove = Boolean(candidate && isApprovable(candidate))
   const approvableCount = review?.proposal.revisions.filter(isApprovable).length ?? 0
   const blockers =
@@ -371,11 +375,13 @@ export function RevisionReview({
           ? null
           : requiresLatestTrip
             ? '再操作する前に最新の旅程を確認してください。'
-            : !apply
-              ? (applyUnavailableReason ?? '承認・適用サービスは未接続です。')
-              : !proposalToken
-                ? '候補の来歴を確認できません。保存した旅程から候補を作り直してください。'
-                : null
+            : onDemoApprove
+              ? null
+              : !apply
+                ? (applyUnavailableReason ?? '承認・適用サービスは未接続です。')
+                : !proposalToken
+                  ? '候補の来歴を確認できません。保存した旅程から候補を作り直してください。'
+                  : null
   // 現地報告から開いたときの「キャンセル」は、旅程ではなく報告画面に戻る操作になる。
   const cancelLabel = onSiteReport ? '報告を見直す' : 'キャンセル'
   const approvalStatus = isApplying
@@ -960,11 +966,21 @@ export function RevisionReview({
               <button
                 type="button"
                 className={primaryClass}
-                aria-disabled={!canApprove || !apply || isApplying}
+                aria-disabled={!canApprove || isApplying}
                 aria-describedby={approvalNote ? `${id}-approval-note` : undefined}
-                onClick={() => void approve()}
+                onClick={
+                  onDemoApprove
+                    ? () => {
+                        if (canApprove) onDemoApprove(candidate)
+                      }
+                    : () => void approve()
+                }
               >
-                {isApplying ? '適用を確認中…' : '承認して適用を依頼'}
+                {onDemoApprove
+                  ? 'デモで承認して反映'
+                  : isApplying
+                    ? '適用を確認中…'
+                    : '承認して適用を依頼'}
               </button>
               {isApplying ? (
                 <button
@@ -991,7 +1007,9 @@ export function RevisionReview({
               )}
             </div>
             <p className="text-xs text-gt-muted">
-              変更する前に、固定予定や時刻の条件をサーバーでもう一度確認します。
+              {onDemoApprove
+                ? 'この画面の架空旅程にだけ反映します。実際の保存やAPIでの適用は行いません。'
+                : '変更する前に、固定予定や時刻の条件をサーバーでもう一度確認します。'}
             </p>
           </footer>
           {canReviewConditions && (

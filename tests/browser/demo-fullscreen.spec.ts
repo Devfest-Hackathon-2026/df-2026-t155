@@ -1,13 +1,16 @@
 import { expect, test } from '@playwright/test'
 
 for (const width of [320, 390, 1440]) {
-  test(`架空デモの旅程と部分修正を ${width}px で操作できる`, async ({ page }) => {
+  test(`架空デモの旅程と部分修正を ${width}px で操作できる`, async ({ page, baseURL }) => {
     await page.setViewportSize({ width, height: 900 })
     const apiRequests: string[] = []
-    await page.route('**/api/**', (route) => {
-      apiRequests.push(route.request().url())
-      return route.abort()
-    })
+    await page.route(
+      (url) => url.origin !== baseURL || url.pathname.startsWith('/api/'),
+      (route) => {
+        apiRequests.push(route.request().url())
+        return route.abort()
+      },
+    )
     const expectNoOverflow = async () => {
       expect(
         await page.evaluate(() => {
@@ -29,7 +32,14 @@ for (const width of [320, 390, 1440]) {
     const routeMap = main.getByRole('list', { name: '旅程の路線図' })
     await expect(routeMap.getByText('営業時間：矛盾あり', { exact: true })).toBeVisible()
     await expect(routeMap.getByText('営業時間：確認できない', { exact: true })).toBeVisible()
-    await expect(routeMap.getByText('固定予定', { exact: true }).first()).toBeVisible()
+    await expect(routeMap.getByText('固定予定', { exact: true })).toHaveCount(2)
+    const otherStops = routeMap.getByRole('button', { name: /朝の庭園|14時の予約展示/ })
+    const originalOtherStops = await otherStops.evaluateAll((stops) =>
+      stops.map((stop) => stop.getAttribute('aria-label')),
+    )
+    expect(originalOtherStops).toHaveLength(2)
+    const storage = await page.context().storageState({ indexedDB: true })
+    const session = await page.evaluate(() => Object.entries(sessionStorage))
     await expectNoOverflow()
 
     const overviewBox = (await overview.boundingBox())!
@@ -74,12 +84,50 @@ for (const width of [320, 390, 1440]) {
     await expect(main.getByRole('heading', { name: '詳しく比較' })).toBeVisible()
     await expectNoOverflow()
     await main.getByRole('button', { name: '変更内容を確認する' }).click()
-    await expect(main.getByRole('button', { name: '承認して適用を依頼' })).toBeDisabled()
+    const approve = main.getByRole('button', { name: 'デモで承認して反映' })
+    await expect(approve).toBeDisabled()
+    await expect(approve).toHaveAccessibleDescription(
+      'デモではこの候補の営業時間を確認できない想定です。',
+    )
     await expectNoOverflow()
     await main.getByRole('button', { name: '候補の選択へ戻る' }).click()
     await main.getByRole('button', { name: '部分修正を閉じる' }).click()
     await expect(revise).toBeFocused()
     await expect(routeMap.getByText('昼食店A（架空）', { exact: true })).toBeVisible()
+
+    const approveFictionalLunch = async () => {
+      await revise.click()
+      await main.getByRole('button', { name: 'こだわらない（おまかせで探す）' }).click()
+      await main.getByRole('button', { name: /候補 A .*承認可能/ }).click()
+      await expect(routeMap.getByText('昼食店A（架空）', { exact: true })).toBeVisible()
+      await main.getByRole('button', { name: '変更内容を確認する' }).click()
+      await expect(approve).toBeEnabled()
+      await expect(main.getByText(/この画面の架空旅程にだけ反映します/)).toBeVisible()
+      await approve.click()
+      await expect(routeMap.getByRole('button', { name: /食堂いちょう（架空候補）/ })).toBeVisible()
+    }
+    await approveFictionalLunch()
+    await expect(main.getByRole('status')).toContainText('この画面の架空旅程に反映しました')
+    await expect(main.getByText(/このデモでは架空の旅程を操作できます/)).toBeVisible()
+    await expect(routeMap.getByText('変更を反映済み')).toBeVisible()
+    await expect(lunch).toHaveCount(0)
+    await expect(routeMap.getByText('固定予定', { exact: true })).toHaveCount(2)
+    expect(
+      await otherStops.evaluateAll((stops) => stops.map((stop) => stop.getAttribute('aria-label'))),
+    ).toEqual(originalOtherStops)
+    await expect(revise).toBeFocused()
+    await expectNoOverflow()
+
+    await main.getByRole('button', { name: 'デモをリセット' }).click()
+    await expect(lunch).toBeVisible()
+    await expect(routeMap.getByText('変更を反映済み')).toHaveCount(0)
+
+    await approveFictionalLunch()
+    expect(await page.context().storageState({ indexedDB: true })).toEqual(storage)
+    expect(await page.evaluate(() => Object.entries(sessionStorage))).toEqual(session)
+    await page.reload()
+    await expect(lunch).toBeVisible()
+    await expect(routeMap.getByText('変更を反映済み')).toHaveCount(0)
     expect(apiRequests).toEqual([])
   })
 }
