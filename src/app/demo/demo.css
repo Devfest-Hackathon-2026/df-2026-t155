@@ -1,0 +1,68 @@
+/* App Router の遷移後も、デモが表示されている間だけ共通レイアウトを上書きする。 */
+body:has(> .gt-site-main > [data-demo-stage]) {
+  /* 共通ヘッダーにデモ認証の終了ボタンがある場合は、その操作を残す。 */
+  > .gt-site-header:not(:has(> div > button)),
+  > .gt-site-footer,
+  > .gt-mobile-nav {
+    display: none;
+  }
+
+  > .gt-site-main {
+    --demo-gutter: clamp(1rem, 3vw, 3rem);
+    max-width: none;
+    padding-inline: max(var(--demo-gutter), env(safe-area-inset-left))
+      max(var(--demo-gutter), env(safe-area-inset-right));
+    padding-top: max(1rem, env(safe-area-inset-top));
+    padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+  }
+}
+
+@media (min-width: 64rem) {
+  [data-demo-stage] .gt-itinerary-route {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+    column-gap: clamp(1.5rem, 3vw, 3rem);
+    align-items: start;
+
+    > [role='note'] {
+      grid-column: 1 / -1;
+    }
+
+    > ol {
+      padding-top: 0;
+    }
+
+    > ol,
+    > ol ~ p {
+      grid-column: 2;
+    }
+  }
+
+  [data-demo-stage] .gt-revision-flow [aria-label='食事の希望'] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  [data-demo-stage] .gt-revision-flow:has(> .gt-revision-route-note) {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    gap: 1rem clamp(1.5rem, 3vw, 3rem);
+
+    > * {
+      grid-column: 1 / -1;
+      margin-block: 0;
+    }
+
+    > .gt-revision-route-note {
+      grid-column: 1;
+    }
+
+    > .gt-preview-panel {
+      grid-column: 2;
+    }
+
+    > .gt-preview-panel::before {
+      inset-inline: 0;
+    }
+  }
+}
