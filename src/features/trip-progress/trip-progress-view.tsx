@@ -115,9 +115,19 @@ export function TripProgressView({
         旅行中の進行状況
       </h2>
 
-      <CurrentCard stop={current} showReplanRestriction={Boolean(onReplan)} />
+      <div className="gt-onsite-progress-meta mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 rounded-lg px-3 py-2 text-xs">
+        <p className="font-bold tabular-nums">
+          進行位置：{currentIndex + 1} / {stops.length} 件
+        </p>
+        <p>手動更新・未保存・位置情報不使用</p>
+      </div>
+      <CurrentCard
+        stop={current}
+        index={currentIndex}
+        total={stops.length}
+        showReplanRestriction={Boolean(onReplan)}
+      />
       <NextCard current={current} next={next} />
-      <Route stops={stops} currentIndex={currentIndex} />
 
       <div role="group" aria-label="進行状況の更新" className="mt-4 grid gap-2.5">
         {(next || finishAction) && (
@@ -159,15 +169,24 @@ export function TripProgressView({
       <p className={`mt-2 text-xs text-gt-muted ${wrapClass}`}>
         位置情報は使っていません。進行状況は、ボタンで更新します。この状況は保存されません。
       </p>
+      <h3 className="mt-5 text-sm font-bold">旅のながれ</h3>
+      <p className={`mt-1 text-xs text-gt-muted ${wrapClass}`}>
+        路線図は予定の順番を示す模式図で、位置や距離を示しません。
+      </p>
+      <Route stops={stops} currentIndex={currentIndex} />
     </section>
   )
 }
 
 function CurrentCard({
   stop,
+  index,
+  total,
   showReplanRestriction,
 }: {
   stop: Stop
+  index: number
+  total: number
   showReplanRestriction: boolean
 }) {
   const lines = evidenceLines(stop)
@@ -175,16 +194,18 @@ function CurrentCard({
   return (
     <section
       aria-labelledby="trip-progress-current"
-      className="rounded-[14px] border-[3px] border-gt-line bg-gt-line-tint px-3.5 py-2.5"
+      className="gt-onsite-current-ticket rounded-[14px] border border-gt-line px-3.5 py-3"
     >
       <div className="flex flex-wrap items-center justify-between gap-1.5">
-        <h3 id="trip-progress-current" className="text-xs font-bold text-gt-line-strong">
+        <h3 id="trip-progress-current" className="text-sm font-bold text-gt-line-strong">
           いまの予定
         </h3>
-        <ProgressChip progress="current" compact />
+        <span className="text-xs font-semibold text-gt-muted">
+          予定 {index + 1} / {total}
+        </span>
       </div>
-      <div className="mt-1 flex flex-wrap items-center gap-x-2">
-        <p className="text-xs font-bold">
+      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+        <p className="text-2xl leading-none font-bold tabular-nums">
           <span aria-hidden="true">{stop.plannedStartTime}</span>
           <span className="sr-only">
             {stop.plannedStartTime}〜{stopEndTime(stop)}・滞在{stop.durationMinutes}分
@@ -192,7 +213,7 @@ function CurrentCard({
         </p>
         {stop.isFixed && <FixedChip />}
       </div>
-      <p className={`text-xl leading-tight font-bold ${wrapClass}`}>{stop.name}</p>
+      <p className={`mt-1 text-2xl leading-tight font-bold ${wrapClass}`}>{stop.name}</p>
       <ul aria-label="根拠の状態" className="mt-1.5 grid gap-1">
         {lines.length === 0 ? (
           <li>

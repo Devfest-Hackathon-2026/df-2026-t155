@@ -336,6 +336,28 @@ body:has(main [data-welcome-screen]) > main:has([data-welcome-screen]) {
   flex-wrap: wrap;
 }
 
+.gt-onsite-progress-meta {
+  border: 1px solid color-mix(in srgb, var(--gt-muted) 35%, transparent);
+  background: color-mix(in srgb, var(--gt-paper) 72%, var(--gt-bg));
+  color: var(--gt-muted);
+  overflow-wrap: anywhere;
+}
+
+.gt-onsite-current-ticket {
+  --gt-onsite-ticket-paper: #fbf8f1;
+  --gt-onsite-ticket-pattern: rgb(107 97 82 / 4%);
+  border-style: dashed;
+  background-color: var(--gt-onsite-ticket-paper);
+  background-image:
+    repeating-linear-gradient(135deg, var(--gt-onsite-ticket-pattern) 0 1px, transparent 1px 8px),
+    repeating-linear-gradient(45deg, var(--gt-onsite-ticket-pattern) 0 1px, transparent 1px 8px);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
+
+.gt-onsite-current-ticket :is(p, li, span) {
+  overflow-wrap: anywhere;
+}
+
 /* Base structure remains available to RouteMap recovery views outside the ticket paper. */
 .gt-itinerary-stop-card {
   display: flex;
