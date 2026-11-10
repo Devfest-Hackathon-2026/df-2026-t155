@@ -207,7 +207,7 @@ export function DiscoveryHome({
             写真から旅のテーマを探す（任意）
           </h2>
           <p className="text-sm text-gt-muted">
-            名古屋の写真からテーマを選ぶと、行き先と旅の希望に反映できます。
+            愛知・名古屋を中心に、大阪・東京の写真テーマも選べます。選んだテーマは行き先と旅の希望に反映できます。
           </p>
           <div className="space-y-1 sm:max-w-sm">
             <label htmlFor="discovery-search" className="block text-sm font-semibold">
@@ -218,7 +218,7 @@ export function DiscoveryHome({
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="例：名古屋城、熱田、栄"
+              placeholder="例：名古屋城、熱田、栄、大阪城、東京タワー"
               className="gt-field min-h-11 px-3"
               autoComplete="off"
             />

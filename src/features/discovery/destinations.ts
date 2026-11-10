@@ -37,4 +37,22 @@ export const discoveryDestinations: readonly DiscoveryDestination[] = [
     image: '/images/nagoya/oasis.webp',
     imageAlt: '水面に映るオアシス21',
   },
+  {
+    id: 'osaka-castle',
+    title: '大阪城',
+    theme: '大阪の城と街歩き',
+    region: '大阪市',
+    preferences: '大阪の街を歩いて歴史を楽しみたい',
+    image: '/images/cities/osaka.webp',
+    imageAlt: '大阪城の天守',
+  },
+  {
+    id: 'tokyo-tower',
+    title: '東京タワー',
+    theme: '東京の名所めぐり',
+    region: '東京都',
+    preferences: '東京の名所をめぐりたい',
+    image: '/images/cities/tokyo.webp',
+    imageAlt: '東京タワー',
+  },
 ]

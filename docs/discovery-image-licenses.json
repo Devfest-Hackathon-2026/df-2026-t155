@@ -1,0 +1,30 @@
+[
+  {
+    "asset": "public/images/cities/osaka.webp",
+    "checkedAt": "2026-11-10T03:00:55.927Z",
+    "title": "File:20190121 Osaka Castle-2.jpg",
+    "sourcePage": "https://commons.wikimedia.org/wiki/File:20190121_Osaka_Castle-2.jpg",
+    "metadataApi": "https://commons.wikimedia.org/w/api.php?action=query&titles=File%3A20190121+Osaka+Castle-2.jpg&prop=imageinfo&iiprop=url%7Cextmetadata%7Csha1%7Csize&format=json",
+    "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/1/16/20190121_Osaka_Castle-2.jpg",
+    "originalSha1": "bbc5f6ce0355c6aab37b52070a0fc8daa592c8c3",
+    "originalWidth": 5760,
+    "originalHeight": 3840,
+    "artist": "Balon Greyjoy",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en"
+  },
+  {
+    "asset": "public/images/cities/tokyo.webp",
+    "checkedAt": "2026-11-10T02:59:59.939Z",
+    "title": "File:Tokyo Tower ground level.jpg",
+    "sourcePage": "https://commons.wikimedia.org/wiki/File:Tokyo_Tower_ground_level.jpg",
+    "metadataApi": "https://commons.wikimedia.org/w/api.php?action=query&titles=File%3ATokyo+Tower+ground+level.jpg&prop=imageinfo&iiprop=url%7Cextmetadata%7Csha1%7Csize&format=json",
+    "originalUrl": "https://upload.wikimedia.org/wikipedia/commons/4/41/Tokyo_Tower_ground_level.jpg",
+    "originalSha1": "9f9a9cb0c191b9171f7955f11dcd646c3c0fdb26",
+    "originalWidth": 3963,
+    "originalHeight": 2226,
+    "artist": "Joe deSousa",
+    "license": "CC0",
+    "licenseUrl": "http://creativecommons.org/publicdomain/zero/1.0/deed.en"
+  }
+]

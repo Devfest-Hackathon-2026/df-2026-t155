@@ -1,16 +1,18 @@
 # Welcome・発見ホームの画像
 
-確認日: 2026-11-09（JST）。以下はPlaces APIの写真ではなく、アプリの編集コンテンツとして同梱する実景写真です。現在の営業、入場可否、施設照合や旅程の成立を証明するものではありません。
+確認日: 名古屋3点は2026-11-09、大阪・東京は2026-11-10（JST）。以下はPlaces APIの写真ではなく、アプリの編集コンテンツとして同梱する実景写真です。現在の営業、入場可否、施設照合や旅程の成立を証明するものではありません。
 
-| 同梱ファイル                       | 場所・原作品                                                                                                         | 作者        | 利用条件                                                      |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------- |
-| `public/images/nagoya/castle.webp` | [Nagoya Castle (23700).jpg](<https://commons.wikimedia.org/wiki/File:Nagoya_Castle_(23700).jpg>)（名古屋城）         | Syced       | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
-| `public/images/nagoya/atsuta.webp` | [Atsuta-jinguu shoumen.JPG](https://commons.wikimedia.org/wiki/File:Atsuta-jinguu_shoumen.JPG)（熱田神宮）           | Saigen Jiro | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
-| `public/images/nagoya/oasis.webp`  | [Oasis-21-Spaceship-Aqua-1.jpg](https://commons.wikimedia.org/wiki/File:Oasis-21-Spaceship-Aqua-1.jpg)（オアシス21） | Evelyn-rose | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| 同梱ファイル                       | 場所・原作品                                                                                                                 | 作者          | 利用条件                                                      |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------------- | ------------------------------------------------------------- |
+| `public/images/nagoya/castle.webp` | [Nagoya Castle (23700).jpg](<https://commons.wikimedia.org/wiki/File:Nagoya_Castle_(23700).jpg>)（名古屋城）                 | Syced         | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `public/images/nagoya/atsuta.webp` | [Atsuta-jinguu shoumen.JPG](https://commons.wikimedia.org/wiki/File:Atsuta-jinguu_shoumen.JPG)（熱田神宮）                   | Saigen Jiro   | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `public/images/nagoya/oasis.webp`  | [Oasis-21-Spaceship-Aqua-1.jpg](https://commons.wikimedia.org/wiki/File:Oasis-21-Spaceship-Aqua-1.jpg)（オアシス21）         | Evelyn-rose   | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `public/images/cities/osaka.webp`  | [20190121 Osaka Castle-2.jpg](https://commons.wikimedia.org/wiki/File:20190121_Osaka_Castle-2.jpg#Licensing)（大阪城）       | Balon Greyjoy | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
+| `public/images/cities/tokyo.webp`  | [Tokyo Tower ground level.jpg](https://commons.wikimedia.org/wiki/File:Tokyo_Tower_ground_level.jpg#Licensing)（東京タワー） | Joe deSousa   | [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/) |
 
-各画像の個別ページまたはWikimedia Commonsのimageinfo/extmetadataでライセンスを確認しました。Commonsのページ共通フッターのライセンスを、画像自体の利用条件として転用していません。
+各画像の個別ページまたはWikimedia Commonsのimageinfo/extmetadataでライセンスを確認しました。Commonsのページ共通フッターのライセンスを、画像自体の利用条件として転用していません。大阪・東京の確認時刻・原画像URL/SHA1・個別ライセンスは[確認記録](discovery-image-licenses.json)にも残しています。
 
-原画像は回転情報を反映し、名古屋城は最大幅2400px・品質80、他2点は最大幅1200px・品質82のWebPへ縮小変換しました。構図の変更は表示時のobject-fitによる切り取りのみです。位置情報等のEXIFは同梱しません。利用者の写真や訪問実績として表示しません。実行時に外部の写真APIへ問い合わせません。
+原画像は回転情報を反映し、名古屋城は最大幅2400px・品質80、他4点は最大幅1200px・品質82のWebPへ縮小変換しました。構図の変更は表示時のobject-fitによる切り取りのみです。位置情報等のEXIFは同梱しません。利用者の写真や訪問実績として表示しません。実行時に外部の写真APIへ問い合わせません。
 
 ## ロゴ
 
