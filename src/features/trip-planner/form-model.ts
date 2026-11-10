@@ -32,6 +32,10 @@ export interface TripFormValues {
   fixedStops: FixedStopRow[]
 }
 
+export type TripDraftField = 'region' | 'preferences'
+export type TripDraftChanges = Partial<Pick<TripFormValues, TripDraftField>>
+export type TripDraftEdits = Partial<Record<TripDraftField, { value: string }>>
+
 export const initialFormValues: TripFormValues = {
   region: '',
   date: '',

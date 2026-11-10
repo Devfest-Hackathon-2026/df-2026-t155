@@ -11,6 +11,7 @@ import { StopSheet } from './stop-sheet'
 
 interface TripRouteViewProps {
   trip: Trip
+  active?: boolean
   meta?: RouteMeta
   // モックデータであることを明示する（実際の店舗・照合結果ではない）。
   mock?: boolean
@@ -33,6 +34,7 @@ interface TripRouteViewProps {
 // 選択中の予定が新しいtripに無ければ選択も解除する。
 export function TripRouteView({
   trip: tripProp,
+  active = true,
   meta,
   mock = false,
   appliedStopId,
@@ -64,6 +66,14 @@ export function TripRouteView({
       setSelectedId(null)
       setRescueFocus(true)
     }
+  }
+
+  // 非表示のdialogをトップレイヤーに残さない。旅程と固定の編集は保持する。
+  if (!active && (selectedId || closingId || restoreFocusId || rescueFocus)) {
+    setSelectedId(null)
+    setClosingId(null)
+    setRestoreFocusId(null)
+    setRescueFocus(false)
   }
 
   // 閉じたあとは、直前に選択していた予定のボタンへフォーカスを戻す（キーボード・読み上げの操作を途切れさせない）。

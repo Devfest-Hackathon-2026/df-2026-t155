@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { expect, test } from '@playwright/test'
 
-for (const width of [320, 375, 390]) {
+for (const width of [320, 375, 390, 1023, 1024, 1440]) {
   test(`${width}pxで日付・時刻の枠の左右端から入力できる`, async ({ page }, testInfo) => {
     await page.setViewportSize({ width, height: 900 })
     await page.addInitScript(() => localStorage.setItem('groundtrip:welcome-completed:v1', 'true'))
@@ -38,7 +38,7 @@ for (const width of [320, 375, 390]) {
         [3, firstValue],
         [size.width - 3, secondValue],
       ] as const) {
-        // 先に別の欄へ移り、入力本体の外側にある枠内の余白を操作する。
+        // 先に別の欄へ移り、枠内の左右端をポインターで操作する。
         await duration.focus()
         const position = { x, y: Math.floor(size.height / 2) }
         await expect(field).not.toBeFocused()
@@ -52,12 +52,34 @@ for (const width of [320, 375, 390]) {
         await expect(field).toHaveValue(value)
       }
       await expect(field).toHaveAttribute('aria-invalid', 'false')
+      await expect(field).toHaveCSS('box-sizing', 'border-box')
+      await expect(field).toHaveCSS('min-width', '0px')
+      await expect(field).toHaveCSS('padding-inline-start', '0px')
+
+      const bounds = await field.evaluate((input) => {
+        const frame = input.parentElement!
+        const group = frame.parentElement!
+        return {
+          width: input.getBoundingClientRect().width,
+          frameWidth: frame.clientWidth,
+          frameScrollWidth: frame.scrollWidth,
+          groupWidth: group.clientWidth,
+          groupScrollWidth: group.scrollWidth,
+        }
+      })
+      expect(bounds.width).toBeCloseTo(bounds.frameWidth, 0)
+      expect(bounds.frameScrollWidth).toBe(bounds.frameWidth)
+      expect(bounds.groupScrollWidth).toBe(bounds.groupWidth)
     }
 
     const timeBox = await time.boundingBox()
     const durationBox = await duration.boundingBox()
     assert(timeBox && durationBox)
-    expect(timeBox.y + timeBox.height).toBeLessThan(durationBox.y)
+    if (width < 640) {
+      expect(timeBox.y + timeBox.height).toBeLessThan(durationBox.y)
+    } else {
+      expect(timeBox.x + timeBox.width).toBeLessThan(durationBox.x)
+    }
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width)
   })
 }

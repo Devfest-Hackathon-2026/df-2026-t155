@@ -88,7 +88,7 @@ export function FixedStopsField({
               <div className="min-w-0 space-y-1">
                 <label htmlFor={field('startTime')} className="block space-y-1">
                   <span className="block text-sm font-medium">開始時刻</span>
-                  <span className="gt-field gt-date-time-field block">
+                  <span className="gt-field gt-date-time-field">
                     <input
                       id={field('startTime')}
                       type="time"

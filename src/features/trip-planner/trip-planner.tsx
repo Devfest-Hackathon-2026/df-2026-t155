@@ -15,6 +15,8 @@ import {
   MAX_FIXED_STOPS,
   type FixedStopErrorMap,
   type FixedStopField,
+  type TripDraftChanges,
+  type TripDraftField,
   type TripFormErrors,
   type TripFormField,
   type TripFormValues,
@@ -34,13 +36,8 @@ interface TripPlannerProps {
   // 入力欄の値は利用者が入れたものなので、捨てずに残す。
   discardKey?: string
   active?: boolean
-  draft?: TripPlannerDraft
-}
-
-export interface TripPlannerDraft {
-  revision: number
-  region: string
-  preferences: string
+  draft?: TripDraftChanges
+  onDraftFieldEdit?: (field: TripDraftField, value: string) => void
 }
 
 const defaultRenderTrip = (trip: Trip) => <TripProposalPreview trip={trip} />
@@ -56,13 +53,13 @@ export function TripPlanner({
   discardKey = '',
   active = true,
   draft,
+  onDraftFieldEdit,
 }: TripPlannerProps) {
   const [values, setValues] = useState<TripFormValues>(initialFormValues)
   const [errors, setErrors] = useState<TripFormErrors>({})
   const [fixedStopErrors, setFixedStopErrors] = useState<FixedStopErrorMap>({})
   const [fixedStopNotice, setFixedStopNotice] = useState('')
   const initialDiscardKey = useRef(discardKey)
-  const appliedDraft = useRef<number | null>(null)
   // 追加した行の画面上の識別子（入力欄の対応づけ用）。
   const nextRowKey = useRef(1)
   const addFixedStopRef = useRef<HTMLButtonElement>(null)
@@ -87,10 +84,13 @@ export function TripPlanner({
   }, [discardKey, reset])
 
   useEffect(() => {
-    if (!draft || appliedDraft.current === draft.revision) return
-    appliedDraft.current = draft.revision
-    setValues((current) => ({ ...current, region: draft.region, preferences: draft.preferences }))
-    setErrors((current) => ({ ...current, region: undefined, preferences: undefined }))
+    if (!draft) return
+    setValues((current) => ({ ...current, ...draft }))
+    setErrors((current) => ({
+      ...current,
+      region: draft.region === undefined ? current.region : undefined,
+      preferences: draft.preferences === undefined ? current.preferences : undefined,
+    }))
   }, [draft])
 
   const fieldRefs = useRef<Record<TripFormField, HTMLInputElement | HTMLTextAreaElement | null>>({
@@ -112,6 +112,7 @@ export function TripPlanner({
   }, [focusId])
 
   const update = (field: TripFormField, value: string) => {
+    if (field !== 'date') onDraftFieldEdit?.(field, value)
     setValues((current) => ({ ...current, [field]: value }))
     setErrors((current) => ({ ...current, [field]: undefined }))
   }
@@ -232,7 +233,7 @@ export function TripPlanner({
           <div className="space-y-1">
             <label htmlFor="date" className="block space-y-1">
               <span className="block font-medium">日付（必須）</span>
-              <span className="gt-field gt-date-time-field block">
+              <span className="gt-field gt-date-time-field">
                 <input
                   id="date"
                   name="date"

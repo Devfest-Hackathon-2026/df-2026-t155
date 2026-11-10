@@ -258,14 +258,9 @@ export function TripJourney({
   )
 
   return (
-    <div
-      className={`gt-journey ${screen === 'before' ? 'gt-journey--before' : ''} flex flex-col gap-4`}
-    >
+    <div className="gt-journey flex flex-col gap-4">
       {!reflectionOpen && (
-        <header
-          data-flow-header="journey"
-          className="gt-journey-chrome gt-header-bleed flex flex-wrap items-center justify-between gap-x-2 bg-gt-paper py-1"
-        >
+        <div className="gt-journey-chrome flex flex-wrap items-center gap-x-3">
           <span id="journey-mode-label" className="text-sm font-semibold">
             旅程の表示
           </span>
@@ -282,18 +277,16 @@ export function TripJourney({
                 className="group min-h-11 rounded-full text-xs font-bold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview"
                 onClick={() => onNavigate(value)}
               >
-                <span className="block rounded-full px-2.5 py-1 group-aria-pressed:bg-gt-ink group-aria-pressed:text-white">
+                <span className="block rounded-full px-2.5 py-1 text-gt-ink group-aria-pressed:bg-gt-ink group-aria-pressed:text-white">
                   {value === 'before' ? '旅行前' : '旅行中'}
                 </span>
               </button>
             ))}
           </div>
-        </header>
+        </div>
       )}
 
-      <div
-        className={`gt-journey-title ${screen === 'before' ? 'gt-itinerary-title gt-header-bleed' : ''}`}
-      >
+      <div className="gt-journey-title">
         <h1 ref={heading} tabIndex={-1} className={reflectionOpen ? 'gt-screen-title' : 'sr-only'}>
           {reflectionOpen
             ? '振り返り'

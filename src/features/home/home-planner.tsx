@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type ComponentProps,
@@ -12,19 +13,17 @@ import type { ApprovedLearning, Trip } from '@/domain'
 
 import { LearningApplicationSummary } from '@/features/learning-reuse/learning-application-summary'
 import { ReflectionFlow } from '@/features/reflection-flow/reflection-flow'
-import {
-  DiscoveryHome,
-  type DiscoveryDraft,
-  type DiscoveryMode,
-} from '@/features/discovery/discovery-home'
+import { DiscoveryHome, type DiscoveryMode } from '@/features/discovery/discovery-home'
 import type {
   LearningReuseSelection,
   LoadLearningOptions,
 } from '@/features/learning-reuse/learning-reuse-picker'
 import type { ApplyRevision, GenerateRevisions } from '@/features/revision-review/api-client'
+import { MainNavigation, type MainPage } from '@/features/screen-chrome/main-navigation'
 import { SHOW_HOME_EVENT } from '@/features/screen-chrome/screen-header'
 import { requestTripGeneration } from '@/features/trip-planner/api-client'
-import { TripPlanner, type TripPlannerDraft } from '@/features/trip-planner/trip-planner'
+import type { TripDraftChanges, TripDraftEdits } from '@/features/trip-planner/form-model'
+import { TripPlanner } from '@/features/trip-planner/trip-planner'
 import type { GenerateTrip } from '@/features/trip-planner/use-trip-generation'
 import type { SaveTrip } from '@/features/trip-save/trip-save-panel'
 import { verifyTripWithProtectedApi } from '@/features/trip-verification/protected-verify'
@@ -114,7 +113,7 @@ export function HomePlanner({
     learnings: readonly ApprovedLearning[]
   } | null>(null)
   const nextJourneyKey = useRef(0)
-  const { entry, navigate, initialize } = useJourneyHistory()
+  const { entry, fromHistory, navigate, initialize } = useJourneyHistory()
   const changed =
     auth.scopeEpoch !== view.epoch ||
     (authScope !== null && view.scope !== null && authScope.uid !== view.scope.uid)
@@ -136,8 +135,8 @@ export function HomePlanner({
   // 学びの一覧を読み込み直すための札（選び直しが必要になったとき、学びを保存したとき）。
   const [pickerKey, setPickerKey] = useState(0)
   const [homeMode, setHomeMode] = useState<DiscoveryMode>(showDiscoveryHome ? 'home' : 'create')
-  const [tripDraft, setTripDraft] = useState<TripPlannerDraft>()
-  const nextDraftRevision = useRef(0)
+  const [tripDraft, setTripDraft] = useState<TripDraftChanges>()
+  const [detailEdits, setDetailEdits] = useState<TripDraftEdits>()
   const [choiceSeq, setChoiceSeq] = useState(0)
   const [chooserSeq, setChooserSeq] = useState(0)
   const [chosen, setChosen] = useState<{ trip: Trip; discard: number; key: number } | null>(null)
@@ -176,7 +175,6 @@ export function HomePlanner({
   const activeView = entry?.view.journeyKey === journey?.key ? entry?.view.screen : undefined
   const journeyScreen = isJourneyScreen(activeView) ? activeView : null
   const journeyVisible = Boolean(journey && journeyScreen)
-  const showInput = journeyScreen === null && (!showDiscoveryHome || homeMode === 'create')
   const historyHomeMode =
     entry?.view.journeyKey === 0 &&
     entry.view.screen !== 'home' &&
@@ -185,6 +183,12 @@ export function HomePlanner({
       : entry && entry.view.journeyKey === journey?.key && entry.view.screen === 'home'
         ? 'home'
         : undefined
+  const visibleHomeMode = historyHomeMode ?? homeMode
+  const showInput = journeyScreen === null && (!showDiscoveryHome || visibleHomeMode === 'create')
+  const activePage = journeyVisible ? 'journey' : visibleHomeMode
+  const lastPage = useRef(activePage)
+  const focusRequested = useRef(false)
+  const discoveryHeading = useRef<HTMLHeadingElement>(null)
   const previous =
     entry?.previous?.journeyKey === journey?.key ? entry?.previous?.screen : undefined
   const inputHeading = useRef<HTMLHeadingElement>(null)
@@ -208,8 +212,8 @@ export function HomePlanner({
   }, [journey, navigate, openHomeMode, showDiscoveryHome, showInput])
 
   const createFromDiscovery = useCallback(
-    (draft: DiscoveryDraft) => {
-      setTripDraft({ ...draft, revision: ++nextDraftRevision.current })
+    (draft: TripDraftChanges) => {
+      if (draft.region !== undefined || draft.preferences !== undefined) setTripDraft(draft)
       openHomeMode('create')
     },
     [openHomeMode],
@@ -226,44 +230,71 @@ export function HomePlanner({
     [navigate, session.discard],
   )
 
+  const openMainPage = (page: MainPage, keyboard: boolean) => {
+    focusRequested.current = keyboard && activePage !== page
+    if (page === 'home') showHome()
+    else openHomeMode(page)
+  }
+
   useEffect(() => {
     const onShowHome = (event: Event) => {
       event.preventDefault()
+      focusRequested.current =
+        activePage !== 'home' && event instanceof CustomEvent && event.detail === true
       showHome()
     }
     window.addEventListener(SHOW_HOME_EVENT, onShowHome)
     return () => window.removeEventListener(SHOW_HOME_EVENT, onShowHome)
-  }, [showHome])
+  }, [activePage, showHome])
   useEffect(() => {
     if (showDiscoveryHome && !entry) initialize({ screen: 'discovery', journeyKey: 0 })
   }, [entry, initialize, showDiscoveryHome])
   useEffect(() => {
     if (showDiscoveryHome && historyHomeMode) setHomeMode(historyHomeMode)
   }, [historyHomeMode, showDiscoveryHome])
+  useLayoutEffect(() => {
+    const previousPage = lastPage.current
+    lastPage.current = activePage
+    if (!showDiscoveryHome || previousPage === activePage) return
+
+    const requested = focusRequested.current
+    focusRequested.current = false
+    if (activePage === 'journey' || activePage === 'create') return
+
+    const focused = document.activeElement
+    const leftJourneyWithoutFocus =
+      previousPage === 'journey' && (focused === document.body || focused?.closest('[hidden]'))
+    if (requested || fromHistory || leftJourneyWithoutFocus) {
+      const heading = discoveryHeading.current
+      heading?.focus({ preventScroll: true })
+      if (requested) heading?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    }
+  }, [activePage, fromHistory, showDiscoveryHome])
   useEffect(() => {
-    if (showInput && trip) inputHeading.current?.focus()
-  }, [showInput, trip])
+    if (showInput && (showDiscoveryHome || trip)) inputHeading.current?.focus()
+  }, [showDiscoveryHome, showInput, trip])
 
   return (
     <>
       {statusContent && (
-        <div className="mx-auto w-full max-w-xl px-4 pt-2" data-session-status>
+        <div className="mx-auto mb-4 w-full max-w-xl" data-session-status>
           {statusContent}
         </div>
       )}
       {showDiscoveryHome ? (
-        <div hidden={journeyVisible} data-discovery-active={!journeyVisible ? 'true' : undefined}>
+        <div hidden={journeyVisible}>
           <DiscoveryHome
-            mode={homeMode}
+            mode={visibleHomeMode}
+            headingRef={discoveryHeading}
+            detailEdits={detailEdits}
             currentTrip={
               journey ? { region: journey.trip.region, date: journey.trip.date } : undefined
             }
-            onOpenHome={showHome}
+            onOpenHome={(keyboard) => openMainPage('home', keyboard)}
             onResumeTrip={() => {
               if (journey) navigate({ screen: 'before', journeyKey: journey.key })
             }}
-            onOpenTrips={() => openHomeMode('bookmarks')}
-            onOpenRecords={() => openHomeMode('records')}
+            onOpenTrips={(keyboard) => openMainPage('bookmarks', keyboard)}
             onCreate={createFromDiscovery}
             bookmarksContent={
               <SavedTripChooser
@@ -275,7 +306,7 @@ export function HomePlanner({
             recordsContent={
               <ReflectionFlow
                 embedded
-                active={homeMode === 'records' && !journeyVisible}
+                active={visibleHomeMode === 'records' && !journeyVisible}
                 onLearningsChanged={() => setPickerKey((count) => count + 1)}
               />
             }
@@ -290,6 +321,12 @@ export function HomePlanner({
         <div hidden={!showInput} className="space-y-4">
           {inputContent()}
         </div>
+      )}
+      {showDiscoveryHome && (
+        <MainNavigation
+          current={!journeyVisible && visibleHomeMode !== 'create' ? visibleHomeMode : undefined}
+          onNavigate={openMainPage}
+        />
       )}
       {journey && (
         <div hidden={!journeyVisible}>
@@ -336,6 +373,11 @@ export function HomePlanner({
           generate={generateWithSelection}
           active={showInput}
           draft={tripDraft}
+          onDraftFieldEdit={
+            showDiscoveryHome
+              ? (field, value) => setDetailEdits((current) => ({ ...current, [field]: { value } }))
+              : undefined
+          }
           discardKey={`${session.discard}:${choiceSeq}`}
           renderTrip={null}
           renderLearningPicker={(region) => (

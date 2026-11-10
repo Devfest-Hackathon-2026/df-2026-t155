@@ -76,9 +76,9 @@ it('認証状態と復旧操作はDiscoveryHomeと旅程の両方で一度だけ
   await user.click(screen.getByRole('button', { name: '新しい利用を始める' }))
   expect(startNewSession).toHaveBeenCalledOnce()
 
-  await user.click(screen.getByRole('button', { name: '名古屋城の写真をテーマに選ぶ' }))
+  await user.click(screen.getByRole('button', { name: /城と歴史/ }))
   await user.click(screen.getByRole('button', { name: '旅の条件へ進む' }))
-  await user.type(screen.getByLabelText('旅行先（必須）'), '名古屋市')
+  expect(screen.getByLabelText<HTMLInputElement>('旅行先（必須）').value).toBe('名古屋市')
   await user.type(screen.getByLabelText('日付（必須）'), '2026-11-14')
   await user.click(screen.getByRole('button', { name: '旅程を作成する' }))
 

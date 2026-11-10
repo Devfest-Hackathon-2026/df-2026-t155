@@ -23,6 +23,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
+  viewportFit: 'cover',
 }
 
 export default function RootLayout({
@@ -32,17 +33,24 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="ja">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <header className="bg-gt-paper px-4">
-          <div className="mx-auto grid w-full max-w-[34rem] grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3">
-            <div className="gt-site-brand col-start-1 row-start-1 flex min-h-[69px] min-w-0 items-center">
+      <body
+        className={`${geistSans.variable} ${geistMono.variable} flex min-h-dvh flex-col antialiased`}
+      >
+        <header className="gt-site-header border-b border-gt-rule bg-gt-paper">
+          <div className="mx-auto grid w-full max-w-4xl grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 lg:grid-cols-[auto_auto_minmax(0,1fr)]">
+            <div className="col-start-1 row-start-1 flex min-w-0 items-center">
               <GroundTripBrand />
             </div>
             <DemoExitAction />
+            <div
+              id="gt-desktop-nav"
+              className="col-span-2 row-start-2 empty:hidden lg:col-span-1 lg:col-start-3 lg:row-start-1"
+            />
           </div>
         </header>
-        <main className="mx-auto w-full max-w-xl px-4 py-6">{children}</main>
+        <main className="gt-site-main mx-auto w-full max-w-xl grow py-6">{children}</main>
         <SiteFooter />
+        <div id="gt-mobile-nav" className="gt-mobile-nav" />
       </body>
     </html>
   )

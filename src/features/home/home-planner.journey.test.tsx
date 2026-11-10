@@ -11,6 +11,7 @@ import {
   markApplyUnresolved,
   readUnresolvedApply,
 } from '@/features/revision-review/unresolved-apply'
+import { SHOW_HOME_EVENT } from '@/features/screen-chrome/screen-header'
 import type { SaveTrip } from '@/features/trip-save/trip-save-panel'
 import {
   SaveRevisionBodySchema,
@@ -1269,7 +1270,9 @@ describe('表示中の旅程と別画面の処理', () => {
         expect(screen.queryByRole('button', { name: /予定が変わった？/ })).toBeNull()
       }
 
-      await editInput(user)
+      act(() => {
+        window.dispatchEvent(new Event(SHOW_HOME_EVENT, { cancelable: true }))
+      })
       await backToTrip(user)
       expect(
         screen

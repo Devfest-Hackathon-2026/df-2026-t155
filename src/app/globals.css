@@ -64,6 +64,7 @@ body:has(main [data-welcome-screen]) {
 
 body:has(main [data-welcome-screen]) > header,
 body:has(main [data-welcome-screen]) > footer,
+body:has(main [data-welcome-screen]) > .gt-mobile-nav,
 body:has(main [data-welcome-screen]) > main {
   display: none;
 }
@@ -82,22 +83,56 @@ body:has(main [data-welcome-screen]) > main:has([data-welcome-screen]) {
   transform: scale(1.025);
 }
 
-.gt-discovery-hero {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
-  aspect-ratio: 1.45;
-  border-radius: 1.25rem;
-  background: #e9e7df;
+.gt-site-header,
+.gt-site-main,
+.gt-site-footer,
+.gt-mobile-nav {
+  padding-inline: max(1rem, env(safe-area-inset-left)) max(1rem, env(safe-area-inset-right));
+}
+
+.gt-site-header {
+  padding-top: env(safe-area-inset-top);
+}
+
+.gt-site-footer {
+  padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+}
+
+.gt-mobile-nav:empty {
+  display: none;
+}
+
+@media (width < 64rem) {
+  html:has(.gt-mobile-nav:not(:empty)) {
+    scroll-padding-bottom: calc(3rem + env(safe-area-inset-bottom));
+  }
+
+  .gt-mobile-nav:not(:empty) {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+    border-top: 1px solid var(--gt-rule);
+    background: var(--gt-paper);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@media (width >= 64rem) {
+  .gt-site-main:has([data-discovery-landing]:not([hidden], [hidden] *)) {
+    max-width: 56rem;
+  }
 }
 
 .gt-discovery-theme {
   width: min(72vw, 18rem);
 }
 
-body:has(main [data-discovery-active='true']) .gt-site-brand {
-  display: none;
+@media (width >= 64rem) {
+  .gt-discovery-theme {
+    width: auto;
+  }
 }
+
 @media (prefers-reduced-motion: no-preference) {
   .gt-welcome-image {
     animation: gt-welcome-arrive 220ms ease-out both;
@@ -155,9 +190,27 @@ body:has(main [data-discovery-active='true']) .gt-site-brand {
   @apply bg-gt-bg text-gt-muted;
 }
 
-/* iOS WebKit can add padding to the width of a native date/time input (bug 301648). */
+/* Keep the frame and native control separate. iOS WebKit can add padding to
+   the width of a date/time input (bug 301648). */
+.gt-date-time-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .gt-date-time-field > input {
-  @apply block box-border min-h-12 w-full min-w-0 max-w-full p-0 focus-visible:outline-none;
+  @apply box-border inline-flex min-h-12 w-full min-w-0 max-w-full items-center p-0 focus-visible:outline-none;
+}
+
+/* iOS renders the formatted value in a separate native flex item. */
+@supports (-webkit-touch-callout: none) {
+  .gt-date-time-field > input::-webkit-date-and-time-value {
+    box-sizing: border-box;
+    min-inline-size: 0;
+    max-inline-size: 100%;
+    margin-inline: 0;
+    padding-inline: 0.5rem;
+    text-align: start;
+  }
 }
 
 @layer components {
@@ -270,22 +323,9 @@ body:has(main [data-discovery-active='true']) .gt-site-brand {
   }
 }
 
-/* Subpages have their own back button and title. */
-body:has(main [data-flow-header='subpage']:not([hidden] *)) .gt-site-brand {
-  display: none;
-}
-
-body:has(main [data-flow-header]:not([hidden] *)) main {
-  padding-top: 0;
-}
-
 .gt-journey:has([data-flow-header='subpage']:not([hidden] *))
   :is(.gt-journey-chrome, .gt-journey-title) {
   display: none;
-}
-
-.gt-header-bleed {
-  border-image: conic-gradient(var(--gt-paper) 0 0) fill 0 / 0 / 0 100vw;
 }
 
 .gt-food-ticket {
@@ -381,102 +421,6 @@ body:has(main [data-flow-header]:not([hidden] *)) main {
   flex: 0 0 calc(100% - 28px);
   margin-inline: 14px;
   border-top: 1.5px dashed var(--gt-itinerary-perforation);
-}
-
-/* The route view is the scope marker so Home and revision previews keep their own chrome. */
-body:has(main .gt-itinerary-route:not([hidden] *)) > header {
-  background: #202823;
-  color: #fff;
-}
-
-body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand {
-  min-height: 74px;
-}
-
-body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand a {
-  position: relative;
-  width: 164px;
-  height: 58px;
-  overflow: hidden;
-  color: #fff;
-}
-
-body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand a > span {
-  display: none;
-}
-
-body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand a::before {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 56px;
-  height: 52px;
-  background-image: url('/brand/groundtrip-logo.png');
-  background-repeat: no-repeat;
-  background-position: -21px -3px;
-  background-size: 96px 77px;
-  content: '';
-}
-
-body:has(main .gt-itinerary-route:not([hidden] *)) .gt-site-brand a::after {
-  position: absolute;
-  top: 50%;
-  left: 60px;
-  color: #fff;
-  content: 'GroundTrip';
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.1;
-  transform: translateY(-50%);
-}
-
-body:has(main .gt-itinerary-route:not([hidden] *)) > header > div {
-  border-bottom: 3px solid #c94e31;
-}
-
-body:has(main .gt-itinerary-route:not([hidden] *)) .gt-journey--before {
-  gap: 0.75rem;
-}
-
-.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) [data-flow-header='journey'],
-.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-itinerary-title {
-  background: #202823;
-  border-image: conic-gradient(#202823 0 0) fill 0 / 0 / 0 100vw;
-  color: #fff;
-}
-
-.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) [data-flow-header='journey'] {
-  min-height: 48px;
-  padding-block: 6px;
-}
-
-.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-itinerary-title {
-  margin-top: -0.75rem;
-  padding: 0 0 12px;
-}
-
-.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-itinerary-title > p {
-  color: rgb(255 255 255 / 76%);
-}
-
-.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-mode-switch::before {
-  border-color: rgb(255 255 255 / 75%);
-}
-
-.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-mode-switch button {
-  color: #fff;
-}
-
-.gt-journey--before:has(.gt-itinerary-route:not([hidden] *)) .gt-mode-switch button span {
-  color: #fff;
-}
-
-.gt-journey--before:has(.gt-itinerary-route:not([hidden] *))
-  .gt-mode-switch
-  button[aria-pressed='true']
-  span {
-  background: #fff;
-  color: #202823;
 }
 
 .gt-itinerary-route .gt-sheet {

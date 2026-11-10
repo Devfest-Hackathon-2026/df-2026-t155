@@ -53,40 +53,38 @@ export function SessionHomePlanner() {
 
   const canStartNewSession = session.status === 'session_ended' && !demoEnded
   const showDemoNotice = Boolean(scope && demo)
-  const statusContent: ReactNode =
-    message || canStartNewSession || showDemoNotice ? (
-      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl border border-gt-rule bg-white/90 px-3 py-2 text-xs">
-        {showDemoNotice && (
-          <p role="note" className="gt-notice mb-4">
-            デモの旅程・学び・利用枠は共有されます。個人情報は入力しないでください。
-          </p>
-        )}
-        {message && (
-          <p role="status" className="text-sm">
-            {message}
-          </p>
-        )}
-        {canStartNewSession && (
-          <button
-            type="button"
-            className="min-h-11 rounded-lg border border-gt-muted bg-gt-paper px-4 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview disabled:opacity-60"
-            disabled={starting}
-            onClick={async () => {
-              setStarting(true)
-              try {
-                await startNewAnonymousSession()
-              } catch {
-                // 失敗は既存の認証購読から表示する。
-              } finally {
-                setStarting(false)
-              }
-            }}
-          >
-            新しい利用を始める
-          </button>
-        )}
-      </div>
-    ) : null
+  const statusContent: ReactNode = showDemoNotice ? (
+    <p role="note" className="rounded-lg border border-gt-rule bg-white px-3 py-2 text-xs">
+      デモの旅程・学び・利用枠は共有されます。個人情報は入力しないでください。
+    </p>
+  ) : message || canStartNewSession ? (
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl border border-gt-rule bg-white/90 px-3 py-2 text-xs">
+      {message && (
+        <p role="status" className="text-sm">
+          {message}
+        </p>
+      )}
+      {canStartNewSession && (
+        <button
+          type="button"
+          className="min-h-11 rounded-lg border border-gt-muted bg-gt-paper px-4 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview disabled:opacity-60"
+          disabled={starting}
+          onClick={async () => {
+            setStarting(true)
+            try {
+              await startNewAnonymousSession()
+            } catch {
+              // 失敗は既存の認証購読から表示する。
+            } finally {
+              setStarting(false)
+            }
+          }}
+        >
+          新しい利用を始める
+        </button>
+      )}
+    </div>
+  ) : null
 
   return (
     <>

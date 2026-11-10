@@ -415,6 +415,7 @@ export function RevisionRouteView({
             </button>
           )}
           <TripRouteView
+            active={active}
             trip={current.trip}
             meta={current.meta}
             mock={mock}
