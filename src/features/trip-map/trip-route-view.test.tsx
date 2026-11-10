@@ -54,6 +54,7 @@ describe('旅程の路線図: 表示', () => {
     expect(items[0].textContent).toContain('朝の庭園（架空）')
     expect(items[0].textContent).toContain('10:00〜11:00')
     expect(items[0].textContent).toContain('60分')
+    expect(within(items[0]).getByText('滞在約60分（予定）')).toBeTruthy()
     expect(items[1].textContent).toContain('12:00〜13:15')
     expect(items[1].textContent).toContain('75分')
     expect(items[2].textContent).toContain('14:00〜15:00')
@@ -124,6 +125,56 @@ describe('旅程の路線図: 表示', () => {
     renderView()
 
     expect(screen.getByText(/実際の地図ではありません/)).toBeTruthy()
+  })
+
+  it('概要はGoogle根拠の件数と根拠なし予定を区別し、展開した行から詳細を開く', async () => {
+    const user = userEvent.setup()
+    const trip = TripSchema.parse({
+      ...sampleTrip,
+      stops: sampleTrip.stops.map((stop, index) => ({
+        ...stop,
+        isFixed: index === 0,
+        evidence:
+          index === 0
+            ? [{ ...stop.evidence[0], source: { kind: 'places', label: 'Google Maps' } }]
+            : index === 1
+              ? []
+              : stop.evidence,
+      })),
+    })
+    render(<TripRouteView trip={trip} />)
+
+    const overview = screen.getByRole('region', { name: '旅程の根拠' })
+    expect(overview.textContent).toContain('固定予定：1件')
+    expect(overview.textContent).toContain('根拠：1件')
+    expect(overview.textContent).toContain('根拠なしの予定：1件')
+    expect(overview.textContent).toContain('Google Maps')
+    expect(overview.textContent).not.toContain('全て')
+    await user.click(within(overview).getByRole('button', { name: '予定ごとの根拠を見る' }))
+    const lunchEntry = within(overview).getByRole('button', { name: /昼食店A.*根拠なし/ })
+    await user.click(lunchEntry)
+    expect(sheet().textContent).toContain('昼食店A')
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(document.activeElement).toBe(lunchEntry)
+  })
+
+  it('Google根拠が0件でもGoogle Maps以外の根拠を照合結果に混ぜない', () => {
+    const noGoogle = TripSchema.parse({
+      ...sampleTrip,
+      stops: sampleTrip.stops.map((stop) => ({
+        ...stop,
+        evidence: stop.evidence.map((item) => ({
+          ...item,
+          source: { kind: 'user_report', label: '本人の報告' },
+        })),
+      })),
+    })
+    render(<TripRouteView trip={noGoogle} />)
+    const overview = screen.getByRole('region', { name: '旅程の根拠' })
+    expect(overview.textContent).toContain('現在の旅程にはGoogle Mapsの照合結果がありません')
+    expect(overview.textContent).toContain('Google Maps以外の根拠：3件')
+    expect(within(overview).queryByRole('group', { name: 'Google Maps由来の根拠' })).toBeNull()
   })
 })
 

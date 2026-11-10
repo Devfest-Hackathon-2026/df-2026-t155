@@ -1,10 +1,11 @@
 'use client'
 
-import { useEffect, useLayoutEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { Trip } from '@/domain'
 
 import { segmentEvidence } from './evidence-scope'
+import { ItineraryOverview } from './itinerary-overview'
 import { ROUTE_LIST_ID, RouteMap, stopButtonId } from './route-map'
 import { routeStopKind, setStopFixed, type RouteMeta } from './model'
 import { StopSheet } from './stop-sheet'
@@ -49,6 +50,7 @@ export function TripRouteView({
   const [closingId, setClosingId] = useState<string | null>(null)
   // シートを閉じたあとにフォーカスを戻す予定のID。
   const [restoreFocusId, setRestoreFocusId] = useState<string | null>(null)
+  const restoreFocusTarget = useRef<HTMLElement | null>(null)
   // 親のTripの更新で、選択中の予定が無くなり、詳細が閉じた。フォーカスが失われていたら、一覧へ退避する。
   const [rescueFocus, setRescueFocus] = useState(false)
 
@@ -80,9 +82,11 @@ export function TripRouteView({
   useLayoutEffect(() => {
     if (restoreFocusId === null || closingId !== null) return
     const destination =
+      (restoreFocusTarget.current?.isConnected ? restoreFocusTarget.current : null) ??
       document.getElementById(stopButtonId(restoreFocusId)) ??
       document.getElementById(ROUTE_LIST_ID)
     destination?.focus()
+    restoreFocusTarget.current = null
     setRestoreFocusId(null)
   }, [closingId, restoreFocusId])
 
@@ -125,6 +129,7 @@ export function TripRouteView({
   const closeSheet = () => {
     if (selectedId === null) return
     setClosingId(selectedId)
+    restoreFocusTarget.current ??= document.getElementById(stopButtonId(selectedId))
     setRestoreFocusId(selectedId)
     setSelectedId(null)
   }
@@ -143,6 +148,14 @@ export function TripRouteView({
           ：店名・営業時間・照合結果は、画面確認用のサンプルです。実在の情報ではありません。
         </p>
       )}
+      <ItineraryOverview
+        trip={trip}
+        onSelectStop={(id, trigger) => {
+          if (selectedId !== null || closingId !== null) return
+          restoreFocusTarget.current = trigger
+          setSelectedId(id)
+        }}
+      />
       <RouteMap
         trip={trip}
         meta={meta}
@@ -150,7 +163,10 @@ export function TripRouteView({
         appliedStopId={appliedStopId}
         onReviseStop={onStartRevision && ((stopId) => onStartRevision(stopId, true))}
         onSelectStop={(id) => {
-          if (selectedId === null && closingId === null) setSelectedId(id)
+          if (selectedId === null && closingId === null) {
+            restoreFocusTarget.current = document.getElementById(stopButtonId(id))
+            setSelectedId(id)
+          }
         }}
       />
       <p className="mt-3 text-sm text-gt-muted empty:hidden">{!selected && notice?.message}</p>

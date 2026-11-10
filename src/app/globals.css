@@ -366,6 +366,14 @@ body:has(main [data-welcome-screen]) > main:has([data-welcome-screen]) {
   --gt-itinerary-perforation: rgb(107 97 82 / 45%);
 }
 
+.gt-itinerary-route .gt-itinerary-overview {
+  border-color: var(--gt-itinerary-rule);
+  background-color: var(--gt-itinerary-paper);
+  background-image:
+    repeating-linear-gradient(135deg, var(--gt-itinerary-pattern) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(45deg, var(--gt-itinerary-pattern) 0 1px, transparent 1px 7px);
+}
+
 .gt-itinerary-route .gt-itinerary-stop-card {
   border-color: var(--gt-itinerary-rule);
   background-color: var(--gt-itinerary-paper);

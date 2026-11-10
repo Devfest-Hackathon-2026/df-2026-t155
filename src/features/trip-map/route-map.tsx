@@ -243,6 +243,9 @@ function StopCard({
             {stop.plannedStartTime}〜{endTime(stop)}・{stop.durationMinutes}分
           </span>
           <span className="block text-xl leading-tight font-bold wrap-anywhere">{stop.name}</span>
+          <span className="mt-1 block text-xs text-gt-muted">
+            滞在約{stop.durationMinutes}分（予定）
+          </span>
           <span className="mt-1.5 flex flex-wrap items-center gap-2">
             {stop.isFixed && <FixedChip />}
             <Evidence stop={stop} />
