@@ -62,7 +62,7 @@ const second = {
   ...first,
   id: 'candidate-b',
   diff: { before: target, after: { ...after, name: '別の食堂', evidence: [] } },
-  constraintCheck: { status: 'unknown', explanation: '営業時間が不明' },
+  constraintCheck: { status: 'unknown', explanation: '営業時間を確認できませんでした。' },
 } satisfies RevisionProposal['revisions'][number]
 
 function routes(minutes: number): RevisionProposal['comparisons'] {
@@ -274,13 +274,13 @@ describe('部分修正の候補比較', () => {
     expect(within(screen.getByRole('table')).getAllByText('時間差：未確認')).toHaveLength(2)
     expect(scope().getByText('営業時間：未確認')).toBeTruthy()
     expect(screen.queryByText(/間に合う見込みです/)).toBeNull()
-    expect(screen.getByText(/確認できていないため、この候補は選べません/)).toBeTruthy()
+    expect(screen.getByText('営業時間を確認できませんでした。')).toBeTruthy()
     expect(screen.getByRole('region', { name: '根拠と照合日時' }).textContent).toContain('未照合')
     expect(approvalDisabled()).toBe(true)
     approve().focus()
     expect(
       document.getElementById(approve().getAttribute('aria-describedby') ?? '')?.textContent,
-    ).toContain('この候補は選べません')
+    ).toContain('営業時間を確認できませんでした。')
     await user.keyboard('{Enter}')
     await user.click(approve())
     expect(apply).not.toHaveBeenCalled()
@@ -335,6 +335,7 @@ describe('部分修正の候補比較', () => {
     const overview = within(screen.getByRole('region', { name: '選択中の候補の概要' }))
     expect(overview.getByText(/固定の乗換予定.*経路の端点として照合できません/)).toBeTruthy()
     expect(overview.getByText(/候補を切り替えるだけでは解消しません/)).toBeTruthy()
+    expect(overview.getByText(/元の旅程に戻り、対象や前後の予定を確認/)).toBeTruthy()
     expect(overview.getByText(/移動を確認できていません/)).toBeTruthy()
     expect(overview.getByText('徒歩・未確認（未照会）')).toBeTruthy()
     expect(overview.queryByRole('button', { name: '条件を見直す' })).toBeNull()
@@ -345,6 +346,74 @@ describe('部分修正の候補比較', () => {
     await user.click(approve())
     expect(apply).not.toHaveBeenCalled()
   })
+
+  it.each([true, false])(
+    '隣接施設の通信失敗（%s）と未同定で異なる案内を表示する',
+    async (failed) => {
+      const user = userEvent.setup()
+      const comparison = routes(8)?.[0]
+      if (!comparison) throw new Error('比較のテストデータがありません')
+      const missingLeg = {
+        presence: 'segment',
+        segment: {
+          fromStopId: target.id,
+          toStopId: trip.stops[2].id,
+          status: 'unknown',
+          reason: 'not_queried',
+          mode: 'walk',
+          explanation: '隣接地点を経路の端点として照会できません。',
+        },
+      } as const
+      const generate = vi.fn<GenerateRevisions>().mockResolvedValue({
+        ...proposal,
+        revisions: [
+          {
+            ...first,
+            constraintCheck: {
+              status: 'unknown',
+              explanation: failed
+                ? '次の予定の施設検索に失敗しました。時間をおいて、もう一度お試しください。'
+                : '次の予定への移動を確認できませんでした。',
+            },
+          },
+        ],
+        comparisons: [
+          {
+            ...comparison,
+            routeEndpoints: { previousPlaceId: 'garden', nextPlaceId: null },
+            ...(failed ? { failedPlaceLookups: ['next' as const] } : {}),
+            before: { ...comparison.before, toNext: missingLeg },
+            after: { ...comparison.after, toNext: missingLeg },
+          },
+        ],
+      })
+      const apply = vi.fn<ApplyRevision>()
+      render(<RevisionRouteTest trip={trip} generate={generate} apply={apply} />)
+      await open(user)
+      await request(user)
+      const overview = within(await screen.findByRole('region', { name: '選択中の候補の概要' }))
+      const retry = '条件に戻って再試行'
+      if (failed) {
+        expect(overview.getByText(/施設検索に失敗しました/)).toBeTruthy()
+        expect(overview.queryByText(/予定の施設名を確認/)).toBeNull()
+        expect(overview.getByRole('button', { name: retry })).toBeTruthy()
+      } else {
+        expect(overview.getByText(/予定の施設名を確認/)).toBeTruthy()
+        expect(overview.queryByRole('button', { name: retry })).toBeNull()
+      }
+      await user.click(overview.getByRole('button', { name: '変更内容を確認する' }))
+      expect(approvalDisabled()).toBe(true)
+      await user.click(approve())
+      expect(apply).not.toHaveBeenCalled()
+      if (failed) {
+        await user.click(screen.getByRole('button', { name: retry }))
+        expect(screen.getByLabelText<HTMLTextAreaElement>('修正理由（必須）').value).toBe(
+          '店が休み',
+        )
+        expect(generate).toHaveBeenCalledTimes(1)
+      }
+    },
+  )
 
   it('修正理由と希望条件を合わせて保存契約の上限を超えるときは、送らずに案内する', async () => {
     const user = userEvent.setup()
@@ -434,6 +503,35 @@ describe('部分修正の候補比較', () => {
     expect(route().getByText(target.name)).toBeTruthy()
     expect(route().queryByText(after.name)).toBeNull()
     expect(screen.getByLabelText<HTMLTextAreaElement>('修正理由（必須）').value).toBe('店が休み')
+  })
+
+  it('候補が見つからなかった理由を示し、希望条件を変更して再探索できる', async () => {
+    const user = userEvent.setup()
+    const generate = vi
+      .fn<GenerateRevisions>()
+      .mockResolvedValueOnce({
+        status: 'no_candidates',
+        message: '同じ名前の施設が複数見つかり、1か所に絞れませんでした。',
+      })
+      .mockImplementationOnce(async ({ reason }) => ({
+        ...proposal,
+        revisions: proposal.revisions.map((revision) => ({ ...revision, reason })),
+      }))
+    render(<RevisionRouteTest trip={trip} generate={generate} />)
+    await open(user)
+    await request(user)
+    const notice = await screen.findByRole('alert')
+    expect(notice.textContent).toContain('同じ名前の施設が複数')
+    expect(notice.textContent).toContain('希望条件を減らすか')
+    expect(route().getByText(target.name)).toBeTruthy()
+
+    await user.type(screen.getByLabelText('希望条件（任意）'), '喫茶店')
+    await user.click(screen.getByRole('button', { name: '変更候補を探す' }))
+    expect(generate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ reason: '店が休み\n希望条件：喫茶店' }),
+      expect.any(AbortSignal),
+    )
+    expect(await screen.findByRole('group', { name: '変更候補を切り替える' })).toBeTruthy()
   })
 
   it('待機中にTabでキャンセル操作へ移ると、502の後もEnterで再送信しない', async () => {

@@ -29,7 +29,7 @@ import {
 import { checkStopEvidence } from './proposal-checks'
 
 const generationMessages = {
-  no_candidates: '条件に合う候補が見つかりませんでした。希望条件を見直して再試行できます。',
+  no_candidates: '条件に合う候補が見つかりませんでした。',
   insufficient_information:
     '候補を作るための情報が不足しています。変更理由や希望条件を補ってください。',
   external_service_error: '候補生成や照合に使う外部サービスでエラーが発生しました。',
@@ -330,6 +330,9 @@ export function RevisionReview({
   const blockers =
     candidate && !constraintSatisfied ? sharedRevisionBlockers(trip, candidate, comparison) : []
   const canReviewConditions = blockers.length === 0
+  const canRetryPlaceLookup =
+    !constraintSatisfied && Boolean(comparison?.failedPlaceLookups?.length)
+  const reviewConditionsLabel = canRetryPlaceLookup ? '条件に戻って再試行' : '条件を見直す'
   const hoursUnconfirmed =
     candidate?.constraintCheck.status === 'unknown' &&
     checkStopEvidence(candidate.diff.after, 'opening_hours').status === 'unverifiable'
@@ -343,29 +346,27 @@ export function RevisionReview({
   const conditionsHint =
     !canReviewConditions || simulated
       ? null
-      : hoursUnconfirmed
-        ? '営業時間を照合できる別の施設を探す場合は、希望条件を見直せます。'
-        : walkingRouteMissing && !canDrive
-          ? '車を使える場合は、条件を見直して車での移動も確認できます。'
-          : null
+      : canRetryPlaceLookup
+        ? '同じ希望条件で探し直せます。'
+        : hoursUnconfirmed
+          ? '営業時間を照合できる別の施設を探す場合は、希望条件を見直せます。'
+          : walkingRouteMissing && !canDrive
+            ? '車を使える場合は、条件を見直して車での移動も確認できます。'
+            : null
   const reviewConditions = () => {
     previewReturn.current = null
     setReview(null)
     setApplyFailure(null)
   }
   const constraintViolated = candidate?.constraintCheck.status === 'violated'
-  const unapprovableNote = constraintViolated
-    ? '旅程の条件に合わないため、この候補は選べません。'
-    : '旅程に組み込めるか確認できていないため、この候補は選べません。'
-  // 現地報告では、承認できない具体的な理由を承認欄にも添える（比較欄が画面の外にあっても理由が分かる）。
-  const unapprovableReason =
-    onSiteReport && candidate ? `理由：${candidate.constraintCheck.explanation}` : ''
+  // 比較欄が画面の外にあっても、承認欄で止まっている理由が分かるようにする。
+  const unapprovableReason = candidate?.constraintCheck.explanation
   const approvalNote = constraintViolated
-    ? `${unapprovableNote}${unapprovableReason}`
+    ? unapprovableReason
     : simulated
       ? '模擬報告のため適用できません。'
       : !constraintSatisfied
-        ? `${unapprovableNote}${unapprovableReason}`
+        ? unapprovableReason
         : isApplying
           ? null
           : requiresLatestTrip
@@ -675,6 +676,11 @@ export function RevisionReview({
                 {generationMessages[generationFailure.status]}
               </p>
               {generationFailure.message && <p>{generationFailure.message}</p>}
+              {generationFailure.status === 'no_candidates' && (
+                <p>
+                  希望条件を減らすか、探したい施設の種類を具体的にして、もう一度お試しください。
+                </p>
+              )}
               <p>元の旅程を表示しています。</p>
             </div>
           )}
@@ -796,7 +802,10 @@ export function RevisionReview({
                       <li key={blocker}>{blocker}</li>
                     ))}
                   </ul>
-                  <p>この確認は候補に共通します。候補を切り替えるだけでは解消しません。</p>
+                  <p>
+                    この確認は候補に共通します。候補を切り替えるだけでは解消しません。
+                    元の旅程に戻り、対象や前後の予定を確認してください。
+                  </p>
                 </div>
               )}
               {!constraintSatisfied && (
@@ -805,10 +814,10 @@ export function RevisionReview({
               {constraintSatisfied && approvalNote && <p className="text-sm">{approvalNote}</p>}
               {(conditionsHint ||
                 (approvableCount === 0 &&
+                  !constraintSatisfied &&
                   canReviewConditions &&
                   !requiresLatestTrip &&
-                  !simulated &&
-                  apply)) && (
+                  !simulated)) && (
                 <div className="space-y-1">
                   <p className="text-sm">
                     {conditionsHint ??
@@ -820,7 +829,7 @@ export function RevisionReview({
                     disabled={requiresLatestTrip}
                     onClick={reviewConditions}
                   >
-                    条件を見直す
+                    {reviewConditionsLabel}
                   </button>
                 </div>
               )}
@@ -887,7 +896,7 @@ export function RevisionReview({
         <>
           <div className="gt-revision-paper space-y-2">
             <h3 className="text-xl leading-tight font-bold wrap-anywhere">
-              「{candidate.diff.after.name}」に変更します
+              「{candidate.diff.after.name}」{canApprove ? 'に変更します' : 'への変更内容'}
             </h3>
             <span className="inline-flex rounded-lg border border-gt-preview bg-gt-preview-bg px-2 py-0.5 text-[11px] font-bold text-gt-preview">
               <span>{approvalStatus}</span>
@@ -992,7 +1001,7 @@ export function RevisionReview({
               disabled={isApplying || requiresLatestTrip}
               onClick={reviewConditions}
             >
-              条件を見直す
+              {reviewConditionsLabel}
             </button>
           )}
         </>

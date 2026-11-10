@@ -52,20 +52,24 @@ export function sharedRevisionBlockers(
       stop: trip.stops[index - 1],
       label: '前の予定',
       placeId: comparison?.routeEndpoints?.previousPlaceId,
+      lookupFailed: comparison?.failedPlaceLookups?.includes('previous'),
     },
     {
       stop: trip.stops[index + 1],
       label: '次の予定',
       placeId: comparison?.routeEndpoints?.nextPlaceId,
+      lookupFailed: comparison?.failedPlaceLookups?.includes('next'),
     },
   ]
-  for (const { stop, label, placeId } of sides) {
+  for (const { stop, label, placeId, lookupFailed } of sides) {
     if (stop?.kind === 'transport') {
       blockers.push(
         `${label}「${stop.name}」は乗車・乗換のため、この機能では経路の端点として照合できません。`,
       )
-    } else if (stop && placeId === null) {
-      blockers.push(`${label}「${stop.name}」の施設を特定できず、移動時間を照合できません。`)
+    } else if (stop && placeId === null && !lookupFailed) {
+      blockers.push(
+        `${label}「${stop.name}」の施設を特定できず、移動時間を照合できません。予定の施設名を確認してください。`,
+      )
     }
   }
   return blockers
@@ -438,7 +442,7 @@ export function CandidateComparison({
             {next.plannedStartTime}の予定に間に合う見込みです。
           </p>
         )}
-        {revision.constraintCheck.status !== 'satisfied' && (
+        {!compact && revision.constraintCheck.status !== 'satisfied' && (
           <p className="text-sm leading-relaxed wrap-anywhere">
             {revision.constraintCheck.explanation}
           </p>

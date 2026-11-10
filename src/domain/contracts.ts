@@ -129,6 +129,12 @@ export const TravelComparisonSchema = z.strictObject({
   // 生成時に照合した元施設。nullは未同定、省略は旧応答で照合結果不明。
   originalPlaceId: IdSchema.nullable().optional(),
   routeEndpoints: RevisionRouteEndpointsSchema.optional(),
+  // 経路を照会する前に、端点の施設検索が失敗した側。
+  failedPlaceLookups: z
+    .array(z.enum(['previous', 'next']))
+    .min(1)
+    .max(2)
+    .optional(),
   before: TravelComparisonSideSchema,
   after: TravelComparisonSideSchema,
 })

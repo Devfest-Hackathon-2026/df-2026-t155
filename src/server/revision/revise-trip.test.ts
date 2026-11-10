@@ -35,10 +35,17 @@ const found = (
   placeId: string,
   name: string,
   periods: OpeningPeriod[] = sundayAllDay,
+  businessStatus?: string,
 ): PlaceSearchResult => ({
   status: 'found',
   candidates: [
-    { placeId, name, address: KYOTO_ADDRESS, openingHours: { status: 'available', periods } },
+    {
+      placeId,
+      name,
+      address: KYOTO_ADDRESS,
+      openingHours: { status: 'available', periods },
+      businessStatus,
+    },
   ],
 })
 
@@ -522,21 +529,46 @@ describe('reviseTrip: 成功', () => {
 })
 
 describe('reviseTrip: 成立しない候補は提案しない', () => {
+  it('閉業だけで候補がなくなった場合は、営業時間帯の違反と区別する', async () => {
+    const places = {
+      ...basePlaces,
+      昼食店B: found('P4', '昼食店B', sundayAllDay, 'CLOSED_PERMANENTLY'),
+    }
+    const { response, events } = await run(
+      { ...fitting, places },
+      clientReturning(draft([{ name: '昼食店B' }])),
+    )
+    expect(response).toEqual({
+      status: 'no_candidates',
+      message: '情報源で閉業と示された施設を除きました。',
+    })
+    expect(events).toContainEqual(
+      expect.objectContaining({ violations: { permanently_closed: 1 } }),
+    )
+  })
+
   it('営業時間が矛盾する候補（対象日が定休）は、候補にしない', async () => {
     const setup = {
       ...fitting,
       places: { ...basePlaces, 昼食店B: found('P4', '昼食店B', mondayOnly) },
     }
-    const { response } = await run(setup, clientReturning(draft([{ name: '昼食店B' }])))
+    const { response, events } = await run(setup, clientReturning(draft([{ name: '昼食店B' }])))
 
-    expect(response.status).toBe('no_candidates')
+    expect(response).toEqual({
+      status: 'no_candidates',
+      message: '予定の滞在時間帯に利用できる営業時間ではありませんでした。',
+    })
+    expect(events).toContainEqual(expect.objectContaining({ violations: { hours: 1 } }))
   })
 
   it('次の予定（固定の14時の展示）に間に合わない候補は、候補にしない', async () => {
     const setup = { ...fitting, routes: route({ WALK: walk(60), DRIVE: walk(50) }) }
     const { response } = await run(setup, clientReturning(draft([{ name: '昼食店B' }])))
 
-    expect(response.status).toBe('no_candidates')
+    expect(response).toMatchObject({
+      status: 'no_candidates',
+      message: expect.stringContaining('照合した移動時間では'),
+    })
   })
 
   it('前の予定からの移動に間に合わない候補は、候補にしない', async () => {
@@ -600,15 +632,20 @@ describe('reviseTrip: 成立しない候補は提案しない', () => {
       }
       const { response, events } = await run(setup, clientReturning(draft([{ name: '昼食店B' }])))
 
-      expect(proposed(response)[0].constraintCheck.status).toBe('unknown')
+      expect(proposed(response)[0].constraintCheck).toEqual({
+        status: 'unknown',
+        explanation: '営業時間を確認できませんでした。確認できるまで、承認できません。',
+      })
       expect(events).toContainEqual({
         kind: 'candidate_counts',
         generated: 1,
         filtered: 1,
+        nameExclusions: {},
         identified: 1,
         unidentified: {},
         mapsFailed: 0,
         violated: 0,
+        violations: {},
         samePlace: 0,
         duplicatePlace: 0,
         unknown: 1,
@@ -628,6 +665,7 @@ describe('同一施設の営業時間の照合結果', () => {
         placeId: 'P4',
         name: '営業時間なしの別名',
         address: KYOTO_ADDRESS,
+        businessStatus: 'OPERATIONAL',
         openingHours: { status: 'unavailable' },
       },
     ],
@@ -640,6 +678,40 @@ describe('同一施設の営業時間の照合結果', () => {
     ]),
     昼食店B: found('P4', '昼食店B'),
   }
+
+  it.each([
+    ['一時休業の別名', '昼食店B'],
+    ['昼食店B', '一時休業の別名'],
+  ])('一時休業と営業中の食い違いを未確認にする（%s → %s）', async (...names) => {
+    const { response, events, maps } = await run(
+      {
+        ...fitting,
+        places: {
+          ...placeResults,
+          一時休業の別名: found('P4', '一時休業の別名', [], 'CLOSED_TEMPORARILY'),
+          昼食店B: found('P4', '昼食店B', sundayAllDay, 'OPERATIONAL'),
+        },
+      },
+      clientReturning(draft(names.map((name) => ({ name })))),
+    )
+    const [revision] = proposed(response)
+    expect(revision.constraintCheck).toMatchObject({
+      status: 'unknown',
+      explanation: expect.stringContaining('一時休業の情報と別の照合結果が食い違い'),
+    })
+    expect(revision.diff.after.evidence).toContainEqual(
+      expect.objectContaining({
+        subject: 'opening_hours',
+        source: { kind: 'places', label: expect.any(String) },
+        status: 'conflicting',
+      }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({ unknownReasons: { hours_conflict: 1 }, satisfied: 0 }),
+    )
+    expect(maps.searchPlaces).toHaveBeenCalledTimes(5)
+    expect(maps.computeRoute).toHaveBeenCalledTimes(4)
+  })
 
   it.each([
     ['営業時間なしの別名', '営業時間外の別名', '昼食店B'],
@@ -680,6 +752,24 @@ describe('同一施設の営業時間の照合結果', () => {
       clientReturning(draft([{ name: '営業時間なしの別名' }, { name: '昼食店B' }])),
     )
     expect(proposed(response)).toMatchObject([{ constraintCheck: { status: 'satisfied' } }])
+  })
+
+  it('経路が未確認でも、同じ施設で取得できた営業時間の根拠を比較に残す', async () => {
+    const { response, events } = await run(
+      { places: placeResults, routes: route({}) },
+      clientReturning(draft([{ name: '営業時間なしの別名' }, { name: '昼食店B' }])),
+    )
+    const [revision] = proposed(response)
+    expect(revision.constraintCheck.status).toBe('unknown')
+    expect(revision.constraintCheck.explanation).not.toContain('営業時間')
+    expect(revision.diff.after.evidence).toContainEqual(
+      expect.objectContaining({ subject: 'opening_hours', status: 'consistent' }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        unknownReasons: { from_previous_no_route: 1, to_next_no_route: 1 },
+      }),
+    )
   })
 
   it('別施設の成立案を残し、照合の食い違いがあっても実際の移動制約違反は除外する', async () => {
@@ -731,15 +821,54 @@ describe('reviseTrip: 隣の予定の区間が未測定のときは「確認で�
     expect(explanationOf(response)).toContain('前の予定からの移動')
   })
 
-  it('隣の予定のPlaces検索が失敗（MapsCallError）したなら unknown', async () => {
-    const places = { ...basePlaces, '14時の予約展示': new MapsCallError('network', 'x') }
-    const { response } = await run(
-      { places, routes },
-      clientReturning(draft([{ name: '昼食店B' }])),
-    )
+  it.each([
+    ['朝の庭園', 'previous', 'fromPrevious', '前の予定', 'from_previous'],
+    ['14時の予約展示', 'next', 'toNext', '次の予定', 'to_next'],
+  ] as const)(
+    '隣の施設検索で通信に失敗した場合と検索結果0件を区別する（%s）',
+    async (name, side, slot, label, key) => {
+      const client = clientReturning(draft([{ name: '昼食店B' }]))
+      const failed = await run(
+        {
+          places: { ...basePlaces, [name]: new MapsCallError('network', 'x') },
+          routes,
+        },
+        client,
+      )
+      const missing = await run(
+        {
+          places: { ...basePlaces, [name]: { status: 'no_candidates' } },
+          routes,
+        },
+        client,
+      )
 
-    expect(explanationOf(response)).toContain('次の予定への移動')
-  })
+      expect(explanationOf(failed.response)).toContain(`${label}の施設検索に失敗しました。`)
+      expect(explanationOf(failed.response)).toContain('時間をおいて、もう一度')
+      expect(explanationOf(missing.response)).not.toContain('施設検索に失敗')
+      if (failed.response.status !== 'proposed' || missing.response.status !== 'proposed')
+        throw new Error('候補が返ることを期待しました')
+      const failedComparison = failed.response.comparisons?.[0]
+      const missingComparison = missing.response.comparisons?.[0]
+      expect(failedComparison?.failedPlaceLookups).toEqual([side])
+      expect(missingComparison?.failedPlaceLookups).toBeUndefined()
+      expect(failedComparison?.after[slot]).toMatchObject({
+        presence: 'segment',
+        segment: { status: 'unknown', reason: 'not_queried' },
+      })
+      expect(failedComparison?.after[slot]).toEqual(missingComparison?.after[slot])
+      expect(failed.events).toContainEqual(
+        expect.objectContaining({ unknownReasons: { [`${key}_place_lookup_failed`]: 1 } }),
+      )
+      expect(missing.events).toContainEqual(
+        expect.objectContaining({ unknownReasons: { [`${key}_not_queried`]: 1 } }),
+      )
+      for (const { maps } of [failed, missing]) {
+        expect(maps.searchPlaces).toHaveBeenCalledTimes(4)
+        expect(maps.computeRoute).toHaveBeenCalledTimes(2)
+      }
+    },
+  )
 
   it.each(['transport', 'unidentified'] as const)(
     '同じ隣接区間を照合できない場合は、営業時間が確認できる候補もすべて unknown（%s）',
@@ -903,9 +1032,26 @@ describe('reviseTrip: 候補の整理', () => {
       clientReturning(draft([{ name: '昼食店A（架空）' }])),
     )
 
-    expect(response.status).toBe('no_candidates')
+    expect(response).toEqual({
+      status: 'no_candidates',
+      message: '元の予定・他の予定・候補と名前が重なる案を除きました。',
+    })
     expect(maps.searchPlaces).not.toHaveBeenCalled()
-    expect(events[0]).toMatchObject({ kind: 'candidate_counts', generated: 1, filtered: 0 })
+    expect(events[0]).toMatchObject({
+      kind: 'candidate_counts',
+      generated: 1,
+      filtered: 0,
+      nameExclusions: { duplicate: 1 },
+    })
+  })
+
+  it('使える施設名のない案だけを除外した場合は、名称重複と表示しない', async () => {
+    const { response, maps } = await run(fitting, clientReturning(draft([{ name: '（別館）' }])))
+    expect(response).toEqual({
+      status: 'no_candidates',
+      message: '使える施設名がない案を除きました。',
+    })
+    expect(maps.searchPlaces).not.toHaveBeenCalled()
   })
 })
 
@@ -978,17 +1124,36 @@ describe('reviseTrip: 失敗の区別（元の旅程は維持される）', () =
     const client = clientReturning(
       draft([], { status: 'insufficient_information', reason: '地域が特定できません' }),
     )
-    const { response, maps } = await run(fitting, client)
+    const { response, maps, events } = await run(fitting, client)
 
     expect(response).toEqual({
       status: 'insufficient_information',
       message: 'AIの回答: 地域が特定できません',
     })
     expect(maps.searchPlaces).not.toHaveBeenCalled()
+    expect(events[0]).toMatchObject({ kind: 'candidate_counts', generated: 0, filtered: 0 })
+  })
+
+  it('AIが空の候補一覧を返した場合は、名称による除外と区別する', async () => {
+    const client = clientReturning(draft([]))
+    const { response, maps, events } = await run(fitting, client)
+
+    expect(response).toEqual({
+      status: 'no_candidates',
+      message: 'AIから代替候補が返されませんでした。',
+    })
+    expect(events[0]).toMatchObject({ kind: 'candidate_counts', generated: 0, filtered: 0 })
+    expect(client.generateJson).toHaveBeenCalledTimes(1)
+    expect(maps.searchPlaces).not.toHaveBeenCalled()
+    expect(maps.computeRoute).not.toHaveBeenCalled()
   })
 
   it('AIの出力がJSONでない・形式が不正なら外部サービスの失敗として区別する', async () => {
-    for (const text of ['not json', JSON.stringify({ failure: null, candidates: 'x' })]) {
+    for (const text of [
+      'not json',
+      JSON.stringify({ failure: null, candidates: 'x' }),
+      draft([{ name: '昼食店B' }], { status: 'no_candidates', reason: '候補が見つからない' }),
+    ]) {
       const { response } = await run(fitting, clientReturning(text))
       expect(response.status).toBe('external_service_error')
     }

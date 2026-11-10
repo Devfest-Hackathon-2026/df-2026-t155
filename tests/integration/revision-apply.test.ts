@@ -79,9 +79,10 @@ const foundPlace = (
   name: string,
   placeId: string,
   openingHours: OpeningHours = open,
+  businessStatus?: string,
 ): PlaceSearchResult => ({
   status: 'found',
-  candidates: [{ name, placeId, address, openingHours }],
+  candidates: [{ name, placeId, address, openingHours, businessStatus }],
 })
 const normalSearch: MapsClient['searchPlaces'] = async ({ query }) => {
   const place = places.find(({ name }) => query.startsWith(`${name} `))
@@ -320,18 +321,22 @@ describe('Revision適用 API＋Firestore Emulator', () => {
     expect(maps.computeRoute).toHaveBeenCalledTimes(6)
   })
 
-  it('営業時間が食い違う施設には署名を発行せず、別施設だけを再照合して適用できる', async () => {
+  it.each([false, true])('営業時間の食い違いを拒否する（一時休業 %s）', async (temporary) => {
     const trip = await seedTrip()
     const closedAlias = '昼食店Bの別名'
     const closedAtVisit: OpeningHours = {
       status: 'available',
       periods: [{ open: { day: 0, hour: 16, minute: 0 }, close: { day: 0, hour: 20, minute: 0 } }],
     }
+    const businessStatus = temporary ? 'CLOSED_TEMPORARILY' : undefined
+    const hours = temporary ? open : closedAtVisit
     generateJson.mockResolvedValue(draft(candidateB.name, closedAlias, candidateC.name))
     maps.searchPlaces.mockImplementation(async (options) =>
       options.query.startsWith(`${closedAlias} `)
-        ? foundPlace(closedAlias, candidateB.placeId, closedAtVisit)
-        : normalSearch(options),
+        ? foundPlace(closedAlias, candidateB.placeId, hours, businessStatus)
+        : options.query.startsWith(`${candidateB.name} `)
+          ? foundPlace(candidateB.name, candidateB.placeId, open, 'OPERATIONAL')
+          : normalSearch(options),
     )
 
     const { proposal, body, context, revision } = await generate(trip, { phase: 'planning' })
@@ -346,6 +351,7 @@ describe('Revision適用 API＋Firestore Emulator', () => {
       constraintCheck: { status: 'unknown', explanation: expect.stringContaining('食い違') },
     })
     expect(Object.keys(proposal.proposalTokens ?? {})).toEqual([revision.id])
+    expect(generateJson).toHaveBeenCalledTimes(1)
     expect(maps.searchPlaces).toHaveBeenCalledTimes(6)
     expect(maps.computeRoute).toHaveBeenCalledTimes(6)
 
@@ -377,13 +383,13 @@ describe('Revision適用 API＋Firestore Emulator', () => {
 
     maps.searchPlaces.mockImplementation(async (options) =>
       options.query.startsWith(`${candidateC.name} `)
-        ? foundPlace(candidateC.name, candidateC.placeId, closedAtVisit)
+        ? foundPlace(candidateC.name, candidateC.placeId, hours, businessStatus)
         : normalSearch(options),
     )
     await expectCode(
       await applyRevision(owner.request('POST', approval), context),
       422,
-      'revision_not_applicable',
+      temporary ? 'revision_unverified' : 'revision_not_applicable',
     )
     expect(await readTrip()).toEqual(trip)
 
@@ -392,6 +398,95 @@ describe('Revision適用 API＋Firestore Emulator', () => {
     expect((await readTrip()).stops).toEqual(
       trip.stops.with(1, { ...trip.stops[1], ...candidateC }),
     )
+  })
+
+  it.each([
+    ['恒久閉業', candidateB.name, '情報源で閉業と示された施設を除きました。', 4, 4],
+    [
+      '名称重複',
+      tripInput.stops[1].name,
+      '元の予定・他の予定・候補と名前が重なる案を除きました。',
+      0,
+      0,
+    ],
+  ] as const)(
+    '%sだけで候補がなくなった理由を返す',
+    async (_scenario, name, message, placesCalls, routesCalls) => {
+      const trip = await seedTrip()
+      generateJson.mockResolvedValue(draft(name))
+      maps.searchPlaces.mockImplementation(async (options) =>
+        options.query.startsWith(`${candidateB.name} `)
+          ? foundPlace(candidateB.name, candidateB.placeId, open, 'CLOSED_PERMANENTLY')
+          : normalSearch(options),
+      )
+      const response = await generateRevision(
+        owner.request('POST', {
+          trip,
+          context: { phase: 'planning' },
+          targetStopId: trip.stops[1].id,
+          reason: '昼食の候補を比較する',
+        }),
+      )
+      expect(response.status).toBe(422)
+      expect(ReviseTripResponseSchema.parse(await response.json())).toEqual({
+        status: 'no_candidates',
+        message,
+      })
+      expect(generateJson).toHaveBeenCalledTimes(1)
+      expect(maps.searchPlaces).toHaveBeenCalledTimes(placesCalls)
+      expect(maps.computeRoute).toHaveBeenCalledTimes(routesCalls)
+      expect(await readTrip()).toEqual(trip)
+    },
+  )
+
+  it('同名支店の曖昧さと営業時間外で候補がなくなった理由を返す', async () => {
+    const trip = await seedTrip()
+    const alias = '昼食店Bの別名'
+    generateJson.mockResolvedValue(draft(candidateB.name, alias, candidateC.name))
+    maps.searchPlaces.mockImplementation(async (options) => {
+      if (options.query.startsWith(`${candidateB.name} `)) {
+        return foundPlace(candidateB.name, candidateB.placeId, { status: 'unavailable' })
+      }
+      if (options.query.startsWith(`${alias} `)) {
+        return foundPlace(alias, candidateB.placeId, {
+          status: 'available',
+          periods: [
+            { open: { day: 0, hour: 16, minute: 0 }, close: { day: 0, hour: 20, minute: 0 } },
+          ],
+        })
+      }
+      if (options.query.startsWith(`${candidateC.name} `)) {
+        return {
+          status: 'found',
+          candidates: [candidateC.placeId, 'other-branch'].map((placeId) => ({
+            name: candidateC.name,
+            placeId,
+            address,
+            openingHours: open,
+          })),
+        }
+      }
+      return normalSearch(options)
+    })
+
+    const response = await generateRevision(
+      owner.request('POST', {
+        trip,
+        context: { phase: 'planning' },
+        targetStopId: trip.stops[1].id,
+        reason: '昼食の候補を比較する',
+      }),
+    )
+    expect(response.status).toBe(422)
+    expect(ReviseTripResponseSchema.parse(await response.json())).toEqual({
+      status: 'no_candidates',
+      message:
+        '同じ名前の施設が複数見つかり、1か所に絞れませんでした。予定の滞在時間帯に利用できる営業時間ではありませんでした。',
+    })
+    expect(generateJson).toHaveBeenCalledTimes(1)
+    expect(maps.searchPlaces).toHaveBeenCalledTimes(6)
+    expect(maps.computeRoute).toHaveBeenCalledTimes(4)
+    expect(await readTrip()).toEqual(trip)
   })
 
   it.each(['生成時', '適用時'] as const)(
@@ -505,6 +600,8 @@ describe('Revision適用 API＋Firestore Emulator', () => {
     ['次が乗車・乗換', 'toNext', 'not_queried', 'revision_unverified', 2],
     ['次の施設が未同定', 'toNext', 'not_queried', 'revision_unverified'],
     ['次の施設の検索が失敗', 'toNext', 'not_queried', 'external_service_error'],
+    ['前の施設が未同定', 'fromPrevious', 'not_queried', 'revision_unverified'],
+    ['前の施設の検索が失敗', 'fromPrevious', 'not_queried', 'external_service_error'],
     ['候補の営業時間データが欠落', 'toNext', 'known', 'revision_unverified'],
     ['経路が見つからない', 'toNext', 'no_route', 'revision_unverified'],
     ['Routesの通信が失敗', 'toNext', 'api_error', 'external_service_error'],
@@ -521,11 +618,13 @@ describe('Revision適用 API＋Firestore Emulator', () => {
             })
       await seedTrip({ ...tripInput, stops })
       const trip = await readTrip()
+      const adjacent = trip.stops[side === 'fromPrevious' ? 0 : 2]
+      const failedPlaceLookup = scenario.endsWith('施設の検索が失敗')
       generateJson.mockResolvedValue(draft(candidateB.name, candidateC.name))
       maps.searchPlaces.mockImplementation(async (options) => {
-        if (options.query.startsWith(trip.stops[2].name)) {
-          if (scenario === '次の施設が未同定') return { status: 'no_candidates' }
-          if (scenario === '次の施設の検索が失敗') throw new Error('injected Places outage')
+        if (options.query.startsWith(adjacent.name)) {
+          if (scenario.endsWith('施設が未同定')) return { status: 'no_candidates' }
+          if (failedPlaceLookup) throw new Error('injected Places outage')
         }
         if (options.includeOpeningHours && expectedSegment === 'known') {
           const candidate = [candidateB, candidateC].find(({ name }) =>
@@ -554,6 +653,9 @@ describe('Revision適用 API＋Firestore Emulator', () => {
       ])
       expect(proposal.comparisons).toHaveLength(2)
       for (const comparison of proposal.comparisons ?? []) {
+        expect(comparison.failedPlaceLookups).toEqual(
+          failedPlaceLookup ? [side === 'fromPrevious' ? 'previous' : 'next'] : undefined,
+        )
         expect(comparison.after[side]).toMatchObject({
           presence: 'segment',
           segment:

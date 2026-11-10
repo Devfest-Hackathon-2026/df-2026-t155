@@ -19,8 +19,16 @@ export interface CandidateChecks {
   uncertainties?: readonly string[]
 }
 
+export type CandidateViolation = 'hours' | 'travel' | 'overlap'
+
 export type CandidateJudgement =
-  | { status: 'excluded'; reason: 'unidentified' | 'violated'; explanation: string }
+  | { status: 'excluded'; reason: 'unidentified'; explanation: string }
+  | {
+      status: 'excluded'
+      reason: 'violated'
+      violations: readonly CandidateViolation[]
+      explanation: string
+    }
   | { status: 'candidate'; constraintCheck: ConstraintCheck }
 
 // 候補として残すかと、残す場合の制約検証の結果。
@@ -40,29 +48,35 @@ export function judgeCandidate(checks: CandidateChecks): CandidateJudgement {
     return {
       status: 'excluded',
       reason: 'violated',
+      violations: ['overlap'],
       explanation: '前後の予定と時刻が重なっているため、候補にできません。',
     }
   }
 
-  const items: { label: string; evidence: Evidence | null; expected: boolean }[] = [
-    { label: '営業時間', evidence: checks.hours, expected: true },
-    {
-      label: '前の予定からの移動',
-      evidence: checks.travelBefore,
-      expected: checks.expectsTravelBefore,
-    },
-    {
-      label: '次の予定への移動',
-      evidence: checks.travelAfter,
-      expected: checks.expectsTravelAfter,
-    },
-  ].filter((item) => item.expected || item.evidence !== null)
+  const items = (
+    [
+      { kind: 'hours', label: '営業時間', evidence: checks.hours, expected: true },
+      {
+        kind: 'travel',
+        label: '前の予定からの移動',
+        evidence: checks.travelBefore,
+        expected: checks.expectsTravelBefore,
+      },
+      {
+        kind: 'travel',
+        label: '次の予定への移動',
+        evidence: checks.travelAfter,
+        expected: checks.expectsTravelAfter,
+      },
+    ] as const
+  ).filter((item) => item.expected || item.evidence !== null)
 
   const conflicting = items.filter((item) => item.evidence?.status === 'conflicting')
   if (conflicting.length > 0) {
     return {
       status: 'excluded',
       reason: 'violated',
+      violations: [...new Set(conflicting.map((item) => item.kind))],
       explanation: `${conflicting.map((item) => item.label).join('・')}が成立しないため、候補にできません。`,
     }
   }
@@ -85,7 +99,7 @@ export function judgeCandidate(checks: CandidateChecks): CandidateJudgement {
     status: 'candidate',
     constraintCheck: {
       status: 'unknown',
-      explanation: `${unverifiedItems ? `${unverifiedItems}を確認できていません。` : ''}${uncertainties.join('')}確認できるまで、承認できません。`,
+      explanation: `${unverifiedItems ? `${unverifiedItems}を確認できませんでした。` : ''}${uncertainties.join('')}確認できるまで、承認できません。`,
     },
   }
 }
