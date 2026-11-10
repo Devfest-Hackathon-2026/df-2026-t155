@@ -113,7 +113,7 @@ export function HomePlanner({
     learnings: readonly ApprovedLearning[]
   } | null>(null)
   const nextJourneyKey = useRef(0)
-  const { entry, fromHistory, navigate, initialize } = useJourneyHistory()
+  const { entry, kind, positionScreen, navigate, initialize } = useJourneyHistory()
   const changed =
     auth.scopeEpoch !== view.epoch ||
     (authScope !== null && view.scope !== null && authScope.uid !== view.scope.uid)
@@ -171,7 +171,6 @@ export function HomePlanner({
   )
 
   const journey = selected ?? generation
-  const trip = journey?.trip
   const activeView = entry?.view.journeyKey === journey?.key ? entry?.view.screen : undefined
   const journeyScreen = isJourneyScreen(activeView) ? activeView : null
   const journeyVisible = Boolean(journey && journeyScreen)
@@ -185,31 +184,34 @@ export function HomePlanner({
         : undefined
   const visibleHomeMode = historyHomeMode ?? homeMode
   const showInput = journeyScreen === null && (!showDiscoveryHome || visibleHomeMode === 'create')
-  const activePage = journeyVisible ? 'journey' : visibleHomeMode
-  const lastPage = useRef(activePage)
+  const activePage = journeyVisible ? 'journey' : showInput ? 'create' : visibleHomeMode
+  const entryId = entry?.id
+  const lastPage = useRef({ page: activePage, entryId })
   const focusRequested = useRef(false)
   const discoveryHeading = useRef<HTMLHeadingElement>(null)
   const previous =
     entry?.previous?.journeyKey === journey?.key ? entry?.previous?.screen : undefined
   const inputHeading = useRef<HTMLHeadingElement>(null)
   const openHomeMode = useCallback(
-    (mode: DiscoveryMode) => {
+    (mode: DiscoveryMode, back = false) => {
       if (showDiscoveryHome) {
         const screen: HomeHistoryScreen = mode === 'home' ? 'discovery' : mode
-        navigate({ screen, journeyKey: 0 })
+        navigate({ screen, journeyKey: 0 }, back)
       }
       setHomeMode(mode)
     },
     [navigate, showDiscoveryHome],
   )
 
+  const previousWasDiscovery = entry?.previous?.screen === 'discovery'
   const showHome = useCallback(() => {
-    if (journey) {
-      navigate({ screen: 'home', journeyKey: journey.key })
+    const returningToHome = showDiscoveryHome && showInput
+    if (journey && !(returningToHome && previousWasDiscovery)) {
+      navigate({ screen: 'home', journeyKey: journey.key }, returningToHome)
       if (showDiscoveryHome) setHomeMode('home')
-    } else if (showDiscoveryHome) openHomeMode('home')
+    } else if (showDiscoveryHome) openHomeMode('home', returningToHome)
     else if (showInput) inputHeading.current?.focus()
-  }, [journey, navigate, openHomeMode, showDiscoveryHome, showInput])
+  }, [journey, navigate, openHomeMode, previousWasDiscovery, showDiscoveryHome, showInput])
 
   const createFromDiscovery = useCallback(
     (draft: TripDraftChanges) => {
@@ -254,25 +256,34 @@ export function HomePlanner({
   }, [historyHomeMode, showDiscoveryHome])
   useLayoutEffect(() => {
     const previousPage = lastPage.current
-    lastPage.current = activePage
-    if (!showDiscoveryHome || previousPage === activePage) return
+    lastPage.current = { page: activePage, entryId }
+    const fromBrowserHistory = kind === 'browser'
+    if (
+      previousPage.page === activePage &&
+      (!fromBrowserHistory || previousPage.entryId === entryId)
+    )
+      return
 
     const requested = focusRequested.current
     focusRequested.current = false
-    if (activePage === 'journey' || activePage === 'create') return
+    // 旅程側は振り返りの復帰先も含めて、TripJourneyで位置を決める。
+    if (activePage === 'journey') return
+    // 履歴の旅程がすでに差し替わっている場合は、代わりに表示する画面の先頭を開く。
+    const top = historyHomeMode ? undefined : 0
 
+    if (activePage === 'create') {
+      inputHeading.current?.focus({ preventScroll: true })
+      return positionScreen(top)
+    }
     const focused = document.activeElement
     const leftJourneyWithoutFocus =
-      previousPage === 'journey' && (focused === document.body || focused?.closest('[hidden]'))
-    if (requested || fromHistory || leftJourneyWithoutFocus) {
-      const heading = discoveryHeading.current
+      previousPage.page === 'journey' && (focused === document.body || focused?.closest('[hidden]'))
+    const heading = discoveryHeading.current
+    if (requested || fromBrowserHistory || leftJourneyWithoutFocus) {
       heading?.focus({ preventScroll: true })
-      if (requested) heading?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     }
-  }, [activePage, fromHistory, showDiscoveryHome])
-  useEffect(() => {
-    if (showInput && (showDiscoveryHome || trip)) inputHeading.current?.focus()
-  }, [showDiscoveryHome, showInput, trip])
+    return positionScreen(top, requested ? heading : null)
+  }, [activePage, entryId, historyHomeMode, kind, positionScreen])
 
   return (
     <>
@@ -427,6 +438,8 @@ export function HomePlanner({
         }
         visible={journeyVisible}
         screen={journeyScreen ?? 'before'}
+        entryId={entryId}
+        positionScreen={positionScreen}
         onNavigate={(screen: JourneyScreen, back?: boolean) => {
           if (journey) navigate({ screen, journeyKey: journey.key }, back)
         }}

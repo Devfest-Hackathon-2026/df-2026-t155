@@ -231,7 +231,10 @@ export function StopSheet({
         >
           <span className="h-1 w-10 rounded-full bg-gt-muted/50" />
         </div>
-        <div data-sheet-scroll className="min-h-0 overflow-y-auto overscroll-contain px-4 sm:px-5">
+        <div
+          data-sheet-scroll
+          className="min-h-0 overflow-y-auto overscroll-contain bg-inherit px-4 sm:px-5"
+        >
           <div className="flex items-start justify-between gap-3">
             <h2
               id={titleId}
@@ -320,7 +323,10 @@ export function StopSheet({
             この表示はGroundTrip上の予定を操作するためのものです。予約の状態は反映されません。
           </p>
 
-          <div className="sticky bottom-0 mt-3 space-y-2 border-t border-gt-rule bg-gt-paper py-3 pb-[max(12px,env(safe-area-inset-bottom))]">
+          <div
+            data-sheet-actions
+            className="sticky bottom-0 -mx-4 mt-3 space-y-2 border-t border-gt-rule bg-inherit px-4 py-3 pb-[max(12px,env(safe-area-inset-bottom))] sm:-mx-5 sm:px-5"
+          >
             <p role="status" aria-atomic="true" className="text-sm text-gt-muted empty:sr-only">
               {notice}
             </p>

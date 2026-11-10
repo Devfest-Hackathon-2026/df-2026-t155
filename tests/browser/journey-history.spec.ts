@@ -1,6 +1,6 @@
 import { expect, test, type BrowserContext } from '@playwright/test'
 
-import { sampleTrip } from '../../src/domain/samples'
+import { sampleRevision, sampleTrip } from '../../src/domain/samples'
 import { unresolvedApplyStorageKey } from '../../src/features/revision-review/unresolved-apply'
 
 const trip = {
@@ -14,7 +14,7 @@ const listInfo = { returned: 0, skippedInvalid: 0, truncated: false }
 
 async function mockJourney(
   context: BrowserContext,
-  initialSavedTrips: (typeof trip)[] = [],
+  initialSavedTrips: (typeof sampleTrip)[] = [],
   onGenerate: () => void = () => {},
   activateDemoMarker = false,
 ) {
@@ -101,7 +101,9 @@ async function mockJourney(
       const trips = request.headers().authorization === `Bearer ${idToken}` ? initialSavedTrips : []
       return route.fulfill({ json: { trips, listInfo: { ...listInfo, returned: trips.length } } })
     }
-    if (path === `/api/trips/${trip.id}`) return route.fulfill({ json: { trip } })
+    const savedTrip = initialSavedTrips.find((saved) => path === `/api/trips/${saved.id}`)
+    if (savedTrip || path === `/api/trips/${trip.id}`)
+      return route.fulfill({ json: { trip: savedTrip ?? trip } })
     if (path === `/api/trips/${trip.id}/revisions`)
       return route.fulfill({ json: { revisions: [], listInfo } })
     return route.abort()
@@ -177,9 +179,15 @@ test('利用規約からホームへ進み、旅程とホームをBack／Forward
   await page.getByRole('button', { name: '旅の条件へ進む' }).click()
   await input.fill('京都市')
   await page.getByLabel('日付（必須）').fill(trip.date)
-  await page.getByRole('button', { name: '旅程を作成する' }).click()
+  await page.setViewportSize({ width: 390, height: 550 })
+  const generate = page.getByRole('button', { name: '旅程を作成する' })
+  await generate.scrollIntoViewIfNeeded()
+  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(300)
+  await generate.click()
   const journey = page.getByRole('heading', { name: '旅程の提案', exact: true })
-  await expect(journey).toBeVisible()
+  await expect(journey).toBeFocused()
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
+  await expect(page.getByText(`${trip.region}の旅程`)).toBeInViewport({ ratio: 1 })
   await expect(sessionStatus).toBeVisible()
   await expect(sessionStatus).toHaveCount(1)
   await expect(sessionStatus.getByRole('note')).toContainText(
@@ -198,6 +206,19 @@ test('利用規約からホームへ進み、旅程とホームをBack／Forward
   await page.goForward()
   await expect(resumeTrip).toBeVisible()
   await expect(input).toHaveValue('京都市')
+  const proceed = page.getByRole('button', { name: '旅の条件へ進む' })
+  await expect(page.getByRole('heading', { name: '今日は、どこへ行こう。' })).toBeInViewport()
+  await proceed.evaluate((element) =>
+    window.scrollTo({ top: window.scrollY + element.getBoundingClientRect().top - 240 }),
+  )
+  await expect(proceed).toBeInViewport({ ratio: 1 })
+  const homeTop = await page.evaluate(() => window.scrollY)
+  expect(homeTop).toBeGreaterThan(100)
+  await proceed.click()
+  await expect(input).toBeVisible()
+  await page.getByRole('button', { name: 'ホームの入力へ戻る' }).click()
+  await expect(proceed).toBeVisible()
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(homeTop)
   await resumeTrip.click()
   await expect(journey).toBeVisible()
   expect(saveAttempts()).toBe(0)
@@ -267,6 +288,7 @@ test('保存済み旅程の最終予定と振り返りを往復し、入力と�
   page,
 }) => {
   const saveAttempts = await mockJourney(context, [trip])
+  await page.setViewportSize({ width: 390, height: 550 })
   await page.goto('/access#ticket=' + 'a'.repeat(43))
   await page.waitForURL('/welcome')
   await page.getByRole('button', { name: '旅をはじめる' }).click()
@@ -277,26 +299,45 @@ test('保存済み旅程の最終予定と振り返りを往復し、入力と�
 
   const during = page.getByRole('button', { name: '旅行中', exact: true })
   const before = page.getByRole('button', { name: '旅行前', exact: true })
-  await during.click()
+  const start = page.getByRole('button', { name: '旅行中の画面へ' })
+  const scrollY = () => page.evaluate(() => window.scrollY)
+  await start.scrollIntoViewIfNeeded()
+  const beforeTop = await scrollY()
+  expect(beforeTop).toBeGreaterThan(300)
+  await start.click()
+  await expect(during).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(scrollY).toBe(0)
+  await expect(page.getByText(`${trip.region}の旅程`)).toBeInViewport({ ratio: 1 })
   await page.goBack()
   await expect(before).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(scrollY).toBe(beforeTop)
   await page.goForward()
   await expect(during).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(scrollY).toBe(0)
   const next = page.getByRole('button', { name: '次の予定へ進む' })
   await next.click()
   await next.click()
   const finish = page.getByRole('button', { name: '旅行を終えて振り返る' })
+  await finish.scrollIntoViewIfNeeded()
+  const originTop = await scrollY()
+  expect(originTop).toBeGreaterThan(100)
   await finish.click()
+  const reflection = page.getByRole('heading', { name: '振り返り', exact: true })
+  await expect(reflection).toBeFocused()
+  await expect(reflection).toBeInViewport({ ratio: 1 })
+  await expect.poll(scrollY).toBe(0)
   const feedback = page.getByRole('textbox', { name: /感想・変更した理由/ })
   await feedback.fill('展示が印象に残った')
 
   await page.goBack()
   await expect(finish).toBeFocused()
+  await expect.poll(scrollY).toBe(originTop)
   await expect(page.getByRole('region', { name: 'いまの予定' })).toContainText(trip.stops[2].name)
   await page.goForward()
   await expect(feedback).toHaveValue('展示が印象に残った')
   await page.getByRole('button', { name: '旅程へ戻る', exact: true }).click()
   await expect(finish).toBeFocused()
+  await expect.poll(scrollY).toBe(originTop)
   await page.goForward()
   await expect(feedback).toHaveValue('展示が印象に残った')
   expect(saveAttempts()).toBe(0)
@@ -405,6 +446,132 @@ test('予定詳細をEsc・背景・ボタン・Backで閉じ、再訪しても�
   await page.goBack()
   await nav.getByRole('button', { name: '記録' }).click()
   await expect(page.getByRole('heading', { name: '記録' })).toBeVisible()
+})
+
+for (const width of [320, 390]) {
+  test(`${width}pxの予定詳細で長い施設名、根拠、固定操作を扱える`, async ({
+    browserName,
+    context,
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 550 })
+    const target = {
+      ...sampleTrip.stops[1],
+      name: '京都の歴史と文化を紹介する展示と街並みの資料を見られる小さな資料館（架空）',
+    }
+    const saved = { ...trip, stops: [trip.stops[0], target, trip.stops[2]] }
+    await mockJourney(context, [saved])
+    await page.addInitScript(() => localStorage.setItem('groundtrip:welcome-completed:v1', 'true'))
+    if (browserName === 'chromium') {
+      const cdp = await context.newCDPSession(page)
+      await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { bottom: 24 } })
+    }
+    await page.goto('/access#ticket=' + 'a'.repeat(43))
+    await page.waitForURL('/')
+    await page.getByRole('button', { name: 'しおり' }).click()
+    await page.getByRole('button', { name: '保存した旅程で旅行を続ける' }).click()
+    await page.getByRole('button').filter({ hasText: trip.region }).click()
+    const stop = page.getByRole('button', { name: target.name })
+    const card = page.locator('.gt-itinerary-stop-card').filter({ hasText: target.name })
+    await expect(card).toHaveCSS('background-image', /repeating-linear-gradient/)
+    await stop.scrollIntoViewIfNeeded()
+    const scrollY = () => page.evaluate(() => window.scrollY)
+    const routeTop = await scrollY()
+    expect(routeTop).toBeGreaterThan(100)
+    await stop.click()
+
+    const dialog = page.getByRole('dialog')
+    const sheet = dialog.locator('.gt-sheet')
+    const heading = sheet.getByRole('heading', { name: target.name })
+    const scroll = sheet.locator('[data-sheet-scroll]')
+    const actions = sheet.locator('[data-sheet-actions]')
+    await expect(heading).toBeFocused()
+    await expect(heading).toBeInViewport({ ratio: 1 })
+    await expect(sheet).toHaveCSS('background-image', 'none')
+    await expect(actions).toHaveCSS(
+      'background-color',
+      await sheet.evaluate((element) => getComputedStyle(element).backgroundColor),
+    )
+    await expect(actions).toHaveCSS('position', 'sticky')
+    await expect(actions).toHaveCSS('padding-bottom', browserName === 'chromium' ? '24px' : '12px')
+    expect(await scroll.evaluate((element) => element.scrollWidth)).toBe(
+      await scroll.evaluate((element) => element.clientWidth),
+    )
+    await expect(sheet.getByText('未確認', { exact: true })).toBeVisible()
+    await sheet.getByText('根拠を見る', { exact: true }).click()
+    await expect(sheet.getByText(/臨時休業の模擬報告/)).toBeVisible()
+    await scroll.evaluate((element) => (element.scrollTop = element.scrollHeight))
+    expect(await scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+    const fixed = sheet.getByRole('button', { name: 'この予定を固定する' })
+    await expect(fixed).toBeInViewport({ ratio: 1 })
+    await fixed.click()
+    await expect(sheet.getByRole('button', { name: '固定を解除する' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await expect.poll(scrollY).toBe(routeTop)
+    await page.keyboard.press('Escape')
+    await expect(page.locator('dialog[open]')).toHaveCount(0)
+    await expect(stop).toBeFocused()
+    await expect.poll(scrollY).toBe(routeTop)
+
+    await stop.click()
+    const handle = sheet.locator('[data-sheet-handle]')
+    await expect(handle).toBeVisible()
+    const bounds = (await handle.boundingBox())!
+    const x = bounds.x + bounds.width / 2
+    const y = bounds.y + bounds.height / 2
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x, y + 110, { steps: 8 })
+    await page.mouse.up()
+    await expect(page.locator('dialog[open]')).toHaveCount(0)
+    await expect(stop).toBeFocused()
+    await expect.poll(scrollY).toBe(routeTop)
+  })
+}
+
+test('旅程内の候補切替でページ先頭へ戻らない', async ({ context, page }) => {
+  await page.setViewportSize({ width: 390, height: 550 })
+  await mockJourney(context, [trip])
+  await context.route('**/api/trips/revise', (route) => {
+    const target = trip.stops[1]
+    const first = {
+      ...sampleRevision,
+      reason: route.request().postDataJSON().reason,
+      context: { phase: 'planning' },
+      diff: { ...sampleRevision.diff, before: target },
+    }
+    return route.fulfill({
+      json: {
+        status: 'proposed',
+        revisions: [
+          first,
+          {
+            ...first,
+            id: 'fixture-candidate-two',
+            diff: { before: target, after: { ...first.diff.after, name: '昼食店C（架空候補）' } },
+          },
+        ],
+      },
+    })
+  })
+  await page.addInitScript(() => localStorage.setItem('groundtrip:welcome-completed:v1', 'true'))
+  await page.goto('/access#ticket=' + 'a'.repeat(43))
+  await page.waitForURL('/')
+  await page.getByRole('button', { name: 'しおり' }).click()
+  await page.getByRole('button', { name: '保存した旅程で旅行を続ける' }).click()
+  await page.getByRole('button', { name: trip.region }).click()
+  await page.getByRole('button', { name: trip.stops[1].name }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'この予定だけ変更' }).click()
+  await page.getByRole('button', { name: 'こだわらない（おまかせで探す）' }).click()
+  const candidate = page.getByRole('button', { name: /候補 B/ })
+  await expect(candidate).toBeVisible()
+  await page.evaluate(() => window.scrollTo(0, 120))
+  await expect(candidate).toBeInViewport({ ratio: 1 })
+  await candidate.click()
+  await expect(candidate).toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(120)
 })
 
 for (const width of [390, 1440]) {

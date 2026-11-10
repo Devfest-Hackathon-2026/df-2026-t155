@@ -38,7 +38,7 @@ it('写真テーマを既存フォームへ渡すが、選択や遷移だけで�
     '名古屋市',
   )
   expect((screen.getByLabelText('希望条件（任意）') as HTMLTextAreaElement).value).toBe(
-    '名古屋の歴史や街並みを楽しみたい\n座って休める場所も入れたい',
+    '歴史的な建築や街並みを楽しみたい\n座って休める場所も入れたい',
   )
   expect((screen.getByLabelText('日付（必須）') as HTMLInputElement).value).toBe('')
   expect(generate).not.toHaveBeenCalled()

@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 import { revisionTargetRestriction, type Trip } from '@/domain'
 import { OnSiteReplanningFlow } from '@/features/onsite-flow/onsite-replanning-flow'
@@ -28,7 +28,7 @@ import {
   SessionChangedError,
   type SessionScope,
 } from '@/lib/auth/session-scope'
-import type { JourneyScreen } from './use-journey-history'
+import type { JourneyScreen, PositionJourneyScreen } from './use-journey-history'
 
 interface TripJourneyProps {
   // いま画面に出している旅程（固定の切り替えや部分修正を反映済み）。
@@ -50,6 +50,8 @@ interface TripJourneyProps {
   verificationPanel: ReactNode
   visible: boolean
   screen: JourneyScreen
+  entryId?: number
+  positionScreen: PositionJourneyScreen
   onNavigate: (screen: JourneyScreen, back?: boolean) => void
   onCloseReflection: () => void
   onEditInput: () => void
@@ -133,6 +135,8 @@ export function TripJourney({
   verificationPanel,
   visible,
   screen,
+  entryId,
+  positionScreen,
   onNavigate,
   onCloseReflection,
   onEditInput,
@@ -202,7 +206,7 @@ export function TripJourney({
   >({})
   const previousScreen = useRef<JourneyScreen | null>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = previousScreen.current
     previousScreen.current = visible ? screen : null
     if (!visible) return
@@ -210,12 +214,12 @@ export function TripJourney({
       const origin = reflectionOrigin.current[screen]
       if (origin?.control.isConnected && !origin.control.closest('[hidden]')) {
         origin.control.focus({ preventScroll: true })
-        if (window.scrollY !== origin.top) window.scrollTo({ top: origin.top, behavior: 'instant' })
-        return
+        return positionScreen(origin.top)
       }
     }
-    heading.current?.focus()
-  }, [reflectionOpen, screen, visible])
+    heading.current?.focus({ preventScroll: true })
+    return positionScreen()
+  }, [entryId, positionScreen, reflectionOpen, screen, visible])
 
   const openReflection = (
     control: HTMLButtonElement,

@@ -2,7 +2,8 @@ import { expect, test, type Locator } from '@playwright/test'
 
 const widths = [320, 375, 390, 1023, 1024, 1440]
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ context, page }) => {
+  await context.route(/^https:\/\//, (route) => route.abort())
   await page.addInitScript(() => localStorage.setItem('groundtrip:welcome-completed:v1', 'true'))
 })
 
@@ -27,7 +28,7 @@ for (const width of widths) {
 
     const photos = page.getByRole('region', { name: '写真から旅のテーマを探す（任意）' })
     const cards = photos.getByRole('button')
-    await expect(cards).toHaveCount(3)
+    await expect(cards).toHaveCount(5)
     const layout = await cards
       .first()
       .locator('..')
@@ -36,13 +37,15 @@ for (const width of widths) {
         const last = element.lastElementChild!.getBoundingClientRect()
         return {
           firstTop: first.top,
+          thirdTop: element.children[2].getBoundingClientRect().top,
           lastTop: last.top,
           containerWidth: element.clientWidth,
           contentWidth: element.scrollWidth,
         }
       })
     if (width >= 1024) {
-      expect(layout.firstTop).toBe(layout.lastTop)
+      expect(layout.thirdTop).toBe(layout.firstTop)
+      expect(layout.lastTop).toBeGreaterThan(layout.firstTop)
       expect(layout.contentWidth).toBe(layout.containerWidth)
     } else {
       expect(layout.contentWidth).toBeGreaterThan(layout.containerWidth)
@@ -109,17 +112,28 @@ test('写真の選択で行き先とテーマを反映し、手入力の希望�
   await expect
     .poll(() => photo.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth))
     .toBeGreaterThan(0)
-  await expect(page.getByLabel('行き先', { exact: true })).toHaveValue('名古屋市熱田区')
-  await page.getByRole('button', { name: '旅の条件へ進む' }).click()
-  await expect(page.getByLabel('旅行先（必須）')).toHaveValue('名古屋市熱田区')
-  await expect(page.getByLabel('希望条件（任意）')).toHaveValue(
-    '神社や緑の中をゆっくり歩きたい\n途中で座って休みたい',
-  )
+  const homeRegion = page.getByLabel('行き先', { exact: true })
+  const proceed = page.getByRole('button', { name: '旅の条件へ進む' })
+  const region = page.getByLabel('旅行先（必須）')
+  const hope = page.getByLabel('希望条件（任意）')
+  const preferences = '緑のある場所や歴史・文化を感じる場所をゆっくり歩きたい\n途中で座って休みたい'
+
+  await expect(homeRegion).toHaveValue('名古屋市熱田区')
+  await proceed.click()
+  await expect(region).toHaveValue('名古屋市熱田区')
+  await expect(hope).toHaveValue(preferences)
+
+  await page.getByRole('button', { name: 'ホームの入力へ戻る' }).click()
+  await homeRegion.fill('京都市')
+  await proceed.click()
+  await expect(region).toHaveValue('京都市')
+  await expect(hope).toHaveValue(preferences)
 })
 
 test('詳細条件の再訪で上書きせず、ホームで変更した項目だけを反映する', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 900 })
   await page.goto('/')
+  await page.waitForFunction(() => Boolean(history.state?.groundTripJourney))
   const homeRegion = page.getByLabel('行き先', { exact: true })
   const homeHope = page.getByLabel('旅の希望（任意）')
   const next = page.getByRole('button', { name: '旅の条件へ進む' })
@@ -174,25 +188,38 @@ test('写真の選択・解除・再選択と行き先の明示採用を分け�
   const castle = page.getByRole('button', { name: /城と歴史/ })
   const atsuta = page.getByRole('button', { name: /神社と緑/ })
   const clear = page.getByRole('button', { name: 'テーマを外す' })
-  await region.fill('奈良市')
+  const next = page.getByRole('button', { name: '旅の条件へ進む' })
+  const home = page.getByRole('button', { name: 'ホームの入力へ戻る' })
+  const detailRegion = page.getByLabel('旅行先（必須）')
+  const detailHope = page.getByLabel('希望条件（任意）')
+
+  await region.fill('京都市')
+  await page.getByLabel('旅の希望（任意）').fill('昼は精進料理')
   await castle.click()
-  await expect(region).toHaveValue('奈良市')
-  await clear.click()
-  await expect(region).toHaveValue('奈良市')
-  await castle.click()
+  await expect(region).toHaveValue('京都市')
+  await next.click()
+  await expect(detailRegion).toHaveValue('京都市')
+  await expect(detailHope).toHaveValue('歴史的な建築や街並みを楽しみたい\n昼は精進料理')
+  await home.click()
+
   await page.getByRole('button', { name: '名古屋市を行き先に使う' }).click()
   await expect(region).toHaveValue('名古屋市')
   await atsuta.click()
   await expect(region).toHaveValue('名古屋市')
-  await clear.click()
-  await expect(region).toHaveValue('奈良市')
-
-  await atsuta.click()
-  await region.fill('京都市')
+  await page.getByRole('button', { name: '写真の行き先を解除' }).click()
+  await expect(region).toHaveValue('京都市')
   await expect(atsuta).toHaveAttribute('aria-pressed', 'true')
-  await page.getByRole('button', { name: '旅の条件へ進む' }).click()
-  await expect(page.getByLabel('旅行先（必須）')).toHaveValue('京都市')
-  await expect(page.getByLabel('希望条件（任意）')).toHaveValue('神社や緑の中をゆっくり歩きたい')
+
+  await page.getByRole('button', { name: '名古屋市熱田区を行き先に使う' }).click()
+  await clear.click()
+  await expect(region).toHaveValue('名古屋市熱田区')
+  await next.click()
+  await expect(detailRegion).toHaveValue('名古屋市熱田区')
+  await expect(detailHope).toHaveValue('昼は精進料理')
+  await home.click()
+  await next.click()
+  await expect(detailRegion).toHaveValue('名古屋市熱田区')
+  await expect(detailHope).toHaveValue('昼は精進料理')
 })
 
 test('詳細条件で先に入力した行き先と希望を、写真の選択でも保持する', async ({ page }) => {
@@ -209,7 +236,7 @@ test('詳細条件で先に入力した行き先と希望を、写真の選択�
   await expect(page.getByLabel('行き先', { exact: true })).toHaveValue('奈良市')
   await next.click()
   await expect(region).toHaveValue('奈良市')
-  await expect(hope).toHaveValue('名古屋の歴史や街並みを楽しみたい\n昼は精進料理')
+  await expect(hope).toHaveValue('歴史的な建築や街並みを楽しみたい\n昼は精進料理')
 })
 
 test('キーボードで遷移先の見出しへ移り、1023／1024pxで同じナビ項目にフォーカスを引き継ぐ', async ({
@@ -279,35 +306,57 @@ test('詳細条件で希望を編集しても写真の行き先を解除して�
   await expect(page.getByRole('button', { name: '写真の行き先を解除' })).toHaveCount(0)
 })
 
-test('詳細条件からのキーボード復帰でホーム見出しがフォーカスされ画面内に入る', async ({
+test('短い画面で詳細条件の先頭を表示し、Back／Forwardとホームへの復帰位置を分ける', async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 550 })
   await page.goto('/')
   const heading = page.getByRole('heading', { name: '今日は、どこへ行こう。' })
+  const detailHeading = page.getByRole('heading', { name: '日帰り旅程を作る' })
   const proceed = page.getByRole('button', { name: '旅の条件へ進む' })
-  await proceed.click()
-  await page.getByRole('button', { name: 'ホームの入力へ戻る' }).press('Enter')
-  await expect(heading).toBeFocused()
-  await expect(heading).toBeInViewport({ ratio: 1 })
-
-  await proceed.click()
-  await page.getByRole('button', { name: '旅程を作成する' }).scrollIntoViewIfNeeded()
-  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(300)
-  const home = page
+  const generate = page.getByRole('button', { name: '旅程を作成する' })
+  const returnHome = page.getByRole('button', { name: 'ホームの入力へ戻る' })
+  const homeTab = page
     .getByRole('navigation', { name: 'メインナビゲーション' })
     .getByRole('button', { name: 'ホーム' })
-  await home.press('Enter')
-  await expect(heading).toBeFocused()
-  await expect(heading).toBeInViewport({ ratio: 1 })
+  const scrollY = () => page.evaluate(() => window.scrollY)
 
+  const castle = page.getByRole('button', { name: /城と歴史/ })
+  await castle.scrollIntoViewIfNeeded()
+  expect(await scrollY()).toBeGreaterThan(200)
+  await castle.click()
+  expect(await scrollY()).toBeGreaterThan(200)
+
+  await proceed.evaluate((element) =>
+    window.scrollTo({ top: window.scrollY + element.getBoundingClientRect().top - 240 }),
+  )
+  await expect(proceed).toBeInViewport({ ratio: 1 })
+  const homeTop = await scrollY()
+  expect(homeTop).toBeGreaterThan(200)
   await proceed.click()
-  await page.getByRole('button', { name: '旅程を作成する' }).scrollIntoViewIfNeeded()
-  if (testInfo.project.use.hasTouch) await home.tap()
-  else await home.click()
+  await expect(detailHeading).toBeFocused()
+  await expect(detailHeading).toBeInViewport({ ratio: 1 })
+  await expect.poll(scrollY).toBe(0)
+  await generate.scrollIntoViewIfNeeded()
+  const detailTop = await scrollY()
+  expect(detailTop).toBeGreaterThan(300)
+
+  await page.goBack()
+  await expect(heading).toBeVisible()
+  await expect.poll(scrollY).toBe(homeTop)
+  await page.goForward()
+  await expect(generate).toBeInViewport()
+  await expect.poll(scrollY).toBe(detailTop)
+  if (testInfo.project.use.hasTouch) await homeTab.tap()
+  else await homeTab.click()
   await expect(heading).toBeVisible()
   await expect(heading).not.toBeFocused()
-  expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(300)
+  await expect.poll(scrollY).toBe(homeTop)
+
+  await proceed.click()
+  await returnHome.press('Enter')
+  await expect(heading).toBeFocused()
+  await expect(heading).toBeInViewport({ ratio: 1 })
 })
 
 test.describe('PCナビのコントラスト', () => {

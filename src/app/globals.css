@@ -434,9 +434,6 @@ body:has(main [data-welcome-screen]) > main:has([data-welcome-screen]) {
 .gt-itinerary-route .gt-sheet {
   border-color: var(--gt-itinerary-rule);
   background-color: var(--gt-itinerary-paper);
-  background-image:
-    repeating-linear-gradient(135deg, var(--gt-itinerary-pattern) 0 1px, transparent 1px 7px),
-    repeating-linear-gradient(45deg, var(--gt-itinerary-pattern) 0 1px, transparent 1px 7px);
 }
 
 .gt-itinerary-route .gt-sheet [data-sheet-handle] > span {

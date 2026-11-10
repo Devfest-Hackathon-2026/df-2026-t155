@@ -75,12 +75,11 @@ export function DiscoveryHome({
       .toLocaleLowerCase('ja-JP')
       .includes(normalized),
   )
-  const selectTheme = (theme: DiscoveryDestination | null) => {
-    if (selected === theme) return
+  const selectTheme = (theme: DiscoveryDestination) => {
     setSelected(theme)
-    if (theme === null) setPhotoRegion(null)
-    else if (!photoRegion?.explicit && manualRegion.trim() === '')
+    if (!photoRegion?.explicit && manualRegion.trim() === '') {
       setPhotoRegion({ region: theme.region, explicit: false })
+    }
   }
 
   return (
@@ -155,15 +154,15 @@ export function DiscoveryHome({
                 <button
                   type="button"
                   className="min-h-11 underline underline-offset-2"
-                  onClick={() => selectTheme(null)}
+                  onClick={() => setSelected(null)}
                 >
                   テーマを外す
                 </button>
               </div>
             )}
-            {!selected && photoRegion && (
+            {photoRegion && (
               <div className="flex flex-wrap items-center gap-x-3 text-sm text-gt-muted">
-                <p>写真から採用した行き先：{photoRegion.region}</p>
+                <p>写真から入れた行き先：{photoRegion.region}</p>
                 <button
                   type="button"
                   className="min-h-11 underline underline-offset-2"
@@ -207,7 +206,7 @@ export function DiscoveryHome({
             写真から旅のテーマを探す（任意）
           </h2>
           <p className="text-sm text-gt-muted">
-            愛知・名古屋を中心に、大阪・東京の写真テーマも選べます。選んだテーマは行き先と旅の希望に反映できます。
+            愛知・名古屋を中心に、大阪・東京の写真テーマも選べます。選んだテーマは旅の希望に加わります。行き先が空欄の場合は、写真の地域が入ります。
           </p>
           <div className="space-y-1 sm:max-w-sm">
             <label htmlFor="discovery-search" className="block text-sm font-semibold">
