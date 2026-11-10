@@ -383,7 +383,7 @@ export function CandidateComparison({
     },
   ]
   const table = (
-    <div className="overflow-hidden rounded-[14px] border border-gt-rule">
+    <div className="gt-revision-table overflow-hidden rounded-[14px] border border-gt-rule">
       <table className="w-full table-fixed border-collapse text-left text-xs leading-relaxed wrap-anywhere">
         <caption className="sr-only">現在の予定と選択中の候補の差分</caption>
         <thead>
@@ -401,7 +401,10 @@ export function CandidateComparison({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.label} className="border-t border-gt-rule bg-gt-paper">
+            <tr
+              key={row.label}
+              className="gt-revision-table-row border-t border-gt-rule bg-gt-paper"
+            >
               <th scope="row" className="px-[5px] py-2 align-top text-xs text-gt-muted">
                 {row.label}
               </th>
@@ -416,7 +419,7 @@ export function CandidateComparison({
     </div>
   )
   return (
-    <div className="gt-enter space-y-4">
+    <div className="gt-enter gt-revision-paper space-y-4">
       {!compact && table}
       <section aria-label="予定への影響" className="gt-card space-y-2">
         <div className="flex flex-wrap items-center gap-2">

@@ -207,8 +207,8 @@ describe('部分修正の候補比較', () => {
       expect.any(AbortSignal),
     )
     expect(screen.queryByRole('button', { name: '承認して適用を依頼' })).toBeNull()
-    expect(screen.getByRole('button', { name: /候補 A\s*承認可能/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /候補 B\s*承認不可/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /候補 A .*承認可能/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /候補 B .*承認不可/ })).toBeTruthy()
     expect(
       route().getByText(after.name).closest('[data-variant]')?.getAttribute('data-variant'),
     ).toBe('ticket')

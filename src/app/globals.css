@@ -519,3 +519,157 @@ body:has(main .gt-itinerary-route:not([hidden] *)) .gt-journey--before {
   border-radius: 22px 22px 0 0;
   background: var(--gt-paper);
 }
+
+.gt-revision-flow {
+  --gt-revision-paper: #fbf8f1;
+  --gt-revision-pattern: rgb(107 97 82 / 5%);
+}
+
+.gt-revision-flow > [data-flow-header='subpage'] {
+  border-image: conic-gradient(#202823 0 0) fill 0 / 0 / 0 100vw;
+  background: #202823;
+  color: #fff;
+  box-shadow: inset 0 -3px #c94e31;
+}
+
+.gt-revision-flow > [data-flow-header='subpage'] p {
+  color: rgb(255 255 255 / 78%);
+}
+
+.gt-revision-flow > [data-flow-header='subpage'] button {
+  border-color: rgb(255 255 255 / 78%);
+  background: transparent;
+  color: #fff;
+}
+
+.gt-revision-flow > [data-flow-header='subpage'] button:hover {
+  background: rgb(255 255 255 / 12%);
+}
+
+.gt-revision-flow > [data-flow-header='subpage'] button:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px #202823;
+}
+
+.gt-revision-paper {
+  min-width: 0;
+  border: 1px dashed color-mix(in srgb, var(--gt-ink) 24%, transparent);
+  border-radius: 1rem;
+  background-color: var(--gt-revision-paper);
+  background-image:
+    repeating-linear-gradient(135deg, var(--gt-revision-pattern) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(45deg, var(--gt-revision-pattern) 0 1px, transparent 1px 7px);
+  padding: 1rem;
+}
+
+.gt-revision-route-note {
+  min-width: 0;
+}
+
+.gt-revision-ticket {
+  position: relative;
+  overflow: hidden;
+  border-style: dashed;
+  border-radius: 0.75rem;
+  background-color: var(--gt-revision-paper);
+  background-image:
+    repeating-linear-gradient(135deg, var(--gt-revision-pattern) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(45deg, var(--gt-revision-pattern) 0 1px, transparent 1px 7px);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 10%),
+    0 3px 8px rgb(0 0 0 / 4%);
+}
+
+.gt-revision-ticket::before,
+.gt-revision-ticket::after {
+  position: absolute;
+  z-index: 1;
+  top: calc(50% - 6px);
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--gt-revision-paper);
+  content: '';
+  pointer-events: none;
+}
+
+.gt-revision-ticket::before {
+  left: -6px;
+}
+
+.gt-revision-ticket::after {
+  right: -6px;
+}
+
+.gt-revision-ticket[aria-pressed='true'] {
+  border-style: solid;
+  background-color: var(--gt-preview-bg);
+  background-image:
+    repeating-linear-gradient(135deg, rgb(29 85 160 / 4%) 0 1px, transparent 1px 7px),
+    repeating-linear-gradient(45deg, rgb(29 85 160 / 4%) 0 1px, transparent 1px 7px);
+  box-shadow: inset 0 0 0 1px var(--gt-preview);
+}
+
+.gt-revision-ticket:disabled {
+  cursor: wait;
+}
+
+.gt-revision-selected {
+  border: 1px dashed var(--gt-preview);
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--gt-preview) 7%, var(--gt-paper));
+  overflow-wrap: anywhere;
+}
+
+.gt-revision-chip {
+  display: inline-flex;
+  min-height: 1.75rem;
+  align-items: center;
+  border: 1px solid;
+  border-radius: 0.5rem;
+  padding: 0.125rem 0.5rem;
+}
+
+.gt-revision-chip-candidate {
+  border-color: var(--gt-preview);
+  background: var(--gt-preview-bg);
+  color: var(--gt-preview);
+}
+
+.gt-revision-chip-original {
+  border-color: var(--gt-rail);
+  background: var(--gt-bg);
+  color: var(--gt-muted);
+}
+
+.gt-revision-table {
+  border-radius: 0.75rem;
+  background: var(--gt-paper);
+}
+
+.gt-revision-table th,
+.gt-revision-table td {
+  overflow-wrap: anywhere;
+}
+
+.gt-revision-table thead th:last-child {
+  border-bottom: 2px solid var(--gt-preview);
+  background: color-mix(in srgb, var(--gt-preview) 6%, var(--gt-paper));
+  color: var(--gt-preview);
+}
+
+.gt-revision-table-row td:last-child {
+  background: color-mix(in srgb, var(--gt-preview) 6%, var(--gt-paper));
+  color: var(--gt-ink);
+}
+
+@media (max-width: 360px) {
+  .gt-revision-paper {
+    padding: 0.75rem;
+  }
+
+  .gt-revision-candidates {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

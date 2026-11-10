@@ -466,7 +466,7 @@ export function RevisionReview({
   }
 
   return (
-    <section aria-labelledby={`${id}-heading`} className="space-y-4 text-gt-ink">
+    <section aria-labelledby={`${id}-heading`} className="gt-revision-flow space-y-4 text-gt-ink">
       <ScreenHeader
         headingId={`${id}-heading`}
         headingRef={heading}
@@ -724,8 +724,47 @@ export function RevisionReview({
 
       {stage === 'preview' && review && candidate && (
         <>
-          <div className="space-y-2">
-            <p className="text-xs font-bold">他の予定・固定時刻は変わりません</p>
+          <section
+            role="group"
+            aria-label="変更候補を切り替える"
+            className="gt-revision-candidates grid grid-cols-[repeat(auto-fit,minmax(min(100%,8rem),1fr))] gap-2"
+          >
+            {review.proposal.revisions.map((revision, index) => (
+              <button
+                key={revision.id}
+                type="button"
+                aria-pressed={review.selected === index}
+                disabled={isApplying}
+                aria-label={`${candidateLabel(index)} ${revision.diff.after.name} ${isApprovable(revision) ? '承認可能' : '承認不可'}`}
+                className="gt-revision-ticket flex min-h-28 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl border border-gt-rule bg-gt-paper p-2 text-xs font-semibold aria-pressed:border-gt-preview aria-pressed:bg-gt-preview-bg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gt-preview"
+                onClick={() => {
+                  setReview({ ...review, selected: index })
+                  if (!requiresLatestTrip) setApplyFailure(null)
+                }}
+              >
+                <span className="text-xl font-bold text-gt-preview">
+                  {candidateLabel(index).slice(3)}
+                </span>
+                <span className="line-clamp-2 min-h-8 w-full wrap-anywhere">
+                  {revision.diff.after.name}
+                </span>
+                <span className={isApprovable(revision) ? 'text-gt-ok' : 'text-gt-muted'}>
+                  {isApprovable(revision) ? '承認可能' : '承認不可'}
+                </span>
+                <span className="min-h-4 text-gt-preview">
+                  {review.selected === index ? '選択中' : ' '}
+                </span>
+              </button>
+            ))}
+          </section>
+          <div className="gt-revision-route-note space-y-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
+              <StatusBadge tone="unverified">未承認の候補（プレビュー）</StatusBadge>
+              <span className="text-gt-muted">まだ旅程には反映されていません。</span>
+            </div>
+            <p className="flex items-center gap-1.5 text-xs font-bold">
+              <LockIcon size={14} /> 他の予定・固定時刻は変わりません
+            </p>
             <RouteMap
               idPrefix={id}
               trip={trip}
@@ -733,7 +772,7 @@ export function RevisionReview({
               preview={{ stop: candidate.diff.after, label, revisionId: candidate.id }}
             />
           </div>
-          <div className="gt-enter gt-preview-panel space-y-3 pt-2 pb-3">
+          <div className="gt-enter gt-preview-panel gt-revision-paper space-y-3 pt-2 pb-3">
             <h3 className="text-lg font-bold">変える前に、根拠を比較</h3>
             <p className="text-sm font-semibold" role="status">
               {approvableCount === 0
@@ -742,35 +781,8 @@ export function RevisionReview({
               {review.proposal.revisions.length > approvableCount &&
                 ` ／ 承認不可 ${review.proposal.revisions.length - approvableCount}件`}
             </p>
-            <div
-              role="group"
-              aria-label="変更候補を切り替える"
-              className="grid grid-cols-[repeat(auto-fit,minmax(5rem,1fr))] gap-2"
-            >
-              {review.proposal.revisions.map((revision, index) => (
-                <button
-                  key={revision.id}
-                  type="button"
-                  aria-pressed={review.selected === index}
-                  disabled={isApplying}
-                  aria-label={`${candidateLabel(index)} ${isApprovable(revision) ? '承認可能' : '承認不可'}`}
-                  className="flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border border-gt-rule bg-gt-paper p-2 text-xs font-semibold aria-pressed:border-gt-preview aria-pressed:bg-gt-preview-bg focus-visible:outline-2 focus-visible:outline-gt-preview"
-                  onClick={() => {
-                    setReview({ ...review, selected: index })
-                    if (!requiresLatestTrip) setApplyFailure(null)
-                  }}
-                >
-                  <span className="text-lg">{candidateLabel(index).slice(3)}</span>
-                  <span className={isApprovable(revision) ? 'text-gt-ok' : 'text-gt-muted'}>
-                    {isApprovable(revision) ? '承認可能' : '承認不可'}
-                  </span>
-                </button>
-              ))}
-            </div>
             <section className="space-y-3" aria-label="選択中の候補の概要">
-              <div
-                className={`flex flex-wrap items-center gap-2 rounded-xl p-2.5 ${constraintSatisfied ? 'bg-gt-ok-bg' : 'bg-gt-unk-bg'}`}
-              >
+              <div className="gt-revision-selected flex flex-wrap items-center gap-2 p-2.5">
                 <h3 className="font-bold">
                   {label}　{candidate.diff.after.name}
                 </h3>
@@ -844,12 +856,8 @@ export function RevisionReview({
       {stage === 'detail' && candidate && (
         <>
           <div className="flex flex-wrap gap-1.5 text-xs font-bold">
-            <span className="rounded-lg border border-gt-preview bg-gt-preview-bg px-2 py-0.5 text-gt-preview">
-              {label}（未承認）
-            </span>
-            <span className="rounded-lg border border-gt-rail bg-gt-bg px-2 py-0.5 text-gt-muted">
-              変更前＝元の予定
-            </span>
+            <span className="gt-revision-chip gt-revision-chip-candidate">{label}（未承認）</span>
+            <span className="gt-revision-chip gt-revision-chip-original">変更前＝元の予定</span>
           </div>
           <CandidateComparison
             trip={trip}
@@ -877,7 +885,7 @@ export function RevisionReview({
 
       {stage === 'confirm' && candidate && (
         <>
-          <div className="space-y-2">
+          <div className="gt-revision-paper space-y-2">
             <h3 className="text-xl leading-tight font-bold wrap-anywhere">
               「{candidate.diff.after.name}」に変更します
             </h3>
